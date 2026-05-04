@@ -15,3 +15,7 @@ av
 scipy
 scikit-image
 iopath
+einops
+decord
+ftfy
+scikit-learn
