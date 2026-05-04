@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import io
+import logging
 import numpy as np
 import torch
 import gradio as gr
@@ -20,6 +21,12 @@ import json
 # 添加当前目录到Python路径，以便导入sam3模块
 current_dir = Path(__file__).parent
 sys.path.insert(0, str(current_dir))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("sam3_gradio_demo")
 
 # 导入SAM3相关模块
 try:
@@ -82,10 +89,21 @@ def initialize_models():
 # 全局预测器实例
 image_predictor, video_predictor = initialize_models()
 
-def handle_image_click(img, original_img, evt: gr.SelectData, mode, current_points, current_boxes, click_state):
+def handle_image_click(
+    img,
+    original_img,
+    evt: gr.SelectData,
+    mode,
+    prompt_polarity,
+    pos_points,
+    neg_points,
+    pos_boxes,
+    neg_boxes,
+    click_state,
+):
     """处理图像点击事件，提供实时视觉反馈"""
     if img is None:
-        return img, current_points, current_boxes, click_state, "请先上传图像"
+        return img, pos_points, neg_points, pos_boxes, neg_boxes, click_state, "请先上传图像"
     
     # 如果没有原始图像，就使用当前图像作为原始图像
     if original_img is None:
@@ -98,32 +116,44 @@ def handle_image_click(img, original_img, evt: gr.SelectData, mode, current_poin
     x, y = int(x), int(y)
     
     info_msg = ""
+    is_positive = prompt_polarity.startswith("✅")
     
     if mode == "📍 点提示 (Point)":
         new_point = f"{x},{y}"
-        if current_points:
-            current_points += f";{new_point}"
+        if is_positive:
+            if pos_points:
+                pos_points += f";{new_point}"
+            else:
+                pos_points = new_point
         else:
-            current_points = new_point
+            if neg_points:
+                neg_points += f";{new_point}"
+            else:
+                neg_points = new_point
             
-        # 在图像上画红色圆点
-        cv2.circle(vis_img, (x, y), 6, (255, 0, 0), -1) # 红色实心圆
-        cv2.circle(vis_img, (x, y), 6, (255, 255, 255), 1) # 白色描边
+        if is_positive:
+            cv2.circle(vis_img, (x, y), 6, (255, 0, 0), -1)
+        else:
+            cv2.circle(vis_img, (x, y), 6, (0, 0, 255), -1)
+        cv2.circle(vis_img, (x, y), 6, (255, 255, 255), 1)
         
-        info_msg = f"✅ 已添加点: {new_point}"
-        return vis_img, current_points, current_boxes, None, info_msg
+        info_msg = f"{prompt_polarity} 已添加点: {new_point}"
+        return vis_img, pos_points, neg_points, pos_boxes, neg_boxes, None, info_msg
         
     elif mode == "🔲 框提示 (Box)":
         if click_state is None:
-            # 第一次点击 - 画起点（蓝色）
-            click_state = [x, y]
-            cv2.circle(vis_img, (x, y), 6, (0, 0, 255), -1) # 蓝色实心圆
-            cv2.circle(vis_img, (x, y), 6, (255, 255, 255), 1) # 白色描边
-            info_msg = f"🔵 已记录起点: {x},{y}，请点击对角点完成框选"
-            return vis_img, current_points, current_boxes, click_state, info_msg
+            click_state = {"start": [x, y], "label": is_positive}
+            cv2.circle(vis_img, (x, y), 6, (0, 0, 255), -1)
+            cv2.circle(vis_img, (x, y), 6, (255, 255, 255), 1)
+            info_msg = f"{prompt_polarity} 已记录起点: {x},{y}，请点击对角点完成框选"
+            return vis_img, pos_points, neg_points, pos_boxes, neg_boxes, click_state, info_msg
         else:
-            # 第二次点击 - 画框（绿色）
-            x1, y1 = click_state
+            if isinstance(click_state, dict):
+                x1, y1 = click_state.get("start", [x, y])
+                box_is_positive = bool(click_state.get("label", is_positive))
+            else:
+                x1, y1 = click_state
+                box_is_positive = is_positive
             x2, y2 = x, y
             
             xmin = min(x1, x2)
@@ -136,25 +166,35 @@ def handle_image_click(img, original_img, evt: gr.SelectData, mode, current_poin
             if ymin == ymax: ymax += 1
             
             new_box = f"{xmin},{ymin},{xmax},{ymax}"
-            if current_boxes:
-                current_boxes += f";{new_box}"
+            if box_is_positive:
+                if pos_boxes:
+                    pos_boxes += f";{new_box}"
+                else:
+                    pos_boxes = new_box
             else:
-                current_boxes = new_box
+                if neg_boxes:
+                    neg_boxes += f";{new_box}"
+                else:
+                    neg_boxes = new_box
             
-            # 画绿色矩形框
-            cv2.rectangle(vis_img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
+            if box_is_positive:
+                cv2.rectangle(vis_img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
+            else:
+                cv2.rectangle(vis_img, (xmin, ymin), (xmax, ymax), (0, 0, 255), 3)
                 
-            info_msg = f"✅ 已添加框: {new_box}"
-            return vis_img, current_points, current_boxes, None, info_msg
+            info_msg = f"{'✅ Positive' if box_is_positive else '❌ Negative'} 已添加框: {new_box}"
+            return vis_img, pos_points, neg_points, pos_boxes, neg_boxes, None, info_msg
     
-    return vis_img, current_points, current_boxes, click_state, info_msg
+    return vis_img, pos_points, neg_points, pos_boxes, neg_boxes, click_state, info_msg
 
 def segment_image(
     input_image,
     text_prompt,
     confidence_threshold,
-    point_prompt,
-    box_prompt,
+    pos_point_prompt,
+    neg_point_prompt,
+    pos_box_prompt,
+    neg_box_prompt,
     original_image=None,
     progress=gr.Progress()
 ):
@@ -165,7 +205,13 @@ def segment_image(
     if image_to_process is None:
         return None, "请上传图像"
         
-    if not text_prompt and not point_prompt and not box_prompt:
+    if (
+        not text_prompt
+        and not pos_point_prompt
+        and not neg_point_prompt
+        and not pos_box_prompt
+        and not neg_box_prompt
+    ):
         return None, "请提供至少一种提示（文本、点或框）"
     
     try:
@@ -189,53 +235,90 @@ def segment_image(
         if text_prompt:
             state = image_predictor.set_text_prompt(text_prompt, state)
             
-        # 处理点提示
-        if point_prompt:
-            points = []
-            for point_str in point_prompt.split(';'):
+        width, height = image.size
+
+        def parse_points(points_str):
+            parsed = []
+            if not points_str:
+                return parsed
+            for point_str in points_str.split(";"):
                 if point_str:
                     try:
-                        x, y = map(float, point_str.split(','))
-                        points.append([x, y])
+                        x, y = map(float, point_str.split(","))
+                        parsed.append([x, y])
                     except ValueError:
                         continue
-                        
-            if points:
-                width, height = image.size
-                normalized_points = []
-                for x, y in points:
-                    normalized_points.append([x/width, y/height])
-                    
-                for point in normalized_points:
-                    box_size = min(width, height) * 0.05
-                    box_width = box_size / width
-                    box_height = box_size / height
-                    box = [point[0], point[1], box_width, box_height]
-                    state = image_predictor.add_geometric_prompt(box, True, state)
-        
-        # 处理框提示
-        if box_prompt:
-            boxes = []
-            for box_str in box_prompt.split(';'):
+            return parsed
+
+        def parse_boxes(boxes_str):
+            parsed = []
+            if not boxes_str:
+                return parsed
+            for box_str in boxes_str.split(";"):
                 if box_str:
                     try:
-                        x1, y1, x2, y2 = map(float, box_str.split(','))
-                        boxes.append([x1, y1, x2, y2])
+                        x1, y1, x2, y2 = map(float, box_str.split(","))
+                        parsed.append([x1, y1, x2, y2])
                     except ValueError:
                         continue
-                        
-            if boxes:
-                width, height = image.size
-                normalized_boxes = []
-                for x1, y1, x2, y2 in boxes:
-                    center_x = (x1 + x2) / 2 / width
-                    center_y = (y1 + y2) / 2 / height
-                    box_width = (x2 - x1) / width
-                    box_height = (y2 - y1) / height
-                    normalized_boxes.append([center_x, center_y, box_width, box_height])
-                    
-                for box in normalized_boxes:
-                    state = image_predictor.add_geometric_prompt(box, True, state)
+            return parsed
+
+        def apply_points(points, label, current_state):
+            if not points:
+                return current_state
+            box_size = min(width, height) * 0.05
+            box_width = box_size / width
+            box_height = box_size / height
+            for x, y in points:
+                cx = x / width
+                cy = y / height
+                box = [cx, cy, box_width, box_height]
+                current_state = image_predictor.add_geometric_prompt(box, label, current_state)
+            return current_state
+
+        def apply_boxes(boxes, label, current_state):
+            if not boxes:
+                return current_state
+            for x1, y1, x2, y2 in boxes:
+                center_x = (x1 + x2) / 2 / width
+                center_y = (y1 + y2) / 2 / height
+                box_width = (x2 - x1) / width
+                box_height = (y2 - y1) / height
+                box = [center_x, center_y, box_width, box_height]
+                current_state = image_predictor.add_geometric_prompt(box, label, current_state)
+            return current_state
+
+        pos_points = parse_points(pos_point_prompt)
+        neg_points = parse_points(neg_point_prompt)
+        pos_boxes = parse_boxes(pos_box_prompt)
+        neg_boxes = parse_boxes(neg_box_prompt)
+
+        logger.info(
+            json.dumps(
+                {
+                    "type": "image_segmentation",
+                    "device": DEVICE,
+                    "image_size": [width, height],
+                    "confidence_threshold": confidence_threshold,
+                    "text_prompt": text_prompt or "",
+                    "pos_points_count": len(pos_points),
+                    "neg_points_count": len(neg_points),
+                    "pos_boxes_count": len(pos_boxes),
+                    "neg_boxes_count": len(neg_boxes),
+                    "pos_points": pos_points,
+                    "neg_points": neg_points,
+                    "pos_boxes_xyxy": pos_boxes,
+                    "neg_boxes_xyxy": neg_boxes,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        state = apply_points(pos_points, True, state)
+        state = apply_points(neg_points, False, state)
+        
+        state = apply_boxes(pos_boxes, True, state)
+        state = apply_boxes(neg_boxes, False, state)
         
         # 设置置信度阈值
         state = image_predictor.set_confidence_threshold(confidence_threshold, state)
@@ -352,6 +435,18 @@ def process_video(
         start_time = time.time()
         progress(0.1, desc="正在解析视频...")
         
+        logger.info(
+            json.dumps(
+                {
+                    "type": "video_tracking",
+                    "device": DEVICE,
+                    "confidence_threshold": confidence_threshold,
+                    "text_prompt": text_prompt or "",
+                },
+                ensure_ascii=False,
+            )
+        )
+
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             fd, output_path = tempfile.mkstemp(suffix=".mp4")
             os.close(fd)
@@ -469,6 +564,13 @@ def create_demo():
                                     show_label=False,
                                     elem_classes="mode-radio"
                                 )
+                                prompt_polarity = gr.Radio(
+                                    choices=["✅ Positive", "❌ Negative"],
+                                    value="✅ Positive",
+                                    label="提示极性",
+                                    show_label=False,
+                                    elem_classes="mode-radio"
+                                )
                                 # 第二行：清空按钮（全宽）
                                 with gr.Row():
                                     clear_prompts_btn = gr.Button("🗑️ 清空提示 (Clear Prompts)", size="sm", variant="secondary")
@@ -488,8 +590,10 @@ def create_demo():
                                     example_point_btn = gr.Button("📍 示例点", size="sm")
                                 
                                 with gr.Row(visible=False): # 隐藏原始坐标输入框，保持后端逻辑但减少界面干扰
-                                    point_prompt = gr.Textbox(label="点坐标")
-                                    box_prompt = gr.Textbox(label="框坐标")
+                                    pos_point_prompt = gr.Textbox(label="正点坐标")
+                                    neg_point_prompt = gr.Textbox(label="负点坐标")
+                                    pos_box_prompt = gr.Textbox(label="正框坐标")
+                                    neg_box_prompt = gr.Textbox(label="负框坐标")
                             
                             confidence_threshold = gr.Slider(
                                 minimum=0.0, maximum=1.0, value=0.4, step=0.05,
@@ -506,36 +610,85 @@ def create_demo():
                     # 事件绑定
                     
                     # 1. 上传图片时保存原图
-                    def store_original_image(img): return img, None # Reset click state
-                    image_input.upload(fn=store_original_image, inputs=[image_input], outputs=[original_image_state, click_state])
+                    def store_original_image(img):
+                        return img, None, "", "", "", "", "👆 点击图像开始添加提示..."
+                    image_input.upload(
+                        fn=store_original_image,
+                        inputs=[image_input],
+                        outputs=[
+                            original_image_state,
+                            click_state,
+                            pos_point_prompt,
+                            neg_point_prompt,
+                            pos_box_prompt,
+                            neg_box_prompt,
+                            interaction_info,
+                        ],
+                    )
                     
                     # 2. 点击图片处理
                     image_input.select(
                         fn=handle_image_click,
-                        inputs=[image_input, original_image_state, interaction_mode, point_prompt, box_prompt, click_state],
-                        outputs=[image_input, point_prompt, box_prompt, click_state, interaction_info]
+                        inputs=[
+                            image_input,
+                            original_image_state,
+                            interaction_mode,
+                            prompt_polarity,
+                            pos_point_prompt,
+                            neg_point_prompt,
+                            pos_box_prompt,
+                            neg_box_prompt,
+                            click_state,
+                        ],
+                        outputs=[
+                            image_input,
+                            pos_point_prompt,
+                            neg_point_prompt,
+                            pos_box_prompt,
+                            neg_box_prompt,
+                            click_state,
+                            interaction_info,
+                        ],
                     )
                     
                     # 3. 清空提示
                     def clear_prompts(orig_img):
-                        if orig_img is None: return None, "", "", None, "请先上传图像"
-                        return orig_img, "", "", None, "♻️ 提示已清空，图像已重置"
+                        if orig_img is None:
+                            return None, "", "", "", "", None, "请先上传图像"
+                        return orig_img, "", "", "", "", None, "♻️ 提示已清空，图像已重置"
                     clear_prompts_btn.click(
                         fn=clear_prompts,
                         inputs=[original_image_state],
-                        outputs=[image_input, point_prompt, box_prompt, click_state, interaction_info]
+                        outputs=[
+                            image_input,
+                            pos_point_prompt,
+                            neg_point_prompt,
+                            pos_box_prompt,
+                            neg_box_prompt,
+                            click_state,
+                            interaction_info,
+                        ],
                     )
                     
                     # 4. 分割按钮
                     segment_button.click(
                         fn=segment_image,
-                        inputs=[image_input, text_prompt, confidence_threshold, point_prompt, box_prompt, original_image_state],
+                        inputs=[
+                            image_input,
+                            text_prompt,
+                            confidence_threshold,
+                            pos_point_prompt,
+                            neg_point_prompt,
+                            pos_box_prompt,
+                            neg_box_prompt,
+                            original_image_state,
+                        ],
                         outputs=[image_output, image_info]
                     )
                     
                     # 5. 示例按钮
                     example_text_btn.click(fn=lambda: "a cat", outputs=[text_prompt])
-                    example_point_btn.click(fn=lambda: "100,100", outputs=[point_prompt])
+                    example_point_btn.click(fn=lambda: "100,100", outputs=[pos_point_prompt])
 
                 # ================= 视频跟踪标签页 =================
                 with gr.TabItem("🎬 视频目标跟踪", id="tab_video"):
