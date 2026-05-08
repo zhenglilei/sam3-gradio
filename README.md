@@ -87,7 +87,7 @@ pip install gradio opencv-python matplotlib
 1. 创建 `models` 目录。
 2. 将 `sam3.pt` 放入 `models/` 目录。或者使用如下命令建立模型软链接
 
-   \`ln -s /data/zhenglilei/.cache/modelscope/hub/models/facebook/sam3/sam3.pt models/sam3.pt \`
+   \`ln -s /data/zhengqiyuan/.cache/modelscope/hub/models/facebook/sam3/sam3.pt models/sam3.pt \`
 3. 确保 `assets/bpe_simple_vocab_16e6.txt.gz` 存在。
 
 *如果启动时未找到模型，系统会提示尝试自动下载。*

@@ -9,18 +9,47 @@ import sys
 import time
 import io
 import logging
+from pathlib import Path
+import tempfile
+import json
+
+# 所有运行时文件固定在 /data/zhengqiyuan，避免 Gradio 默认写入 /tmp/gradio。
+current_dir = Path(__file__).resolve().parent
+runtime_dir = current_dir / ".runtime"
+runtime_tmp_dir = runtime_dir / "tmp"
+runtime_gradio_dir = runtime_dir / "gradio"
+runtime_video_dir = runtime_dir / "videos"
+runtime_log_dir = runtime_dir / "logs"
+qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
+
+for path in (
+    runtime_tmp_dir,
+    runtime_gradio_dir,
+    runtime_video_dir,
+    runtime_log_dir,
+    current_dir / ".gradio",
+    qiyuan_cache_dir,
+    qiyuan_cache_dir / "huggingface",
+    qiyuan_cache_dir / "huggingface" / "hub",
+    qiyuan_cache_dir / "modelscope",
+):
+    path.mkdir(parents=True, exist_ok=True)
+
+os.environ["TMPDIR"] = str(runtime_tmp_dir)
+os.environ["TEMP"] = str(runtime_tmp_dir)
+os.environ["TMP"] = str(runtime_tmp_dir)
+os.environ["GRADIO_TEMP_DIR"] = str(runtime_gradio_dir)
+os.environ["XDG_CACHE_HOME"] = str(qiyuan_cache_dir)
+os.environ["HF_HOME"] = str(qiyuan_cache_dir / "huggingface")
+os.environ["HUGGINGFACE_HUB_CACHE"] = str(qiyuan_cache_dir / "huggingface" / "hub")
+os.environ["MODELSCOPE_CACHE"] = str(qiyuan_cache_dir / "modelscope")
+sys.path.insert(0, str(current_dir))
+
 import numpy as np
 import torch
 import gradio as gr
 from PIL import Image
 import cv2
-from pathlib import Path
-import tempfile
-import json
-
-# 添加当前目录到Python路径，以便导入sam3模块
-current_dir = Path(__file__).parent
-sys.path.insert(0, str(current_dir))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,7 +99,10 @@ def initialize_models():
 
         # 初始化图像模型
         image_model = build_sam3_image_model(
-            checkpoint_path=str(checkpoint_path), bpe_path=str(bpe_path), device=DEVICE
+            checkpoint_path=str(checkpoint_path),
+            bpe_path=str(bpe_path),
+            device=DEVICE,
+            enable_inst_interactivity=True,
         )
 
         # 创建图像处理器
@@ -93,6 +125,58 @@ def initialize_models():
 image_predictor, video_predictor = initialize_models()
 
 
+def parse_polygon_prompt(polygons_str):
+    """Parse polygon JSON stored by the Gradio UI."""
+    if not polygons_str:
+        return []
+    try:
+        polygons = json.loads(polygons_str)
+    except json.JSONDecodeError:
+        return []
+
+    parsed = []
+    for polygon in polygons:
+        if not isinstance(polygon, list):
+            continue
+        points = []
+        for point in polygon:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                continue
+            try:
+                points.append([int(round(float(point[0]))), int(round(float(point[1])))])
+            except (TypeError, ValueError):
+                continue
+        if len(points) >= 3:
+            parsed.append(points)
+    return parsed
+
+
+def serialize_polygon_prompt(polygons):
+    return json.dumps(polygons, ensure_ascii=False)
+
+
+def append_polygon_prompt(polygons_str, polygon):
+    polygons = parse_polygon_prompt(polygons_str)
+    polygons.append(polygon)
+    return serialize_polygon_prompt(polygons)
+
+
+def polygon_to_mask(polygon, height, width):
+    mask = np.zeros((height, width), dtype=np.uint8)
+    points = np.array(polygon, dtype=np.int32).reshape((-1, 1, 2))
+    cv2.fillPoly(mask, [points], 1)
+    return mask
+
+
+def draw_polygons(vis_img, polygons, color):
+    for polygon in polygons:
+        points = np.array(polygon, dtype=np.int32).reshape((-1, 1, 2))
+        overlay = vis_img.copy()
+        cv2.fillPoly(overlay, [points], color)
+        cv2.addWeighted(overlay, 0.18, vis_img, 0.82, 0, dst=vis_img)
+        cv2.polylines(vis_img, [points], isClosed=True, color=color, thickness=3)
+
+
 def handle_image_click(
     img,
     original_img,
@@ -103,6 +187,8 @@ def handle_image_click(
     neg_points,
     pos_boxes,
     neg_boxes,
+    pos_polygons,
+    neg_polygons,
     click_state,
 ):
     """处理图像点击事件，提供实时视觉反馈"""
@@ -113,6 +199,8 @@ def handle_image_click(
             neg_points,
             pos_boxes,
             neg_boxes,
+            pos_polygons,
+            neg_polygons,
             click_state,
             "请先上传图像",
         )
@@ -150,7 +238,17 @@ def handle_image_click(
         cv2.circle(vis_img, (x, y), 6, (255, 255, 255), 1)
 
         info_msg = f"{prompt_polarity} 已添加点: {new_point}"
-        return vis_img, pos_points, neg_points, pos_boxes, neg_boxes, None, info_msg
+        return (
+            vis_img,
+            pos_points,
+            neg_points,
+            pos_boxes,
+            neg_boxes,
+            pos_polygons,
+            neg_polygons,
+            None,
+            info_msg,
+        )
 
     elif mode == "🔲 框提示 (Box)":
         if click_state is None:
@@ -164,6 +262,8 @@ def handle_image_click(
                 neg_points,
                 pos_boxes,
                 neg_boxes,
+                pos_polygons,
+                neg_polygons,
                 click_state,
                 info_msg,
             )
@@ -205,9 +305,88 @@ def handle_image_click(
                 cv2.rectangle(vis_img, (xmin, ymin), (xmax, ymax), (255, 0, 0), 3)
 
             info_msg = f"{'✅ Positive' if box_is_positive else '❌ Negative'} 已添加框: {new_box}"
-            return vis_img, pos_points, neg_points, pos_boxes, neg_boxes, None, info_msg
+            return (
+                vis_img,
+                pos_points,
+                neg_points,
+                pos_boxes,
+                neg_boxes,
+                pos_polygons,
+                neg_polygons,
+                None,
+                info_msg,
+            )
 
-    return vis_img, pos_points, neg_points, pos_boxes, neg_boxes, click_state, info_msg
+    elif mode == "✏️ 多边形Mask (Polygon)":
+        if not isinstance(click_state, dict) or click_state.get("type") != "polygon":
+            click_state = {"type": "polygon", "points": [], "label": is_positive}
+
+        polygon_is_positive = bool(click_state.get("label", is_positive))
+        points = click_state.setdefault("points", [])
+        points.append([x, y])
+
+        point_color = (0, 255, 0) if polygon_is_positive else (255, 0, 0)
+        for px, py in points:
+            cv2.circle(vis_img, (int(px), int(py)), 5, point_color, -1)
+            cv2.circle(vis_img, (int(px), int(py)), 5, (255, 255, 255), 1)
+        if len(points) >= 2:
+            pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(vis_img, [pts], isClosed=False, color=point_color, thickness=2)
+
+        info_msg = (
+            f"{'✅ Positive' if polygon_is_positive else '❌ Negative'} "
+            f"多边形已添加 {len(points)} 个顶点，点击“完成多边形对象”闭合"
+        )
+        return (
+            vis_img,
+            pos_points,
+            neg_points,
+            pos_boxes,
+            neg_boxes,
+            pos_polygons,
+            neg_polygons,
+            click_state,
+            info_msg,
+        )
+
+    return (
+        vis_img,
+        pos_points,
+        neg_points,
+        pos_boxes,
+        neg_boxes,
+        pos_polygons,
+        neg_polygons,
+        click_state,
+        info_msg,
+    )
+
+
+def finish_polygon(img, pos_polygons, neg_polygons, click_state):
+    """Close the in-progress polygon and store it as an object mask prompt."""
+    if img is None:
+        return img, pos_polygons, neg_polygons, click_state, "请先上传图像"
+    if not isinstance(click_state, dict) or click_state.get("type") != "polygon":
+        return img, pos_polygons, neg_polygons, click_state, "当前没有正在绘制的多边形"
+
+    points = click_state.get("points", [])
+    if len(points) < 3:
+        return img, pos_polygons, neg_polygons, click_state, "多边形至少需要 3 个顶点"
+
+    polygon_is_positive = bool(click_state.get("label", True))
+    if polygon_is_positive:
+        pos_polygons = append_polygon_prompt(pos_polygons, points)
+    else:
+        neg_polygons = append_polygon_prompt(neg_polygons, points)
+
+    vis_img = img.copy()
+    color = (0, 255, 0) if polygon_is_positive else (255, 0, 0)
+    draw_polygons(vis_img, [points], color)
+    info_msg = (
+        f"{'✅ Positive' if polygon_is_positive else '❌ Negative'} "
+        f"已完成多边形对象，共 {len(points)} 个顶点"
+    )
+    return vis_img, pos_polygons, neg_polygons, None, info_msg
 
 
 def segment_image(
@@ -218,6 +397,8 @@ def segment_image(
     neg_point_prompt,
     pos_box_prompt,
     neg_box_prompt,
+    pos_polygon_prompt,
+    neg_polygon_prompt,
     original_image=None,
     progress=gr.Progress(),
 ):
@@ -234,8 +415,10 @@ def segment_image(
         and not neg_point_prompt
         and not pos_box_prompt
         and not neg_box_prompt
+        and not pos_polygon_prompt
+        and not neg_polygon_prompt
     ):
-        return None, "请提供至少一种提示（文本、点或框）"
+        return None, "请提供至少一种提示（文本、点、框或多边形）"
 
     try:
         if image_predictor is None:
@@ -319,6 +502,8 @@ def segment_image(
         neg_points = parse_points(neg_point_prompt)
         pos_boxes = parse_boxes(pos_box_prompt)
         neg_boxes = parse_boxes(neg_box_prompt)
+        pos_polygons = parse_polygon_prompt(pos_polygon_prompt)
+        neg_polygons = parse_polygon_prompt(neg_polygon_prompt)
 
         logger.info(
             json.dumps(
@@ -332,13 +517,22 @@ def segment_image(
                     "neg_points_count": len(neg_points),
                     "pos_boxes_count": len(pos_boxes),
                     "neg_boxes_count": len(neg_boxes),
+                    "pos_polygons_count": len(pos_polygons),
+                    "neg_polygons_count": len(neg_polygons),
                     "pos_points": pos_points,
                     "neg_points": neg_points,
                     "pos_boxes_xyxy": pos_boxes,
                     "neg_boxes_xyxy": neg_boxes,
+                    "pos_polygons": pos_polygons,
+                    "neg_polygons": neg_polygons,
                 },
                 ensure_ascii=False,
             )
+        )
+
+        result_states = []
+        has_classic_prompts = bool(
+            text_prompt or pos_points or neg_points or pos_boxes or neg_boxes
         )
 
         state = apply_points(pos_points, True, state)
@@ -349,6 +543,38 @@ def segment_image(
 
         # 设置置信度阈值
         state = image_predictor.set_confidence_threshold(confidence_threshold, state)
+        if has_classic_prompts and "boxes" in state and len(state["boxes"]) > 0:
+            result_states.append(state)
+
+        if pos_polygons:
+            progress(0.6, desc="处理多边形 mask prompt...")
+            negative_mask = np.zeros((height, width), dtype=np.uint8)
+            for polygon in neg_polygons:
+                negative_mask |= polygon_to_mask(polygon, height, width)
+
+            for polygon in pos_polygons:
+                polygon_mask = polygon_to_mask(polygon, height, width)
+                if negative_mask.any():
+                    polygon_mask[negative_mask > 0] = 0
+                if not polygon_mask.any():
+                    continue
+                polygon_state = image_predictor.predict_mask_prompt(
+                    polygon_mask, state.copy()
+                )
+                if "masks" in polygon_state and len(polygon_state["masks"]) > 0:
+                    if negative_mask.any():
+                        polygon_state["masks"] = polygon_state["masks"].clone()
+                        polygon_state["masks"][:, :, negative_mask > 0] = False
+                        polygon_state["masks_logits"] = polygon_state["masks"].float()
+                    result_states.append(polygon_state)
+
+        if result_states:
+            state["boxes"] = torch.cat([s["boxes"] for s in result_states], dim=0)
+            state["masks"] = torch.cat([s["masks"] for s in result_states], dim=0)
+            state["masks_logits"] = torch.cat(
+                [s["masks_logits"] for s in result_states], dim=0
+            )
+            state["scores"] = torch.cat([s["scores"] for s in result_states], dim=0)
 
         progress(0.7, desc="模型推理中...")
 
@@ -509,7 +735,7 @@ def process_video(
         )
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            fd, output_path = tempfile.mkstemp(suffix=".mp4")
+            fd, output_path = tempfile.mkstemp(suffix=".mp4", dir=runtime_video_dir)
             os.close(fd)
 
             cap = cv2.VideoCapture(input_video)
@@ -639,7 +865,11 @@ def create_demo():
                                 gr.Markdown("### 🎮 交互模式")
                                 # 第一行：模式选择
                                 interaction_mode = gr.Radio(
-                                    choices=["📍 点提示 (Point)", "🔲 框提示 (Box)"],
+                                    choices=[
+                                        "📍 点提示 (Point)",
+                                        "🔲 框提示 (Box)",
+                                        "✏️ 多边形Mask (Polygon)",
+                                    ],
                                     value="📍 点提示 (Point)",
                                     label="选择模式",
                                     show_label=False,
@@ -654,6 +884,11 @@ def create_demo():
                                 )
                                 # 第二行：清空按钮（全宽）
                                 with gr.Row():
+                                    finish_polygon_btn = gr.Button(
+                                        "✅ 完成多边形对象",
+                                        size="sm",
+                                        variant="secondary",
+                                    )
                                     clear_prompts_btn = gr.Button(
                                         "🗑️ 清空提示 (Clear Prompts)",
                                         size="sm",
@@ -686,6 +921,8 @@ def create_demo():
                                     neg_point_prompt = gr.Textbox(label="负点坐标")
                                     pos_box_prompt = gr.Textbox(label="正框坐标")
                                     neg_box_prompt = gr.Textbox(label="负框坐标")
+                                    pos_polygon_prompt = gr.Textbox(label="正多边形坐标")
+                                    neg_polygon_prompt = gr.Textbox(label="负多边形坐标")
 
                             confidence_threshold = gr.Slider(
                                 minimum=0.0,
@@ -710,7 +947,7 @@ def create_demo():
 
                     # 1. 上传图片时保存原图
                     def store_original_image(img):
-                        return img, None, "", "", "", "", "👆 点击图像开始添加提示..."
+                        return img, None, "", "", "", "", "", "", "👆 点击图像开始添加提示..."
 
                     image_input.upload(
                         fn=store_original_image,
@@ -722,6 +959,8 @@ def create_demo():
                             neg_point_prompt,
                             pos_box_prompt,
                             neg_box_prompt,
+                            pos_polygon_prompt,
+                            neg_polygon_prompt,
                             interaction_info,
                         ],
                     )
@@ -738,6 +977,8 @@ def create_demo():
                             neg_point_prompt,
                             pos_box_prompt,
                             neg_box_prompt,
+                            pos_polygon_prompt,
+                            neg_polygon_prompt,
                             click_state,
                         ],
                         outputs=[
@@ -746,17 +987,39 @@ def create_demo():
                             neg_point_prompt,
                             pos_box_prompt,
                             neg_box_prompt,
+                            pos_polygon_prompt,
+                            neg_polygon_prompt,
                             click_state,
                             interaction_info,
                         ],
                     )
 
-                    # 3. 清空提示
+                    # 3. 完成多边形对象
+                    finish_polygon_btn.click(
+                        fn=finish_polygon,
+                        inputs=[
+                            image_input,
+                            pos_polygon_prompt,
+                            neg_polygon_prompt,
+                            click_state,
+                        ],
+                        outputs=[
+                            image_input,
+                            pos_polygon_prompt,
+                            neg_polygon_prompt,
+                            click_state,
+                            interaction_info,
+                        ],
+                    )
+
+                    # 4. 清空提示
                     def clear_prompts(orig_img):
                         if orig_img is None:
-                            return None, "", "", "", "", None, "请先上传图像"
+                            return None, "", "", "", "", "", "", None, "请先上传图像"
                         return (
                             orig_img,
+                            "",
+                            "",
                             "",
                             "",
                             "",
@@ -774,12 +1037,14 @@ def create_demo():
                             neg_point_prompt,
                             pos_box_prompt,
                             neg_box_prompt,
+                            pos_polygon_prompt,
+                            neg_polygon_prompt,
                             click_state,
                             interaction_info,
                         ],
                     )
 
-                    # 4. 分割按钮
+                    # 5. 分割按钮
                     segment_button.click(
                         fn=segment_image,
                         inputs=[
@@ -790,12 +1055,14 @@ def create_demo():
                             neg_point_prompt,
                             pos_box_prompt,
                             neg_box_prompt,
+                            pos_polygon_prompt,
+                            neg_polygon_prompt,
                             original_image_state,
                         ],
                         outputs=[image_output, image_info],
                     )
 
-                    # 5. 示例按钮
+                    # 6. 示例按钮
                     example_text_btn.click(fn=lambda: "a cat", outputs=[text_prompt])
                     example_point_btn.click(
                         fn=lambda: "100,100", outputs=[pos_point_prompt]
