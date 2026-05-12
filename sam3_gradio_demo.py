@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 import tempfile
 import json
+import uuid
+import zipfile
 
 # 所有运行时文件固定在 /data/zhengqiyuan，避免 Gradio 默认写入 /tmp/gradio。
 current_dir = Path(__file__).resolve().parent
@@ -19,13 +21,19 @@ runtime_dir = current_dir / ".runtime"
 runtime_tmp_dir = runtime_dir / "tmp"
 runtime_gradio_dir = runtime_dir / "gradio"
 runtime_video_dir = runtime_dir / "videos"
+runtime_export_dir = runtime_dir / "exports"
 runtime_log_dir = runtime_dir / "logs"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
+ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
+coco_eval_scope_overlap = "只评估与预测相交的GT"
+coco_eval_scope_full = "评估整图全部GT"
+ge1_category_display_order = ["Block", "MainLine1", "MainLine2", "MainLine3"]
 
 for path in (
     runtime_tmp_dir,
     runtime_gradio_dir,
     runtime_video_dir,
+    runtime_export_dir,
     runtime_log_dir,
     current_dir / ".gradio",
     qiyuan_cache_dir,
@@ -175,6 +183,658 @@ def draw_polygons(vis_img, polygons, color):
         cv2.fillPoly(overlay, [points], color)
         cv2.addWeighted(overlay, 0.18, vis_img, 0.82, 0, dst=vis_img)
         cv2.polylines(vis_img, [points], isClosed=True, color=color, thickness=3)
+
+
+def safe_stem(name):
+    stem = Path(name or "sam3_export").stem
+    return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in stem)
+
+
+def mask_to_polygons(mask):
+    mask_u8 = (mask.astype(np.uint8) * 255)
+    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polygons = []
+    for contour in contours:
+        contour = contour.reshape(-1, 2)
+        if len(contour) >= 3:
+            polygons.append(contour.astype(float).reshape(-1).tolist())
+    return polygons
+
+
+def annotation_to_mask(annotation, source_width, source_height, target_width, target_height):
+    mask = np.zeros((target_height, target_width), dtype=np.uint8)
+    scale_x = target_width / source_width
+    scale_y = target_height / source_height
+    segmentation = annotation.get("segmentation")
+
+    if isinstance(segmentation, list):
+        for polygon in segmentation:
+            if len(polygon) < 6:
+                continue
+            points = np.array(polygon, dtype=np.float32).reshape(-1, 2)
+            points[:, 0] *= scale_x
+            points[:, 1] *= scale_y
+            cv2.fillPoly(mask, [np.round(points).astype(np.int32)], 1)
+    elif isinstance(segmentation, dict) and "counts" in segmentation:
+        try:
+            from pycocotools import mask as mask_utils
+
+            decoded = mask_utils.decode(segmentation).astype(np.uint8)
+            if decoded.shape[:2] != (target_height, target_width):
+                decoded = cv2.resize(
+                    decoded,
+                    (target_width, target_height),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+            mask |= decoded
+        except Exception:
+            pass
+    return mask.astype(bool)
+
+
+def mask_bbox_xywh(mask):
+    ys, xs = np.where(mask)
+    if len(xs) == 0 or len(ys) == 0:
+        return [0.0, 0.0, 0.0, 0.0]
+    x1, x2 = xs.min(), xs.max()
+    y1, y2 = ys.min(), ys.max()
+    return [float(x1), float(y1), float(x2 - x1 + 1), float(y2 - y1 + 1)]
+
+
+def mask_boundary(mask):
+    mask_u8 = mask.astype(np.uint8)
+    if not mask_u8.any():
+        return np.zeros_like(mask_u8, dtype=bool)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    eroded = cv2.erode(mask_u8, kernel, iterations=1)
+    return (mask_u8 ^ eroded).astype(bool)
+
+
+def boundary_band(mask, radius):
+    boundary = mask_boundary(mask).astype(np.uint8)
+    if not boundary.any():
+        return boundary.astype(bool)
+    kernel_size = max(1, int(radius) * 2 + 1)
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    return cv2.dilate(boundary, kernel, iterations=1).astype(bool)
+
+
+def boundary_iou(pred_mask, gt_mask, dilation_ratio=0.02):
+    diag = (pred_mask.shape[0] ** 2 + pred_mask.shape[1] ** 2) ** 0.5
+    radius = max(1, int(round(dilation_ratio * diag)))
+    pred_boundary = boundary_band(pred_mask, radius)
+    gt_boundary = boundary_band(gt_mask, radius)
+    union = np.logical_or(pred_boundary, gt_boundary).sum()
+    if union == 0:
+        return 1.0 if pred_mask.sum() == gt_mask.sum() == 0 else 0.0
+    return float(np.logical_and(pred_boundary, gt_boundary).sum() / union)
+
+
+def boundary_distances_px(source_boundary, target_boundary):
+    if not source_boundary.any() or not target_boundary.any():
+        return np.array([], dtype=np.float32)
+    target_inverse = (~target_boundary).astype(np.uint8)
+    distance_map = cv2.distanceTransform(target_inverse, cv2.DIST_L2, 5)
+    return distance_map[source_boundary].astype(np.float32)
+
+
+def hd95_and_chamfer(pred_mask, gt_mask):
+    pred_boundary = mask_boundary(pred_mask)
+    gt_boundary = mask_boundary(gt_mask)
+    pred_to_gt = boundary_distances_px(pred_boundary, gt_boundary)
+    gt_to_pred = boundary_distances_px(gt_boundary, pred_boundary)
+    if len(pred_to_gt) == 0 or len(gt_to_pred) == 0:
+        return None, None
+    all_distances = np.concatenate([pred_to_gt, gt_to_pred])
+    hd95 = float(np.percentile(all_distances, 95))
+    chamfer = float((pred_to_gt.mean() + gt_to_pred.mean()) / 2.0)
+    return hd95, chamfer
+
+
+def ap_from_scores(scores, matches, num_gt):
+    if num_gt == 0:
+        return 0.0
+    order = np.argsort(-np.asarray(scores, dtype=np.float32))
+    tp = np.asarray(matches, dtype=np.float32)[order]
+    fp = 1.0 - tp
+    tp_cum = np.cumsum(tp)
+    fp_cum = np.cumsum(fp)
+    recalls = tp_cum / max(num_gt, 1)
+    precisions = tp_cum / np.maximum(tp_cum + fp_cum, 1e-12)
+    recalls = np.concatenate(([0.0], recalls, [1.0]))
+    precisions = np.concatenate(([0.0], precisions, [0.0]))
+    for idx in range(len(precisions) - 2, -1, -1):
+        precisions[idx] = max(precisions[idx], precisions[idx + 1])
+    recall_changes = np.where(recalls[1:] != recalls[:-1])[0]
+    return float(np.sum((recalls[recall_changes + 1] - recalls[recall_changes]) * precisions[recall_changes + 1]))
+
+
+def boundary_ap(pred_masks, gt_masks, scores, thresholds):
+    if not pred_masks or not gt_masks:
+        return {threshold: 0.0 for threshold in thresholds}
+    pair_scores = np.zeros((len(pred_masks), len(gt_masks)), dtype=np.float32)
+    for pred_idx, pred_mask in enumerate(pred_masks):
+        for gt_idx, gt_mask in enumerate(gt_masks):
+            pair_scores[pred_idx, gt_idx] = boundary_iou(pred_mask, gt_mask)
+
+    ap_values = {}
+    order = np.argsort(-np.asarray(scores, dtype=np.float32))
+    for threshold in thresholds:
+        used_gts = set()
+        matches = np.zeros((len(pred_masks),), dtype=bool)
+        for pred_idx in order:
+            gt_idx = int(np.argmax(pair_scores[pred_idx]))
+            best_score = float(pair_scores[pred_idx, gt_idx])
+            if best_score >= threshold and gt_idx not in used_gts:
+                matches[pred_idx] = True
+                used_gts.add(gt_idx)
+        ap_values[threshold] = ap_from_scores(scores, matches, len(gt_masks))
+    return ap_values
+
+
+def encode_binary_mask(mask):
+    from pycocotools import mask as mask_utils
+
+    rle = mask_utils.encode(np.asfortranarray(mask.astype(np.uint8)))
+    rle["counts"] = rle["counts"].decode("ascii")
+    return rle
+
+
+def compute_coco_segm_metrics(pred_masks, gt_masks, scores, width, height):
+    if not pred_masks or not gt_masks:
+        return {
+            "status": "empty",
+            "metric": "segm",
+            "ap_50_95_all": 0.0,
+            "ap_50_all": 0.0,
+            "ap_75_all": 0.0,
+            "ar_50_95_all_max_dets_100": 0.0,
+        }
+    try:
+        import contextlib
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+
+        image_id = 1
+        gt_payload = {
+            "images": [{"id": image_id, "width": width, "height": height}],
+            "categories": [{"id": 1, "name": "object"}],
+            "annotations": [],
+            "info": {},
+            "licenses": [],
+        }
+        for idx, gt_mask in enumerate(gt_masks, start=1):
+            gt_payload["annotations"].append(
+                {
+                    "id": idx,
+                    "image_id": image_id,
+                    "category_id": 1,
+                    "segmentation": encode_binary_mask(gt_mask),
+                    "bbox": mask_bbox_xywh(gt_mask),
+                    "area": int(gt_mask.sum()),
+                    "iscrowd": 0,
+                }
+            )
+
+        detections = []
+        for pred_mask, score in zip(pred_masks, scores):
+            detections.append(
+                {
+                    "image_id": image_id,
+                    "category_id": 1,
+                    "segmentation": encode_binary_mask(pred_mask),
+                    "bbox": mask_bbox_xywh(pred_mask),
+                    "score": float(score),
+                }
+            )
+
+        coco_gt = COCO()
+        coco_gt.dataset = gt_payload
+        coco_gt.createIndex()
+        coco_dt = coco_gt.loadRes(detections)
+        coco_eval = COCOeval(coco_gt, coco_dt, "segm")
+        coco_eval.params.imgIds = [image_id]
+        coco_eval.params.catIds = [1]
+        coco_eval.params.maxDets = [1, 10, 100]
+        with contextlib.redirect_stdout(io.StringIO()):
+            coco_eval.evaluate()
+            coco_eval.accumulate()
+            coco_eval.summarize()
+
+        def clean_stat(value):
+            value = float(value)
+            return 0.0 if value < 0 else value
+
+        return {
+            "status": "ok",
+            "metric": "segm",
+            "ap_50_95_all": clean_stat(coco_eval.stats[0]),
+            "ap_50_all": clean_stat(coco_eval.stats[1]),
+            "ap_75_all": clean_stat(coco_eval.stats[2]),
+            "ar_50_95_all_max_dets_100": clean_stat(coco_eval.stats[8]),
+        }
+    except Exception as exc:
+        return {"status": "error", "metric": "segm", "reason": str(exc)}
+
+
+def load_coco_image_record(image_name, split):
+    if not image_name:
+        return None, None, None
+
+    candidate_splits = ["val", "train", "test"] if split == "auto" else [split]
+    for split_name in candidate_splits:
+        ann_path = ge1_coco_dir / "annotations" / f"instances_{split_name}.json"
+        if not ann_path.exists():
+            continue
+        with ann_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        image_record = next(
+            (img for img in data.get("images", []) if img.get("file_name") == image_name),
+            None,
+        )
+        if image_record is not None:
+            return data, image_record, str(ann_path)
+    return None, None, None
+
+
+def infer_prompt_category_ids(text_prompt, categories):
+    text = (text_prompt or "").lower()
+    if not text:
+        return []
+    matched = []
+    for category in categories:
+        name = category.get("name", "")
+        variants = {
+            name.lower(),
+            name.lower().replace("ge1-", ""),
+            name.lower().replace("-", " "),
+            name.lower().replace("ge1-", "").replace("-", " "),
+        }
+        if any(variant and variant in text for variant in variants):
+            matched.append(category["id"])
+    return matched
+
+
+def coco_category_display_name(category_name):
+    return category_name.replace("GE1-", "")
+
+
+def rasterize_coco_annotations(annotations, image_record, width, height):
+    return [
+        annotation_to_mask(
+            ann,
+            image_record["width"],
+            image_record["height"],
+            width,
+            height,
+        )
+        for ann in annotations
+    ]
+
+
+def filter_gt_pairs_by_eval_scope(pred_masks, annotations, gt_masks, eval_scope):
+    gt_pairs = [
+        (ann, np.asarray(mask).astype(bool))
+        for ann, mask in zip(annotations, gt_masks)
+        if np.asarray(mask).any()
+    ]
+    if eval_scope == coco_eval_scope_overlap:
+        gt_pairs = [
+            (ann, mask)
+            for ann, mask in gt_pairs
+            if any(np.logical_and(pred_mask, mask).any() for pred_mask in pred_masks)
+        ]
+    return [ann for ann, _ in gt_pairs], [mask for _, mask in gt_pairs]
+
+
+def select_predictions_for_gt_masks(pred_masks, pred_scores, gt_masks):
+    if not gt_masks:
+        return [], [], []
+    selected_indices = [
+        idx
+        for idx, pred_mask in enumerate(pred_masks)
+        if any(np.logical_and(pred_mask, gt_mask).any() for gt_mask in gt_masks)
+    ]
+    return (
+        selected_indices,
+        [pred_masks[idx] for idx in selected_indices],
+        [pred_scores[idx] for idx in selected_indices],
+    )
+
+
+def evaluate_prediction_gt_metrics(pred_masks, pred_scores, annotations, gt_masks, width, height):
+    iou_matrix = np.zeros((len(pred_masks), len(gt_masks)), dtype=np.float32)
+    for pred_idx, pred_mask in enumerate(pred_masks):
+        for gt_idx, gt_mask in enumerate(gt_masks):
+            intersection = np.logical_and(pred_mask, gt_mask).sum()
+            union = np.logical_or(pred_mask, gt_mask).sum()
+            iou_matrix[pred_idx, gt_idx] = float(intersection / union) if union else 0.0
+
+    original_iou_matrix = iou_matrix.copy()
+    matched_pairs = []
+    used_preds = set()
+    used_gts = set()
+    while iou_matrix.size:
+        pred_idx, gt_idx = np.unravel_index(np.argmax(iou_matrix), iou_matrix.shape)
+        best_iou = float(iou_matrix[pred_idx, gt_idx])
+        if best_iou <= 0:
+            break
+        if pred_idx in used_preds or gt_idx in used_gts:
+            iou_matrix[pred_idx, gt_idx] = -1
+            continue
+        used_preds.add(pred_idx)
+        used_gts.add(gt_idx)
+        matched_pairs.append(
+            {
+                "prediction_index": int(pred_idx),
+                "ground_truth_index": int(gt_idx),
+                "annotation_id": int(annotations[gt_idx]["id"]),
+                "category_id": int(annotations[gt_idx]["category_id"]),
+                "iou": best_iou,
+            }
+        )
+        iou_matrix[pred_idx, :] = -1
+        iou_matrix[:, gt_idx] = -1
+
+    boundary_iou_values = []
+    hd95_values = []
+    chamfer_values = []
+    for pair in matched_pairs:
+        pred_mask = pred_masks[pair["prediction_index"]]
+        gt_mask = gt_masks[pair["ground_truth_index"]]
+        b_iou = boundary_iou(pred_mask, gt_mask)
+        hd95, chamfer = hd95_and_chamfer(pred_mask, gt_mask)
+        boundary_iou_values.append(b_iou)
+        pair["boundary_iou"] = b_iou
+        if hd95 is not None:
+            hd95_values.append(hd95)
+            pair["hd95_px"] = hd95
+        if chamfer is not None:
+            chamfer_values.append(chamfer)
+            pair["chamfer_px"] = chamfer
+
+    boundary_thresholds = [round(0.50 + 0.05 * idx, 2) for idx in range(10)]
+    boundary_ap_values = boundary_ap(
+        pred_masks,
+        gt_masks,
+        pred_scores,
+        boundary_thresholds,
+    )
+    boundary_ap_50_95 = float(np.mean(list(boundary_ap_values.values()))) if boundary_ap_values else 0.0
+    coco_segm = compute_coco_segm_metrics(pred_masks, gt_masks, pred_scores, width, height)
+
+    matched_at_50 = [pair for pair in matched_pairs if pair["iou"] >= 0.5]
+    precision_at_50 = len(matched_at_50) / len(pred_masks) if pred_masks else 0.0
+    recall_at_50 = len(matched_at_50) / len(gt_masks) if gt_masks else 0.0
+    f1_at_50 = (
+        2 * precision_at_50 * recall_at_50 / (precision_at_50 + recall_at_50)
+        if precision_at_50 + recall_at_50
+        else 0.0
+    )
+    match_recall = len(matched_pairs) / len(gt_masks) if gt_masks else 0.0
+    mean_boundary_iou = float(np.mean(boundary_iou_values)) if boundary_iou_values else 0.0
+    mean_hd95_px = float(np.mean(hd95_values)) if hd95_values else 0.0
+    mean_chamfer_px = float(np.mean(chamfer_values)) if chamfer_values else 0.0
+
+    return {
+        "num_predictions": len(pred_masks),
+        "num_ground_truth": len(gt_masks),
+        "gt_instances": len(gt_masks),
+        "matched_instances": len(matched_pairs),
+        "match_recall": match_recall,
+        "mean_best_prediction_iou": float(
+            np.max(original_iou_matrix, axis=1).mean()
+        )
+        if len(pred_masks) and len(gt_masks)
+        else 0.0,
+        "mean_boundary_iou": mean_boundary_iou,
+        "boundary_ap50": float(boundary_ap_values.get(0.50, 0.0)),
+        "boundary_ap75": float(boundary_ap_values.get(0.75, 0.0)),
+        "boundary_ap50_95": boundary_ap_50_95,
+        "mean_hd95_px": mean_hd95_px,
+        "mean_chamfer_px": mean_chamfer_px,
+        "boundary_ap_by_threshold": {
+            f"{threshold:.2f}": float(ap_value)
+            for threshold, ap_value in boundary_ap_values.items()
+        },
+        "coco_segm": coco_segm,
+        "matched_pairs": matched_pairs,
+        "precision_at_iou_0_50": precision_at_50,
+        "recall_at_iou_0_50": recall_at_50,
+        "f1_at_iou_0_50": f1_at_50,
+    }
+
+
+def compare_with_coco(
+    pred_masks,
+    pred_scores,
+    image_name,
+    split,
+    text_prompt,
+    width,
+    height,
+    eval_scope,
+):
+    if not image_name:
+        return {
+            "status": "skipped",
+            "reason": "未填写 COCO image file_name，导出包仅保存预测结果",
+        }
+
+    data, image_record, ann_path = load_coco_image_record(image_name, split)
+    if image_record is None:
+        return {
+            "status": "not_found",
+            "reason": f"未在 GE1_coco annotations 中找到 {image_name}",
+            "requested_split": split,
+        }
+
+    pred_masks = [np.asarray(mask).astype(bool) for mask in pred_masks]
+    if len(pred_scores) != len(pred_masks):
+        pred_scores = [1.0] * len(pred_masks)
+    else:
+        pred_scores = [float(score) for score in pred_scores]
+
+    categories = data.get("categories", [])
+    category_ids = infer_prompt_category_ids(text_prompt, categories)
+    all_annotations = [
+        ann for ann in data.get("annotations", []) if ann.get("image_id") == image_record["id"]
+    ]
+    annotations = [
+        ann
+        for ann in all_annotations
+        if not category_ids or ann.get("category_id") in category_ids
+    ]
+    gt_masks = rasterize_coco_annotations(annotations, image_record, width, height)
+    annotations, gt_masks = filter_gt_pairs_by_eval_scope(
+        pred_masks,
+        annotations,
+        gt_masks,
+        eval_scope,
+    )
+
+    result = {
+        "status": "ok",
+        "annotation_file": ann_path,
+        "image_id": image_record["id"],
+        "image_file_name": image_record["file_name"],
+        "category_filter_ids": category_ids,
+        "eval_scope": eval_scope,
+        **evaluate_prediction_gt_metrics(
+            pred_masks,
+            pred_scores,
+            annotations,
+            gt_masks,
+            width,
+            height,
+        ),
+    }
+
+    ordered_categories = sorted(
+        categories,
+        key=lambda category: (
+            ge1_category_display_order.index(
+                coco_category_display_name(category.get("name", ""))
+            )
+            if coco_category_display_name(category.get("name", ""))
+            in ge1_category_display_order
+            else len(ge1_category_display_order)
+        ),
+    )
+    per_category = {}
+    for category in ordered_categories:
+        display_name = coco_category_display_name(category.get("name", ""))
+        category_annotations = [
+            ann for ann in all_annotations if ann.get("category_id") == category.get("id")
+        ]
+        category_gt_masks = rasterize_coco_annotations(
+            category_annotations,
+            image_record,
+            width,
+            height,
+        )
+        category_annotations, category_gt_masks = filter_gt_pairs_by_eval_scope(
+            pred_masks,
+            category_annotations,
+            category_gt_masks,
+            eval_scope,
+        )
+        pred_indices, category_pred_masks, category_pred_scores = select_predictions_for_gt_masks(
+            pred_masks,
+            pred_scores,
+            category_gt_masks,
+        )
+        category_metrics = evaluate_prediction_gt_metrics(
+            category_pred_masks,
+            category_pred_scores,
+            category_annotations,
+            category_gt_masks,
+            width,
+            height,
+        )
+        for pair in category_metrics["matched_pairs"]:
+            pair["original_prediction_index"] = int(pred_indices[pair["prediction_index"]])
+
+        category_result = {
+            "category_id": int(category.get("id")),
+            "category_name": category.get("name", ""),
+            "display_name": display_name,
+            "prediction_indices": [int(idx) for idx in pred_indices],
+            **category_metrics,
+        }
+        category_result["summary_line"] = (
+            f"{display_name}: GT {category_result['gt_instances']}, "
+            f"Match {category_result['matched_instances']}, "
+            f"BIoU {category_result['mean_boundary_iou']:.3f}, "
+            f"BAP50 {category_result['boundary_ap50']:.3f}, "
+            f"segm AP50 {category_result['coco_segm'].get('ap_50_all', 0.0):.3f}"
+        )
+        per_category[display_name] = category_result
+
+    result["per_category"] = per_category
+
+    result["summary_lines"] = [
+        f"- GT instances: {result['gt_instances']}",
+        f"- Matched instances: {result['matched_instances']}",
+        f"- Match recall: {result['match_recall']:.6f}",
+        f"- Mean Boundary IoU: {result['mean_boundary_iou']:.6f}",
+        f"- Boundary AP50: {result['boundary_ap50']:.6f}",
+        f"- Boundary AP75: {result['boundary_ap75']:.6f}",
+        f"- Boundary AP50-95: {result['boundary_ap50_95']:.6f}",
+        f"- Mean HD95 px: {result['mean_hd95_px']:.6f}",
+        f"- Mean Chamfer px: {result['mean_chamfer_px']:.6f}",
+        f"IoU metric: {result['coco_segm'].get('metric', 'segm')}",
+        f" AP 0.50:0.95 all = {result['coco_segm'].get('ap_50_95_all', 0.0):.3f}",
+        f" AP 0.50 all      = {result['coco_segm'].get('ap_50_all', 0.0):.3f}",
+        f" AP 0.75 all      = {result['coco_segm'].get('ap_75_all', 0.0):.3f}",
+        (
+            " AR 0.50:0.95 all maxDets=100 = "
+            f"{result['coco_segm'].get('ar_50_95_all_max_dets_100', 0.0):.3f}"
+        ),
+        "Per-label metrics:",
+    ]
+    for label in ge1_category_display_order:
+        if label in per_category:
+            result["summary_lines"].append(f" {per_category[label]['summary_line']}")
+    return result
+
+
+def create_segmentation_export(
+    result_image,
+    source_image,
+    state,
+    prompts,
+    coco_image_name,
+    coco_split,
+    coco_eval_scope,
+):
+    width, height = source_image.size
+    masks = state["masks"].detach().cpu().numpy().astype(bool)
+    if masks.ndim == 4:
+        masks = masks[:, 0]
+    boxes = state["boxes"].detach().cpu().numpy()
+    scores = state["scores"].detach().cpu().numpy()
+
+    export_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    export_dir = runtime_export_dir / export_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    mask_dir = export_dir / "masks"
+    mask_dir.mkdir(exist_ok=True)
+
+    result_path = export_dir / "segmentation_overlay.png"
+    result_image.save(result_path)
+    np.savez_compressed(export_dir / "masks.npz", masks=masks.astype(np.uint8))
+
+    predictions = []
+    for idx, mask in enumerate(masks):
+        mask_path = mask_dir / f"mask_{idx:03d}.png"
+        cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255)
+        x1, y1, x2, y2 = boxes[idx].tolist()
+        predictions.append(
+            {
+                "id": idx,
+                "score": float(scores[idx]),
+                "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
+                "bbox_xywh": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
+                "area": int(mask.sum()),
+                "mask_file": str(mask_path.relative_to(export_dir)),
+                "segmentation": mask_to_polygons(mask),
+            }
+        )
+
+    metrics = compare_with_coco(
+        list(masks),
+        scores.tolist(),
+        coco_image_name.strip() if coco_image_name else "",
+        coco_split,
+        prompts.get("text_prompt", ""),
+        width,
+        height,
+        coco_eval_scope,
+    )
+    payload = {
+        "export_id": export_id,
+        "image": {
+            "width": width,
+            "height": height,
+            "coco_file_name": coco_image_name.strip() if coco_image_name else "",
+            "coco_eval_scope": coco_eval_scope,
+        },
+        "prompts": prompts,
+        "predictions": predictions,
+        "coco_comparison": metrics,
+    }
+
+    with (export_dir / "prediction.json").open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    with (export_dir / "metrics.json").open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+
+    zip_path = runtime_export_dir / f"{safe_stem(coco_image_name)}_{export_id}.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in export_dir.rglob("*"):
+            zf.write(file_path, arcname=file_path.relative_to(export_dir))
+    return str(zip_path), metrics
 
 
 def handle_image_click(
@@ -400,6 +1060,9 @@ def segment_image(
     pos_polygon_prompt,
     neg_polygon_prompt,
     original_image=None,
+    coco_image_name="",
+    coco_split="auto",
+    coco_eval_scope=coco_eval_scope_overlap,
     progress=gr.Progress(),
 ):
     """图像分割功能"""
@@ -407,7 +1070,7 @@ def segment_image(
     image_to_process = original_image if original_image is not None else input_image
 
     if image_to_process is None:
-        return None, "请上传图像"
+        return None, "请上传图像", None
 
     if (
         not text_prompt
@@ -418,11 +1081,11 @@ def segment_image(
         and not pos_polygon_prompt
         and not neg_polygon_prompt
     ):
-        return None, "请提供至少一种提示（文本、点、框或多边形）"
+        return None, "请提供至少一种提示（文本、点、框或多边形）", None
 
     try:
         if image_predictor is None:
-            return None, "模型未初始化，请检查模型文件"
+            return None, "模型未初始化，请检查模型文件", None
 
         start_time = time.time()
         progress(0.1, desc="正在加载图像...")
@@ -505,30 +1168,30 @@ def segment_image(
         pos_polygons = parse_polygon_prompt(pos_polygon_prompt)
         neg_polygons = parse_polygon_prompt(neg_polygon_prompt)
 
-        logger.info(
-            json.dumps(
-                {
-                    "type": "image_segmentation",
-                    "device": DEVICE,
-                    "image_size": [width, height],
-                    "confidence_threshold": confidence_threshold,
-                    "text_prompt": text_prompt or "",
-                    "pos_points_count": len(pos_points),
-                    "neg_points_count": len(neg_points),
-                    "pos_boxes_count": len(pos_boxes),
-                    "neg_boxes_count": len(neg_boxes),
-                    "pos_polygons_count": len(pos_polygons),
-                    "neg_polygons_count": len(neg_polygons),
-                    "pos_points": pos_points,
-                    "neg_points": neg_points,
-                    "pos_boxes_xyxy": pos_boxes,
-                    "neg_boxes_xyxy": neg_boxes,
-                    "pos_polygons": pos_polygons,
-                    "neg_polygons": neg_polygons,
-                },
-                ensure_ascii=False,
-            )
-        )
+        prompt_payload = {
+            "type": "image_segmentation",
+            "device": DEVICE,
+            "image_size": [width, height],
+            "confidence_threshold": confidence_threshold,
+            "text_prompt": text_prompt or "",
+            "pos_points_count": len(pos_points),
+            "neg_points_count": len(neg_points),
+            "pos_boxes_count": len(pos_boxes),
+            "neg_boxes_count": len(neg_boxes),
+            "pos_polygons_count": len(pos_polygons),
+            "neg_polygons_count": len(neg_polygons),
+            "pos_points": pos_points,
+            "neg_points": neg_points,
+            "pos_boxes_xyxy": pos_boxes,
+            "neg_boxes_xyxy": neg_boxes,
+            "pos_polygons": pos_polygons,
+            "neg_polygons": neg_polygons,
+            "coco_image_name": coco_image_name or "",
+            "coco_split": coco_split,
+            "coco_eval_scope": coco_eval_scope,
+        }
+
+        logger.info(json.dumps(prompt_payload, ensure_ascii=False))
 
         result_states = []
         has_classic_prompts = bool(
@@ -596,14 +1259,32 @@ def segment_image(
             plt.close()  # 关闭 figure 释放内存
 
             processing_time = time.time() - start_time
-            info = f"✨ 处理完成 | 耗时: {processing_time:.2f}s | 检测到 {len(state['boxes'])} 个目标"
+            export_path, metrics = create_segmentation_export(
+                result_image,
+                image,
+                state,
+                prompt_payload,
+                coco_image_name or "",
+                coco_split,
+                coco_eval_scope,
+            )
+            metric_info = ""
+            if metrics.get("status") == "ok":
+                metric_info = "\n" + "\n".join(metrics.get("summary_lines", []))
+            elif metrics.get("status") in {"skipped", "not_found"}:
+                metric_info = f" | COCO对比: {metrics.get('reason', metrics['status'])}"
 
-            return result_image, info
+            info = (
+                f"✨ 处理完成 | 耗时: {processing_time:.2f}s | "
+                f"检测到 {len(state['boxes'])} 个目标{metric_info}"
+            )
+
+            return result_image, info, export_path
         else:
-            return image, "⚠️ 未检测到任何对象，请尝试调整提示或降低置信度阈值"
+            return image, "⚠️ 未检测到任何对象，请尝试调整提示或降低置信度阈值", None
 
     except Exception as e:
-        return None, f"❌ 处理失败: {str(e)}"
+        return None, f"❌ 处理失败: {str(e)}", None
 
 
 def convert_output_format(outputs):
@@ -932,6 +1613,23 @@ def create_demo():
                                 label="🎯 置信度阈值 (Confidence)",
                             )
 
+                            with gr.Accordion("📦 导出与 GE1 COCO 量化", open=False):
+                                coco_image_name = gr.Textbox(
+                                    label="GE1 COCO image file_name（可选）",
+                                    placeholder="例如：12852_...jpg；留空则只导出预测结果",
+                                    lines=1,
+                                )
+                                coco_split = gr.Radio(
+                                    choices=["auto", "val", "train", "test"],
+                                    value="auto",
+                                    label="标注 split",
+                                )
+                                coco_eval_scope = gr.Radio(
+                                    choices=[coco_eval_scope_overlap, coco_eval_scope_full],
+                                    value=coco_eval_scope_overlap,
+                                    label="评估范围",
+                                )
+
                             segment_button = gr.Button(
                                 "🚀 开始分割 (Segment)", variant="primary", size="lg"
                             )
@@ -940,14 +1638,18 @@ def create_demo():
                         with gr.Column(scale=1):
                             image_output = gr.Image(type="numpy", label="✨ 分割结果")
                             image_info = gr.Textbox(
-                                label="📊 分析报告", interactive=False, lines=2
+                                label="📊 分析报告", interactive=False, lines=18
+                            )
+                            export_file = gr.File(
+                                label="📦 下载结果包（PNG + masks + JSON）",
+                                interactive=False,
                             )
 
                     # 事件绑定
 
                     # 1. 上传图片时保存原图
                     def store_original_image(img):
-                        return img, None, "", "", "", "", "", "", "👆 点击图像开始添加提示..."
+                        return img, None, "", "", "", "", "", "", "👆 点击图像开始添加提示...", None
 
                     image_input.upload(
                         fn=store_original_image,
@@ -962,6 +1664,7 @@ def create_demo():
                             pos_polygon_prompt,
                             neg_polygon_prompt,
                             interaction_info,
+                            export_file,
                         ],
                     )
 
@@ -1058,8 +1761,11 @@ def create_demo():
                             pos_polygon_prompt,
                             neg_polygon_prompt,
                             original_image_state,
+                            coco_image_name,
+                            coco_split,
+                            coco_eval_scope,
                         ],
-                        outputs=[image_output, image_info],
+                        outputs=[image_output, image_info, export_file],
                     )
 
                     # 6. 示例按钮
