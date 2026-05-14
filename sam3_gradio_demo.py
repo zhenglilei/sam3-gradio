@@ -25,9 +25,23 @@ runtime_export_dir = runtime_dir / "exports"
 runtime_log_dir = runtime_dir / "logs"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
 ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
+o3_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/O3_coco")
 coco_eval_scope_overlap = "只评估与预测相交的GT"
 coco_eval_scope_full = "评估整图全部GT"
 ge1_category_display_order = ["Block", "MainLine1", "MainLine2", "MainLine3"]
+default_coco_dataset = "GE1_coco"
+coco_dataset_configs = {
+    "GE1_coco": {
+        "path": ge1_coco_dir,
+        "category_display_order": ge1_category_display_order,
+        "strip_prefixes": ["GE1-"],
+    },
+    "O3_coco/GE1_coco": {"path": o3_coco_dir / "GE1_coco"},
+    "O3_coco/GE2_coco": {"path": o3_coco_dir / "GE2_coco"},
+    "O3_coco/ACT_coco": {"path": o3_coco_dir / "ACT_coco"},
+    "O3_coco/BSM_coco": {"path": o3_coco_dir / "BSM_coco"},
+}
+coco_dataset_choices = list(coco_dataset_configs.keys())
 
 for path in (
     runtime_tmp_dir,
@@ -417,13 +431,24 @@ def compute_coco_segm_metrics(pred_masks, gt_masks, scores, width, height):
         return {"status": "error", "metric": "segm", "reason": str(exc)}
 
 
-def load_coco_image_record(image_name, split):
+def get_coco_dataset_name(dataset_name):
+    return dataset_name if dataset_name in coco_dataset_configs else default_coco_dataset
+
+
+def get_coco_dataset_config(dataset_name):
+    return coco_dataset_configs[get_coco_dataset_name(dataset_name)]
+
+
+def load_coco_image_record(image_name, split, dataset_name):
     if not image_name:
         return None, None, None
 
+    dataset_name = get_coco_dataset_name(dataset_name)
+    dataset_config = get_coco_dataset_config(dataset_name)
+    dataset_dir = dataset_config["path"]
     candidate_splits = ["val", "train", "test"] if split == "auto" else [split]
     for split_name in candidate_splits:
-        ann_path = ge1_coco_dir / "annotations" / f"instances_{split_name}.json"
+        ann_path = dataset_dir / "annotations" / f"instances_{split_name}.json"
         if not ann_path.exists():
             continue
         with ann_path.open("r", encoding="utf-8") as f:
@@ -437,26 +462,49 @@ def load_coco_image_record(image_name, split):
     return None, None, None
 
 
-def infer_prompt_category_ids(text_prompt, categories):
+def infer_prompt_category_ids(text_prompt, categories, dataset_name):
     text = (text_prompt or "").lower()
     if not text:
         return []
     matched = []
     for category in categories:
         name = category.get("name", "")
+        display_name = coco_category_display_name(name, dataset_name)
         variants = {
             name.lower(),
+            display_name.lower(),
             name.lower().replace("ge1-", ""),
+            display_name.lower().replace("ge1-", ""),
             name.lower().replace("-", " "),
+            display_name.lower().replace("-", " "),
+            name.lower().replace("_", " "),
+            display_name.lower().replace("_", " "),
             name.lower().replace("ge1-", "").replace("-", " "),
+            display_name.lower().replace("ge1-", "").replace("-", " "),
         }
         if any(variant and variant in text for variant in variants):
             matched.append(category["id"])
     return matched
 
 
-def coco_category_display_name(category_name):
-    return category_name.replace("GE1-", "")
+def coco_category_display_name(category_name, dataset_name=default_coco_dataset):
+    display_name = category_name
+    for prefix in get_coco_dataset_config(dataset_name).get("strip_prefixes", []):
+        if display_name.startswith(prefix):
+            display_name = display_name[len(prefix) :]
+    return display_name
+
+
+def sorted_coco_categories(categories, dataset_name):
+    display_order = get_coco_dataset_config(dataset_name).get("category_display_order") or []
+
+    def sort_key(category):
+        display_name = coco_category_display_name(category.get("name", ""), dataset_name)
+        if display_name in display_order:
+            return (0, display_order.index(display_name))
+        return (1, int(category.get("id", 0)))
+
+    return sorted(categories, key=sort_key)
 
 
 def rasterize_coco_annotations(annotations, image_record, width, height):
@@ -608,6 +656,7 @@ def evaluate_prediction_gt_metrics(pred_masks, pred_scores, annotations, gt_mask
 def compare_with_coco(
     pred_masks,
     pred_scores,
+    dataset_name,
     image_name,
     split,
     text_prompt,
@@ -621,11 +670,15 @@ def compare_with_coco(
             "reason": "未填写 COCO image file_name，导出包仅保存预测结果",
         }
 
-    data, image_record, ann_path = load_coco_image_record(image_name, split)
+    dataset_name = get_coco_dataset_name(dataset_name)
+    dataset_config = get_coco_dataset_config(dataset_name)
+    data, image_record, ann_path = load_coco_image_record(image_name, split, dataset_name)
     if image_record is None:
         return {
             "status": "not_found",
-            "reason": f"未在 GE1_coco annotations 中找到 {image_name}",
+            "reason": f"未在 {dataset_name} annotations 中找到 {image_name}",
+            "dataset": dataset_name,
+            "dataset_dir": str(dataset_config["path"]),
             "requested_split": split,
         }
 
@@ -636,7 +689,7 @@ def compare_with_coco(
         pred_scores = [float(score) for score in pred_scores]
 
     categories = data.get("categories", [])
-    category_ids = infer_prompt_category_ids(text_prompt, categories)
+    category_ids = infer_prompt_category_ids(text_prompt, categories, dataset_name)
     all_annotations = [
         ann for ann in data.get("annotations", []) if ann.get("image_id") == image_record["id"]
     ]
@@ -655,6 +708,8 @@ def compare_with_coco(
 
     result = {
         "status": "ok",
+        "dataset": dataset_name,
+        "dataset_dir": str(dataset_config["path"]),
         "annotation_file": ann_path,
         "image_id": image_record["id"],
         "image_file_name": image_record["file_name"],
@@ -670,20 +725,10 @@ def compare_with_coco(
         ),
     }
 
-    ordered_categories = sorted(
-        categories,
-        key=lambda category: (
-            ge1_category_display_order.index(
-                coco_category_display_name(category.get("name", ""))
-            )
-            if coco_category_display_name(category.get("name", ""))
-            in ge1_category_display_order
-            else len(ge1_category_display_order)
-        ),
-    )
+    ordered_categories = sorted_coco_categories(categories, dataset_name)
     per_category = {}
     for category in ordered_categories:
-        display_name = coco_category_display_name(category.get("name", ""))
+        display_name = coco_category_display_name(category.get("name", ""), dataset_name)
         category_annotations = [
             ann for ann in all_annotations if ann.get("category_id") == category.get("id")
         ]
@@ -734,6 +779,7 @@ def compare_with_coco(
     result["per_category"] = per_category
 
     result["summary_lines"] = [
+        f"Dataset: {dataset_name}",
         f"- GT instances: {result['gt_instances']}",
         f"- Matched instances: {result['matched_instances']}",
         f"- Match recall: {result['match_recall']:.6f}",
@@ -753,7 +799,8 @@ def compare_with_coco(
         ),
         "Per-label metrics:",
     ]
-    for label in ge1_category_display_order:
+    for category in ordered_categories:
+        label = coco_category_display_name(category.get("name", ""), dataset_name)
         if label in per_category:
             result["summary_lines"].append(f" {per_category[label]['summary_line']}")
     return result
@@ -764,6 +811,7 @@ def create_segmentation_export(
     source_image,
     state,
     prompts,
+    coco_dataset,
     coco_image_name,
     coco_split,
     coco_eval_scope,
@@ -805,6 +853,7 @@ def create_segmentation_export(
     metrics = compare_with_coco(
         list(masks),
         scores.tolist(),
+        coco_dataset,
         coco_image_name.strip() if coco_image_name else "",
         coco_split,
         prompts.get("text_prompt", ""),
@@ -817,6 +866,7 @@ def create_segmentation_export(
         "image": {
             "width": width,
             "height": height,
+            "coco_dataset": coco_dataset,
             "coco_file_name": coco_image_name.strip() if coco_image_name else "",
             "coco_eval_scope": coco_eval_scope,
         },
@@ -1060,6 +1110,7 @@ def segment_image(
     pos_polygon_prompt,
     neg_polygon_prompt,
     original_image=None,
+    coco_dataset=default_coco_dataset,
     coco_image_name="",
     coco_split="auto",
     coco_eval_scope=coco_eval_scope_overlap,
@@ -1186,6 +1237,7 @@ def segment_image(
             "neg_boxes_xyxy": neg_boxes,
             "pos_polygons": pos_polygons,
             "neg_polygons": neg_polygons,
+            "coco_dataset": coco_dataset,
             "coco_image_name": coco_image_name or "",
             "coco_split": coco_split,
             "coco_eval_scope": coco_eval_scope,
@@ -1264,6 +1316,7 @@ def segment_image(
                 image,
                 state,
                 prompt_payload,
+                coco_dataset,
                 coco_image_name or "",
                 coco_split,
                 coco_eval_scope,
@@ -1613,10 +1666,15 @@ def create_demo():
                                 label="🎯 置信度阈值 (Confidence)",
                             )
 
-                            with gr.Accordion("📦 导出与 GE1 COCO 量化", open=False):
+                            with gr.Accordion("📦 导出与 COCO 量化", open=False):
+                                coco_dataset = gr.Dropdown(
+                                    choices=coco_dataset_choices,
+                                    value=default_coco_dataset,
+                                    label="指标数据集",
+                                )
                                 coco_image_name = gr.Textbox(
-                                    label="GE1 COCO image file_name（可选）",
-                                    placeholder="例如：12852_...jpg；留空则只导出预测结果",
+                                    label="COCO image file_name（可选）",
+                                    placeholder="填写所选数据集里的图片文件名；留空则只导出预测结果",
                                     lines=1,
                                 )
                                 coco_split = gr.Radio(
@@ -1761,6 +1819,7 @@ def create_demo():
                             pos_polygon_prompt,
                             neg_polygon_prompt,
                             original_image_state,
+                            coco_dataset,
                             coco_image_name,
                             coco_split,
                             coco_eval_scope,
