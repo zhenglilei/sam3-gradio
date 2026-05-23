@@ -9,10 +9,10 @@
 ## Current State Analysis
 
 ### 代码入口
-- 交互与推理主要在 [sam3_gradio_demo.py](file:///data/zhenglilei/sam3-gradio/sam3_gradio_demo.py)：
+- 交互与推理主要在 [sam3_gradio_demo.py](file:///data/zhengqiyuan/sam3-gradio/sam3_gradio_demo.py)：
   - `handle_image_click(...)`：点击图像后把点/框坐标追加到隐藏文本框，并在图像上画红点/绿框。
   - `segment_image(...)`：解析 `point_prompt` 与 `box_prompt`（格式为 `x,y;x,y` / `x1,y1,x2,y2;...`），并调用 `image_predictor.add_geometric_prompt(box, True, state)`；目前所有几何提示都固定为正样本（True）。
-- `Sam3Processor.add_geometric_prompt` 原生支持正/负框：label 为 bool，True=positive，False=negative（见 [sam3_image_processor.py](file:///data/zhenglilei/sam3-gradio/sam3/model/sam3_image_processor.py)）。
+- `Sam3Processor.add_geometric_prompt` 原生支持正/负框：label 为 bool，True=positive，False=negative（见 [sam3_image_processor.py](file:///data/zhengqiyuan/sam3-gradio/sam3/model/sam3_image_processor.py)）。
 
 ### 现有限制
 - 点提示当前是用“以点击点为中心的小框”近似实现，并且全部按正样本处理。
@@ -21,7 +21,7 @@
 ## Proposed Changes
 
 ### 1) UI：增加提示极性开关 + 分离正/负提示存储
-文件： [sam3_gradio_demo.py](file:///data/zhenglilei/sam3-gradio/sam3_gradio_demo.py)
+文件： [sam3_gradio_demo.py](file:///data/zhengqiyuan/sam3-gradio/sam3_gradio_demo.py)
 
 - 在“交互模式”区域新增一个 Radio（或 Segmented 风格的 Radio）：
   - `prompt_polarity`: 选项为 `Positive` / `Negative`，默认 `Positive`
@@ -35,7 +35,7 @@
   - `neg_box_prompt`
 
 ### 2) 交互：点击逻辑支持正/负点与正/负框
-文件： [sam3_gradio_demo.py](file:///data/zhenglilei/sam3-gradio/sam3_gradio_demo.py)
+文件： [sam3_gradio_demo.py](file:///data/zhengqiyuan/sam3-gradio/sam3_gradio_demo.py)
 
 - 修改 `handle_image_click` 的输入/输出签名，使其接收并更新 4 个提示字符串：
   - point 模式：根据 `prompt_polarity` 把 `x,y` 追加到 `pos_point_prompt` 或 `neg_point_prompt`
@@ -49,7 +49,7 @@
   - `{"start":[x,y], "label": True/False}`
 
 ### 3) 推理：解析正/负点与框，并传入正确 label
-文件： [sam3_gradio_demo.py](file:///data/zhenglilei/sam3-gradio/sam3_gradio_demo.py)
+文件： [sam3_gradio_demo.py](file:///data/zhengqiyuan/sam3-gradio/sam3_gradio_demo.py)
 
 - 修改 `segment_image` 形参为：
   - `pos_point_prompt, neg_point_prompt, pos_box_prompt, neg_box_prompt`
@@ -65,7 +65,7 @@
   - 对正框调用 `add_geometric_prompt(box, True, state)`，对负框调用 `add_geometric_prompt(box, False, state)`
 
 ### 4) 清空/示例按钮：同步到新状态字段
-文件： [sam3_gradio_demo.py](file:///data/zhenglilei/sam3-gradio/sam3_gradio_demo.py)
+文件： [sam3_gradio_demo.py](file:///data/zhengqiyuan/sam3-gradio/sam3_gradio_demo.py)
 
 - `clear_prompts`：一次性清空 4 个提示字符串并重置 `click_state`
 - `example_point_btn`：写入 `pos_point_prompt`（默认示例点为正样本）

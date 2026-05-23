@@ -1,32 +1,26 @@
 #!/bin/bash
+set -euo pipefail
 
-# SAM3 Gradio 服务器部署脚本
+PROJECT_DIR=/data/zhengqiyuan/sam3-gradio
+PYTHON_BIN=/data/zhengqiyuan/miniconda3/envs/sam3/bin/python
+export TMPDIR="$PROJECT_DIR/.runtime/tmp"
+export TEMP="$TMPDIR"
+export TMP="$TMPDIR"
+export GRADIO_TEMP_DIR="$PROJECT_DIR/.runtime/gradio"
+export XDG_CACHE_HOME=/data/zhengqiyuan/.cache
+export HF_HOME="$XDG_CACHE_HOME/huggingface"
+export HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
+export MODELSCOPE_CACHE="$XDG_CACHE_HOME/modelscope"
 
-echo "SAM3 Gradio 服务器部署启动中..."
+mkdir -p "$TMPDIR" "$GRADIO_TEMP_DIR" "$PROJECT_DIR/.runtime/videos" "$PROJECT_DIR/.runtime/logs" "$HF_HOME/hub" "$MODELSCOPE_CACHE"
+cd "$PROJECT_DIR"
 
-# 检查Python环境
-if ! command -v python &> /dev/null; then
-    echo "错误: 未找到Python，请确保已安装Python 3.8+"
-    exit 1
-fi
-
-# 检查模型文件
 if [ ! -f "models/sam3.pt" ]; then
     echo "警告: 未找到模型文件 models/sam3.pt"
-    echo "请从SAM3官方仓库下载模型文件并放入models目录"
 fi
-
 if [ ! -f "assets/bpe_simple_vocab_16e6.txt.gz" ]; then
     echo "警告: 未找到BPE词汇表文件 assets/bpe_simple_vocab_16e6.txt.gz"
-    echo "请从SAM3官方仓库下载BPE文件并放入assets目录"
 fi
 
-# 创建models目录（如果不存在）
-mkdir -p models
-
-# 启动演示系统
-echo "启动Gradio演示系统..."
-echo "应用将在 http://0.0.0.0:7860 上运行"
-echo "您也可以通过Gradio提供的公共链接访问"
-echo "按 Ctrl+C 停止服务器"
-python sam3_gradio_demo.py
+echo "启动 SAM3 Gradio demo: http://0.0.0.0:7890"
+exec "$PYTHON_BIN" sam3_gradio_demo.py

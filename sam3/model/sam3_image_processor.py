@@ -151,6 +151,77 @@ class Sam3Processor:
 
         return self._forward_grounding(state)
 
+    @torch.inference_mode()
+    def predict_mask_prompt(self, mask: np.ndarray, state: Dict):
+        """Runs the instance-interactive predictor with one binary mask prompt."""
+        if "backbone_out" not in state:
+            raise ValueError("You must call set_image before predict_mask_prompt")
+
+        if self.model.inst_interactive_predictor is None:
+            raise RuntimeError(
+                "Mask prompts require build_sam3_image_model(..., enable_inst_interactivity=True)"
+            )
+
+        mask_array = np.asarray(mask, dtype=np.float32)
+        if mask_array.ndim != 2:
+            raise ValueError("Mask prompt must be a 2D array")
+        mask_array = (mask_array > 0).astype(np.float32)
+        if not mask_array.any():
+            raise ValueError("Mask prompt is empty")
+
+        target_h, target_w = (
+            self.model.inst_interactive_predictor.model.sam_prompt_encoder.mask_input_size
+        )
+        mask_tensor = torch.as_tensor(
+            mask_array, device=self.device, dtype=torch.float32
+        ).view(1, 1, *mask_array.shape)
+        if mask_tensor.shape[-2:] != (target_h, target_w):
+            mask_tensor = torch.nn.functional.interpolate(
+                mask_tensor,
+                size=(target_h, target_w),
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
+            )
+
+        mask_logits = (mask_tensor.clamp(0, 1) * 2.0 - 1.0) * 10.0
+        masks_np, scores_np, _ = self.model.predict_inst(
+            state,
+            mask_input=mask_logits.squeeze(0).detach().cpu().numpy(),
+            multimask_output=False,
+            return_logits=False,
+        )
+
+        if masks_np.ndim == 2:
+            masks_np = masks_np[None, ...]
+        best_idx = int(np.argmax(scores_np))
+        selected_mask = masks_np[best_idx].astype(bool)
+        score = float(scores_np[best_idx])
+
+        ys, xs = np.where(selected_mask)
+        if len(xs) == 0:
+            boxes = torch.empty((0, 4), device=self.device, dtype=torch.float32)
+            masks = torch.empty(
+                (0, 1, *selected_mask.shape), device=self.device, dtype=torch.bool
+            )
+            scores = torch.empty((0,), device=self.device, dtype=torch.float32)
+        else:
+            boxes = torch.tensor(
+                [[xs.min(), ys.min(), xs.max() + 1, ys.max() + 1]],
+                device=self.device,
+                dtype=torch.float32,
+            )
+            masks = torch.from_numpy(selected_mask).to(self.device).view(
+                1, 1, *selected_mask.shape
+            )
+            scores = torch.tensor([score], device=self.device, dtype=torch.float32)
+
+        state["masks_logits"] = masks.float()
+        state["masks"] = masks
+        state["boxes"] = boxes
+        state["scores"] = scores
+        return state
+
     def reset_all_prompts(self, state: Dict):
         """Removes all the prompts and results"""
         if "backbone_out" in state:

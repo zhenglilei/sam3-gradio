@@ -243,7 +243,7 @@ overlay_masks_boxes_scores(
 device = Accelerator().device
 # Load model and processor
 print("Loading SAM3 model...")
-local_model_dir = "/data/zhenglilei/.cache/modelscope/hub/models/facebook/sam3"
+local_model_dir = "/data/zhengqiyuan/.cache/modelscope/hub/models/facebook/sam3"
 model = Sam3TrackerModel.from_pretrained(local_model_dir, local_files_only=True).to(device)
 processor = Sam3TrackerProcessor.from_pretrained(local_model_dir, local_files_only=True)
 print("Model loaded successfully!")
