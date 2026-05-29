@@ -147,6 +147,23 @@ def initialize_models():
 image_predictor, video_predictor = initialize_models()
 
 
+def _disable_legacy_predict_mask_prompt():
+    if image_predictor is None or not hasattr(image_predictor, "predict_mask_prompt"):
+        return
+
+    def _deprecated_predict_mask_prompt(*args, **kwargs):
+        raise RuntimeError(
+            "predict_mask_prompt() is deprecated in this demo. "
+            "Use _predict_inst(..., mask_input_lowres_logits=...) so multimask "
+            "candidates and low-res logits are preserved."
+        )
+
+    image_predictor.predict_mask_prompt = _deprecated_predict_mask_prompt
+
+
+_disable_legacy_predict_mask_prompt()
+
+
 def parse_polygon_prompt(polygons_str):
     """Parse polygon JSON stored by the Gradio UI."""
     if not polygons_str:
@@ -1021,7 +1038,7 @@ def compare_with_coco(
         "image_file_name": image_record["file_name"],
         "category_filter_ids": category_ids,
         "eval_scope": eval_scope,
-        "warnings": record.get("warnings", []),
+        "warnings": [],
         **evaluate_prediction_gt_metrics(
             pred_masks,
             pred_scores,
@@ -1435,7 +1452,7 @@ def _data_url(image):
 
 
 def _new_pcs_state():
-    return {"text_prompt": "", "positive_boxes": [], "negative_boxes": [], "instances": {}, "next_instance_id": 1}
+    return {"text_prompt": "", "positive_boxes": [], "negative_boxes": [], "bbox_history": [], "instances": {}, "next_instance_id": 1}
 
 
 def _new_pvs_state():
@@ -1528,16 +1545,48 @@ def _polygon_lowres_logits(polygon, width, height):
     return ((np.clip(lowres, 0.0, 1.0) * 2.0 - 1.0) * 10.0).astype(np.float32)
 
 
-def _combine_logits(active_logits, polygon_logits, mode="replace"):
-    polygon_logits = np.asarray(polygon_logits, dtype=np.float32)
-    if polygon_logits.ndim == 3:
-        polygon_logits = polygon_logits[0]
-    if mode == "blend" and active_logits is not None:
-        active = np.asarray(active_logits, dtype=np.float32)
-        if active.ndim == 3:
-            active = active[0]
-        return np.maximum(active * 0.35, polygon_logits).astype(np.float32)
-    return polygon_logits.astype(np.float32)
+def _combine_logits(active_logits, polygon_logits, mode="replace", alpha=0.35, max_logit=10.0):
+    polygon = np.asarray(polygon_logits, dtype=np.float32)
+    if polygon.ndim == 3:
+        polygon = polygon[0]
+    if active_logits is None:
+        return np.clip(polygon, -max_logit, max_logit).astype(np.float32)
+
+    active = np.asarray(active_logits, dtype=np.float32)
+    if active.ndim == 3:
+        active = active[0]
+
+    if mode == "replace":
+        out = polygon
+    elif mode == "blend":
+        out = alpha * active + (1.0 - alpha) * polygon
+    elif mode == "union":
+        out = np.maximum(active, polygon)
+    elif mode == "intersect":
+        out = np.minimum(active, polygon)
+    else:
+        raise ValueError(f"Unknown polygon combine mode: {mode}")
+    return np.clip(out, -max_logit, max_logit).astype(np.float32)
+
+
+def _polygon_action_key(value):
+    text = str(value or "")
+    if text == "create" or "create" in text.lower() or "\u521b\u5efa" in text:
+        return "create"
+    return "refine"
+
+
+def _polygon_combine_key(value):
+    text = str(value or "replace")
+    if text in {"replace", "blend", "union", "intersect"}:
+        return text
+    if "blend" in text.lower() or "\u878d\u5408" in text:
+        return "blend"
+    if "union" in text.lower() or "\u8865\u5145" in text:
+        return "union"
+    if "intersect" in text.lower() or "\u9650\u5236" in text:
+        return "intersect"
+    return "replace"
 
 
 def _mask_box(mask):
@@ -1625,7 +1674,7 @@ def _active_instances(state):
     return [inst for inst in state.get("instances", {}).values() if inst.get("status") != "deleted"]
 
 
-def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None):
+def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True):
     image = np.array(_workspace(image_state)["image"].convert("RGB"))
     overlay = image.copy()
     line = image.copy()
@@ -1638,13 +1687,13 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None):
         c = np.array(color, dtype=np.uint8)
         overlay[mask] = (overlay[mask] * (1 - alpha) + c * alpha).astype(np.uint8)
 
-    if mode == "PCS Auto":
+    if show_instances and mode == "PCS Auto":
         for inst in _active_instances(pcs_state):
             paint(inst["mask_fullres_bool"], (52, 168, 83), 0.24)
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             cv2.rectangle(line, (x1, y1), (x2, y2), (52, 168, 83), 3)
             cv2.putText(line, f"PCS#{inst['id']}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (52, 168, 83), 2)
-    if mode == "PVS Manual":
+    if show_instances and mode == "PVS Manual":
         active_id = pvs_state.get("active_instance_id")
         for inst in _active_instances(pvs_state):
             is_active = str(inst["id"]) == str(active_id)
@@ -1653,14 +1702,22 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None):
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             cv2.rectangle(line, (x1, y1), (x2, y2), color, 3 if is_active else 2)
             cv2.putText(line, f"PVS#{inst['id']}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+    if mode == "PCS Auto":
+        for box in pcs_state.get("positive_boxes", []):
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            cv2.rectangle(line, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        for box in pcs_state.get("negative_boxes", []):
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            cv2.rectangle(line, (x1, y1), (x2, y2), (255, 0, 0), 2)
     if prompt_state:
+        bbox_color = (255, 0, 0) if prompt_state.get("bbox_role") == "negative" else (0, 255, 0)
         if prompt_state.get("last_bbox"):
             x1, y1, x2, y2 = [int(round(v)) for v in prompt_state["last_bbox"]]
-            cv2.rectangle(line, (x1, y1), (x2, y2), (255, 193, 7), 3)
+            cv2.rectangle(line, (x1, y1), (x2, y2), bbox_color, 3)
         if prompt_state.get("bbox_start"):
             x, y = [int(round(v)) for v in prompt_state["bbox_start"]]
-            cv2.circle(line, (x, y), 7, (255, 193, 7), -1)
-            cv2.putText(line, "bbox start", (x + 8, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 193, 7), 2)
+            cv2.circle(line, (x, y), 7, bbox_color, -1)
+            cv2.putText(line, "bbox start", (x + 8, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, bbox_color, 2)
         if prompt_state.get("last_point"):
             x, y = [int(round(v)) for v in prompt_state["last_point"]]
             cv2.circle(line, (x, y), 7, (0, 0, 255), -1)
@@ -1675,15 +1732,26 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None):
     return Image.fromarray(cv2.addWeighted(overlay, 0.72, line, 0.28, 0))
 
 
+def _instances_for_mode(pcs_state, pvs_state, mode):
+    return _active_instances(pcs_state if mode == "PCS Auto" else pvs_state)
+
 
 def _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None):
     if not image_state or not image_state.get("image_id"):
         return None
-    return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state)
+    return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state, show_instances=False)
+
+
+def _result_image(image_state, pcs_state, pvs_state, mode):
+    if not image_state or not image_state.get("image_id"):
+        return None
+    if not _instances_for_mode(pcs_state, pvs_state, mode):
+        return None
+    return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True)
 
 
 def _new_prompt_state():
-    return {"bbox_start": None, "last_bbox": None, "last_point": None, "polygon_points": []}
+    return {"bbox_start": None, "last_bbox": None, "last_point": None, "polygon_points": [], "bbox_role": "positive"}
 
 
 def _event_point(evt, image_state):
@@ -1703,7 +1771,27 @@ def _payload_json(value):
     return json.dumps(value, ensure_ascii=False)
 
 
-def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, prompt_state, evt: gr.SelectData):
+def _append_pcs_bbox_sample(pcs_state, box, bbox_role):
+    key = "negative_boxes" if bbox_role == "negative" else "positive_boxes"
+    pcs_state.setdefault(key, []).append(box)
+    pcs_state.setdefault("bbox_history", []).append({"key": key, "box": box})
+    pcs_state["instances"] = {}
+    pcs_state["next_instance_id"] = 1
+    return key
+
+
+def _click_tool_key(click_tool):
+    text = str(click_tool or "")
+    if "Point" in text or "\u70b9" in text:
+        return "point"
+    if "BBox" in text or "Box" in text or "\u6846" in text:
+        return "bbox"
+    if "Polygon" in text or "\u591a\u8fb9\u5f62" in text:
+        return "polygon"
+    return ""
+
+
+def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state, evt: gr.SelectData):
     prompt_state = prompt_state or _new_prompt_state()
     bbox_payload = gr.update()
     point_payload = gr.update()
@@ -1711,76 +1799,117 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, promp
     try:
         point = _event_point(evt, image_state)
         w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
-        if click_tool == "Positive point":
+        tool = _click_tool_key(click_tool)
+        if tool == "point":
             prompt_state["last_point"] = point
             point_payload = _payload_json({"type": "positive_point", "point_xy_px": point, "image_width": w, "image_height": h})
-            info = f"Positive point selected: {[round(v, 1) for v in point]}"
-        elif click_tool == "BBox two-click":
+            info = f"\u5df2\u6dfb\u52a0\u6b63\u5411\u70b9: {[round(v, 1) for v in point]}"
+        elif tool == "bbox":
+            bbox_role = "negative" if mode == "PCS Auto" and str(pcs_bbox_kind or "").startswith("Negative") else "positive"
+            prompt_state["bbox_role"] = bbox_role
             if prompt_state.get("bbox_start") is None:
                 prompt_state["bbox_start"] = point
                 prompt_state["last_bbox"] = None
-                info = f"BBox first corner selected: {[round(v, 1) for v in point]}. Click the opposite corner."
+                info = f"\u5df2\u8bb0\u5f55 bbox \u8d77\u70b9: {[round(v, 1) for v in point]}\u3002\u8bf7\u70b9\u51fb\u5bf9\u89d2\u70b9\u5b8c\u6210\u6846\u9009\u3002"
             else:
                 start = prompt_state.get("bbox_start")
                 box = _norm_box([start[0], start[1], point[0], point[1]], w, h)
                 prompt_state["bbox_start"] = None
                 prompt_state["last_bbox"] = box
                 bbox_payload = _payload_json({"type": "bbox", "box_xyxy_px": box, "image_width": w, "image_height": h})
-                info = f"BBox selected: {[round(v, 1) for v in box]}"
-        elif click_tool == "Polygon vertex":
+                if mode == "PCS Auto":
+                    key = _append_pcs_bbox_sample(pcs_state, box, bbox_role)
+                    prompt_state["last_bbox"] = None
+                    label = "\u8d1f\u6837\u672c" if key == "negative_boxes" else "\u6b63\u6837\u672c"
+                    info = f"\u5df2\u81ea\u52a8\u6dfb\u52a0 PCS {label} bbox: {[round(v, 1) for v in box]}"
+                else:
+                    info = f"\u5df2\u5b8c\u6210 bbox: {[round(v, 1) for v in box]}"
+        elif tool == "polygon":
             points = prompt_state.setdefault("polygon_points", [])
             points.append(point)
-            info = f"Polygon vertex #{len(points)} selected. Click Finish polygon when done."
+            info = f"\u591a\u8fb9\u5f62\u5df2\u6dfb\u52a0\u7b2c {len(points)} \u4e2a\u9876\u70b9\u3002\u5b8c\u6210\u540e\u70b9\u51fb\u201c\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61\u201d\u3002"
         else:
-            info = f"Unknown click tool: {click_tool}"
+            info = f"\u672a\u77e5\u4ea4\u4e92\u5de5\u5177: {click_tool}"
     except Exception as exc:
-        info = f"Image click failed: {exc}"
-    return prompt_state, bbox_payload, point_payload, polygon_payload, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+        info = f"\u56fe\u50cf\u70b9\u51fb\u5931\u8d25: {exc}"
+    return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
 
-def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode):
+def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refine", combine_mode="replace"):
+    action = _polygon_action_key(polygon_action)
+    combine = _polygon_combine_key(combine_mode)
+    ws = _workspace(image_state)
+    w, h = ws["image"].size
+    polygon_logits = _polygon_lowres_logits(polygon, w, h)
+
+    if action == "create":
+        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=polygon_logits)
+        idx = _best(pred)
+        mask = pred["masks"][idx]
+        inst_id = int(pvs_state.get("next_instance_id", 1))
+        pvs_state.setdefault("instances", {})[inst_id] = _make_inst(
+            inst_id,
+            "manual_pvs_polygon",
+            mask,
+            _mask_box(mask),
+            pred["scores"][idx],
+            pvs_logits=pred["lowres_logits"][idx],
+            history=[{"op":"create_from_polygon","prompt":{"type":"positive_polygon","points":polygon},"candidate_scores":pred["scores"].astype(float).tolist()}],
+        )
+        pvs_state["active_instance_id"] = inst_id
+        pvs_state["next_instance_id"] = inst_id + 1
+        return f"\u5df2\u7528 polygon mask prompt \u521b\u5efa PVS #{inst_id}"
+
+    active_id = pvs_state.get("active_instance_id")
+    if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
+        raise ValueError("\u8bf7\u5148\u521b\u5efa\u6216\u9009\u62e9\u4e00\u4e2a PVS \u5b9e\u4f8b\uff0c\u6216\u5c06 polygon \u52a8\u4f5c\u6539\u4e3a\u201c\u521b\u5efa\u65b0\u5b9e\u4f8b\u201d")
+    inst = pvs_state["instances"][int(active_id)]
+    combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode=combine)
+    before = _snapshot(inst)
+    pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
+    idx = _best(pred)
+    mask = pred["masks"][idx]
+    inst["mask_fullres_bool"] = mask
+    inst["box_xyxy_px"] = _mask_box(mask)
+    inst["score"] = float(pred["scores"][idx])
+    inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
+    after = _snapshot(inst)
+    inst.setdefault("prompt_history", []).append({"op":"positive_polygon_refine","mode":combine,"prompt":{"type":"positive_polygon","points":polygon},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
+    return f"\u5df2\u7528\u591a\u8fb9\u5f62\u7cbe\u4fee PVS #{active_id}\uff0c\u878d\u5408\u65b9\u5f0f: {combine}"
+
+
+def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action="create", polygon_combine_mode="replace"):
     prompt_state = prompt_state or _new_prompt_state()
     points = prompt_state.get("polygon_points") or []
     polygon_payload = gr.update()
     if len(points) < 3:
-        info = "Polygon needs at least 3 vertices"
+        info = "\u591a\u8fb9\u5f62\u81f3\u5c11\u9700\u8981 3 \u4e2a\u9876\u70b9"
         return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
     w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
     polygon_payload = _payload_json({"type": "positive_polygon", "points": points, "image_width": w, "image_height": h})
 
     if mode != "PVS Manual":
-        info = "Polygon finished. PCS Auto does not use polygon prompts."
+        info = "\u591a\u8fb9\u5f62\u5df2\u5b8c\u6210\u3002PCS Auto \u4e0d\u4f7f\u7528 polygon prompt\u3002"
         return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
     try:
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
-            raise ValueError("Create or select a PVS bbox instance before polygon refinement")
-        inst = pvs_state["instances"][int(active_id)]
-        ws = _workspace(image_state)
-        image_w, image_h = ws["image"].size
-        polygon_logits = _polygon_lowres_logits(points, image_w, image_h)
-        combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode="replace")
-        before = _snapshot(inst)
-        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
-        idx = _best(pred)
-        mask = pred["masks"][idx]
-        inst["mask_fullres_bool"] = mask
-        inst["box_xyxy_px"] = _mask_box(mask)
-        inst["score"] = float(pred["scores"][idx])
-        inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
-        after = _snapshot(inst)
-        inst.setdefault("prompt_history", []).append({"op":"positive_polygon_refine","mode":"replace","prompt":{"type":"positive_polygon","points":points},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
+        info = _apply_polygon_to_pvs(image_state, pvs_state, points, polygon_action, polygon_combine_mode)
         prompt_state["polygon_points"] = []
-        info = f"PVS #{active_id} refined with the finished polygon"
     except Exception as exc:
-        info = f"PVS polygon refine failed: {exc}"
+        info = f"PVS \u591a\u8fb9\u5f62\u5904\u7406\u5931\u8d25: {exc}"
     return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+
 
 def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
     prompt_state = _new_prompt_state()
-    return prompt_state, "", "", "", *_view(image_state, pcs_state, pvs_state, mode, "Prompt selection cleared", prompt_state)
+    if mode == "PCS Auto":
+        pcs_state = _new_pcs_state()
+        info = "PCS \u63d0\u793a\u5df2\u6e05\u7a7a"
+    else:
+        info = "\u63d0\u793a\u5df2\u6e05\u7a7a"
+    return prompt_state, "", "", "", pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+
 
 def _pcs_choice_update(pcs_state):
     choices = [(f"PCS #{i['id']} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pcs_state)]
@@ -1795,9 +1924,9 @@ def _pvs_choice_update(pvs_state):
 
 
 def _pcs_summary(pcs_state):
-    lines = [f"positive bbox exemplars: {len(pcs_state.get('positive_boxes', []))}", f"negative bbox exemplars: {len(pcs_state.get('negative_boxes', []))}"]
+    lines = [f"\u6b63\u6837\u672c bbox: {len(pcs_state.get('positive_boxes', []))}", f"\u8d1f\u6837\u672c bbox: {len(pcs_state.get('negative_boxes', []))}"]
     items = _active_instances(pcs_state)
-    lines.append(f"PCS instances: {len(items)}")
+    lines.append(f"PCS \u5b9e\u4f8b: {len(items)}")
     for inst in items[:80]:
         lines.append(f"#{inst['id']} score={inst['score']:.3f} box={[round(v,1) for v in inst['box_xyxy_px']]}")
     return "\n".join(lines)
@@ -1806,15 +1935,32 @@ def _pcs_summary(pcs_state):
 def _pvs_summary(pvs_state):
     items = _active_instances(pvs_state)
     active = pvs_state.get("active_instance_id")
-    lines = [f"PVS instances: {len(items)}", f"active: {active or '-'}"]
+    lines = [f"PVS \u5b9e\u4f8b: {len(items)}", f"\u5f53\u524d\u5b9e\u4f8b: {active or '-'}"]
     for inst in items[:80]:
         mark = "*" if str(inst["id"]) == str(active) else " "
         lines.append(f"{mark}#{inst['id']} {inst['source']} {inst.get('status','draft')} score={inst['score']:.3f}")
     return "\n".join(lines)
 
 
+def _analysis_report(pcs_state, pvs_state, mode, info):
+    sections = [str(info or "")]
+    if mode == "PCS Auto":
+        sections.extend(["", "PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272", _pcs_summary(pcs_state)])
+    else:
+        sections.extend(["", "PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272", _pvs_summary(pvs_state)])
+    return "\n".join(part for part in sections if part is not None)
+
+
 def _view(image_state, pcs_state, pvs_state, mode, info, prompt_state=None):
-    return (_workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state), _pcs_summary(pcs_state), _pvs_summary(pvs_state), _pvs_choice_update(pvs_state), info)
+    return (
+        _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state),
+        _result_image(image_state, pcs_state, pvs_state, mode),
+        _analysis_report(pcs_state, pvs_state, mode, info),
+        _pcs_summary(pcs_state),
+        _pvs_summary(pvs_state),
+        _pvs_choice_update(pvs_state),
+        info,
+    )
 
 
 def _init_workspace(input_image, mode):
@@ -1832,20 +1978,23 @@ def _init_workspace(input_image, mode):
     return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
 
 
-def _add_pcs_bbox(image_state, pcs_state, pvs_state, mode, bbox_payload, kind):
+def _undo_pcs_bbox(image_state, pcs_state, pvs_state, mode):
     try:
-        box = _bbox_from_payload(bbox_payload, image_state)
-        key = "positive_boxes" if kind.startswith("Positive") else "negative_boxes"
-        pcs_state.setdefault(key, []).append(box)
-        info = f"Added PCS {kind}: {[round(v,1) for v in box]}"
+        history = pcs_state.setdefault("bbox_history", [])
+        if not history:
+            raise ValueError("\u6ca1\u6709\u53ef\u64a4\u9500\u7684 PCS bbox \u6837\u672c")
+        item = history.pop()
+        key = item.get("key")
+        boxes = pcs_state.setdefault(key, [])
+        if boxes:
+            boxes.pop()
+        pcs_state["instances"] = {}
+        pcs_state["next_instance_id"] = 1
+        label = "\u8d1f\u6837\u672c" if key == "negative_boxes" else "\u6b63\u6837\u672c"
+        info = f"\u5df2\u64a4\u9500\u6700\u8fd1\u4e00\u4e2a PCS {label} bbox"
     except Exception as exc:
-        info = f"PCS bbox failed: {exc}"
+        info = f"PCS bbox \u64a4\u9500\u5931\u8d25: {exc}"
     return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
-
-
-def _clear_pcs(image_state, pcs_state, pvs_state, mode):
-    pcs_state = _new_pcs_state()
-    return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, "PCS cleared")
 
 
 def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
@@ -1942,33 +2091,6 @@ def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload):
     except Exception as exc:
         info = f"PVS positive point failed: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
-
-def _refine_pvs_polygon(image_state, pcs_state, pvs_state, mode, polygon_payload):
-    try:
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
-            raise ValueError("Select an active PVS instance first")
-        inst = pvs_state["instances"][int(active_id)]
-        polygon = _polygon_from_payload(polygon_payload, image_state)
-        ws = _workspace(image_state)
-        w, h = ws["image"].size
-        polygon_logits = _polygon_lowres_logits(polygon, w, h)
-        combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode="replace")
-        before = _snapshot(inst)
-        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
-        idx = _best(pred)
-        mask = pred["masks"][idx]
-        inst["mask_fullres_bool"] = mask
-        inst["box_xyxy_px"] = _mask_box(mask)
-        inst["score"] = float(pred["scores"][idx])
-        inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
-        after = _snapshot(inst)
-        inst.setdefault("prompt_history", []).append({"op":"positive_polygon_refine","mode":"replace","prompt":{"type":"positive_polygon","points":polygon},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
-        info = f"PVS #{active_id} refined with positive polygon"
-    except Exception as exc:
-        info = f"PVS polygon refine failed: {exc}"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
-
 
 def _undo_pvs(image_state, pcs_state, pvs_state, mode):
     try:
@@ -2077,31 +2199,32 @@ def _export_pvs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_imag
 
 
 def _switch_mode(mode, image_state, pcs_state, pvs_state):
-    return (gr.update(visible=mode == "PCS Auto"), gr.update(visible=mode == "PVS Manual"), *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}"))
+    return (
+        gr.update(visible=mode == "PCS Auto"),
+        gr.update(visible=mode == "PCS Auto"),
+        gr.update(visible=mode == "PVS Manual"),
+        *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}"),
+    )
 
 def create_demo():
-    """Create the single-workspace PCS/PVS Gradio interface."""
+    """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
     custom_css = """
-    .container { max-width: 1500px; margin: auto; padding-top: 18px; }
-    h1 { text-align: center; color: #1f2937; margin-bottom: 8px; }
-    .description { text-align: center; color: #4b5563; margin-bottom: 20px; }
-    #interaction-info { font-weight: 600; color: #1f2937; background: #eef6ff; border: 1px solid #bfdbfe; padding: 10px; border-radius: 6px; }
+    .container { max-width: 1200px; margin: auto; padding-top: 20px; }
+    h1 { text-align: center; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #2d3748; margin-bottom: 10px; }
+    .description { text-align: center; font-size: 1.1em; color: #4a5568; margin-bottom: 30px; }
+    .gr-button-primary { background: linear-gradient(90deg, #4b6cb7 0%, #182848 100%); border: none; }
+    .gr-box { border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    #interaction-info { font-weight: bold; color: #2b6cb0; text-align: center; background-color: #ebf8ff; padding: 10px; border-radius: 5px; border: 1px solid #bee3f8; }
     .hidden-payload { display: none !important; }
-    .sam3-empty-workspace { min-height: 520px; border: 1px dashed #94a3b8; display: flex; align-items: center; justify-content: center; color: #64748b; background: #f8fafc; }
-    .sam3-canvas-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-    .sam3-tool { border: 1px solid #cbd5e1; background: #fff; color: #1f2937; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-    .sam3-tool.active { background: #2563eb; color: white; border-color: #2563eb; }
-    .sam3-tool-hint { color: #64748b; font-size: 13px; }
-    .sam3-canvas-stage { position: relative; width: 100%; overflow: auto; border: 1px solid #cbd5e1; border-radius: 6px; background: #0f172a; }
-    .sam3-canvas-stage img { display: block; width: 100%; height: auto; user-select: none; position: relative; z-index: 1; }
-    .sam3-canvas-stage canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; cursor: crosshair; z-index: 2; touch-action: none; }
+    .mode-radio .wrap { display: flex; width: 100%; gap: 10px; }
+    .mode-radio .wrap label { flex: 1; justify-content: center; text-align: center; }
     .sam3-panel textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     """
     theme = gr.themes.Soft(primary_hue="blue", secondary_hue="slate", font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"])
-    with gr.Blocks(theme=theme, css=custom_css, title="SAM3 PCS/PVS Workspace") as demo:
+    with gr.Blocks(theme=theme, css=custom_css, title="SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0") as demo:
         with gr.Column(elem_classes="container"):
-            gr.Markdown("# SAM3 PCS/PVS Workspace")
-            gr.Markdown("Single workspace with PCS Auto and PVS Manual modes.", elem_classes="description")
+            gr.Markdown("# SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0")
+            gr.Markdown("\u57fa\u4e8e SAM3 \u7684 PCS \u81ea\u52a8\u6982\u5ff5\u5206\u5272\u4e0e PVS \u624b\u52a8\u5b9e\u4f8b\u5206\u5272\u5de5\u4f5c\u53f0", elem_classes="description")
             image_state = gr.State({"image_id": None, "width": 0, "height": 0})
             pcs_state = gr.State(_new_pcs_state())
             pvs_state = gr.State(_new_pvs_state())
@@ -2109,58 +2232,106 @@ def create_demo():
             bbox_payload = gr.Textbox(label="bbox payload", elem_id="bbox_payload", elem_classes="hidden-payload")
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
-            with gr.Row():
-                with gr.Column(scale=7):
-                    image_upload = gr.Image(type="numpy", label="Image / workspace (upload and click here)", sources=["upload", "clipboard"])
-                    click_tool = gr.Radio(choices=["Positive point", "BBox two-click", "Polygon vertex"], value="BBox two-click", label="Gradio click tool")
+
+            with gr.Tabs():
+                with gr.TabItem("\u667a\u80fd\u56fe\u50cf\u5206\u5272", id="tab_image"):
                     with gr.Row():
-                        finish_polygon_btn = gr.Button("Finish polygon / refine active PVS")
-                        clear_prompt_btn = gr.Button("Clear prompt selection")
-                with gr.Column(scale=4, elem_classes="sam3-panel"):
-                    mode = gr.Radio(choices=["PCS Auto", "PVS Manual"], value="PVS Manual", label="Mode")
-                    interaction_info = gr.Markdown("Upload an image to start.", elem_id="interaction-info")
-                    with gr.Accordion("GT / Evaluation", open=False):
-                        coco_dataset = gr.Dropdown(choices=coco_dataset_choices, value=default_coco_dataset, label="COCO dataset")
-                        coco_image_name = gr.Textbox(label="COCO image file_name", lines=1)
-                        coco_split = gr.Radio(choices=["auto", "val", "train", "test"], value="auto", label="COCO split")
-                        coco_eval_scope = gr.Radio(choices=[coco_eval_scope_overlap, coco_eval_scope_full], value=coco_eval_scope_overlap, label="Evaluation scope")
-                        annotation_json_file = gr.File(label="Upload O3/LabelMe-like JSON (overrides COCO lookup)", file_types=[".json"], type="filepath")
-                    with gr.Group(visible=True) as pvs_panel:
-                        gr.Markdown("### PVS Manual")
-                        create_pvs_btn = gr.Button("Create PVS instance from bbox", variant="primary")
-                        pvs_point_btn = gr.Button("Create/refine with positive point")
-                        active_pvs = gr.Dropdown(choices=[], label="Active PVS instance")
-                        refine_polygon_btn = gr.Button("Refine active PVS with current polygon", variant="primary")
-                        with gr.Row():
-                            undo_pvs_btn = gr.Button("Undo")
-                            delete_pvs_btn = gr.Button("Delete")
-                            accept_pvs_btn = gr.Button("Accept")
-                        export_pvs_btn = gr.Button("Export PVS")
-                        pvs_summary = gr.Textbox(label="PVS instances", lines=10, interactive=False)
-                    with gr.Group(visible=False) as pcs_panel:
-                        gr.Markdown("### PCS Auto")
-                        text_prompt = gr.Textbox(label="Text prompt", placeholder="e.g. GE1_1 / ACT-1 / red apple", lines=1)
-                        pcs_bbox_kind = gr.Radio(choices=["Positive exemplar", "Negative exemplar"], value="Positive exemplar", label="Selected bbox role")
-                        add_pcs_box_btn = gr.Button("Add selected bbox to PCS exemplars")
-                        confidence_threshold = gr.Slider(minimum=0.0, maximum=1.0, value=0.4, step=0.05, label="PCS confidence threshold")
-                        run_pcs_btn = gr.Button("Run PCS", variant="primary")
-                        clear_pcs_btn = gr.Button("Clear PCS")
-                        export_pcs_btn = gr.Button("Export PCS")
-                        pcs_summary = gr.Textbox(label="PCS instances", lines=10, interactive=False)
-                    export_file = gr.File(label="Export zip", interactive=False)
-            common = [image_upload, pcs_summary, pvs_summary, active_pvs, interaction_info]
+                        with gr.Column(scale=1):
+                            image_upload = gr.Image(type="numpy", label="\u539f\u59cb\u56fe\u50cf (\u70b9\u51fb\u8fdb\u884c\u4ea4\u4e92)", sources=["upload", "clipboard"], elem_id="input_image")
+                            with gr.Group():
+                                gr.Markdown("### \u4ea4\u4e92\u6a21\u5f0f")
+                                click_tool = gr.Radio(
+                                    choices=[("\u70b9\u63d0\u793a (Point)", "Positive point"), ("\u6846\u63d0\u793a (Box)", "BBox two-click"), ("\u591a\u8fb9\u5f62Mask (Polygon)", "Polygon vertex")],
+                                    value="BBox two-click",
+                                    label="\u9009\u62e9\u6a21\u5f0f",
+                                    show_label=False,
+                                    elem_classes="mode-radio",
+                                )
+                                with gr.Group(visible=False) as pcs_bbox_tools:
+                                    pcs_bbox_kind = gr.Radio(
+                                        choices=[("\u6b63\u6837\u672c bbox", "Positive exemplar"), ("\u8d1f\u6837\u672c bbox", "Negative exemplar")],
+                                        value="Positive exemplar",
+                                        label="PCS bbox \u6837\u672c\u7c7b\u578b",
+                                        elem_classes="mode-radio",
+                                    )
+                                    undo_pcs_bbox_btn = gr.Button("\u64a4\u9500\u6700\u8fd1 PCS bbox", size="sm", variant="secondary")
+                                with gr.Row():
+                                    finish_polygon_btn = gr.Button("\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61", size="sm", variant="secondary")
+                                    clear_prompt_btn = gr.Button("\u6e05\u7a7a\u63d0\u793a (Clear Prompts)", size="sm", variant="secondary")
+                                interaction_info = gr.Markdown("\u70b9\u51fb\u56fe\u50cf\u5f00\u59cb\u6dfb\u52a0\u63d0\u793a...", elem_id="interaction-info")
+
+                            with gr.Accordion("\u9ad8\u7ea7\u63d0\u793a\u9009\u9879", open=True):
+                                mode = gr.Radio(
+                                    choices=[("PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272", "PCS Auto"), ("PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272", "PVS Manual")],
+                                    value="PVS Manual",
+                                    label="\u529f\u80fd\u6a21\u5f0f",
+                                    elem_classes="mode-radio",
+                                )
+                                with gr.Group(visible=False) as pcs_panel:
+                                    gr.Markdown("### PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272")
+                                    text_prompt = gr.Textbox(label="\u6587\u672c\u63d0\u793a (Text Prompt)", placeholder="\u8f93\u5165\u7269\u4f53\u63cf\u8ff0\uff0c\u4f8b\u5982\uff1a'a red car' \u6216 '\u4e00\u53ea\u732b'", lines=1)
+                                    confidence_threshold = gr.Slider(minimum=0.0, maximum=1.0, value=0.4, step=0.05, label="\u7f6e\u4fe1\u5ea6\u9608\u503c (Confidence)")
+                                    run_pcs_btn = gr.Button("\u5f00\u59cb PCS \u5206\u5272", variant="primary")
+                                    export_pcs_btn = gr.Button("\u5bfc\u51fa PCS")
+                                    pcs_summary = gr.Textbox(label="PCS \u5b9e\u4f8b", lines=6, interactive=False)
+
+                                with gr.Group(visible=True) as pvs_panel:
+                                    gr.Markdown("### PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272")
+                                    create_pvs_btn = gr.Button("\u7528 bbox \u521b\u5efa PVS \u5b9e\u4f8b", variant="primary")
+                                    pvs_point_btn = gr.Button("\u7528\u6b63\u5411\u70b9\u521b\u5efa/\u7cbe\u4fee")
+                                    active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
+                                    polygon_action = gr.Radio(
+                                        choices=[("\u521b\u5efa\u65b0 PVS \u5b9e\u4f8b", "create"), ("\u7cbe\u4fee\u5f53\u524d PVS \u5b9e\u4f8b", "refine")],
+                                        value="create",
+                                        label="\u591a\u8fb9\u5f62\u52a8\u4f5c",
+                                        elem_classes="mode-radio",
+                                    )
+                                    polygon_combine_mode = gr.Radio(
+                                        choices=[("Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b", "replace"), ("Blend \u4e0e\u65e7 mask \u878d\u5408", "blend"), ("Union \u8865\u5145\u533a\u57df", "union"), ("Intersect \u9650\u5236\u8303\u56f4", "intersect")],
+                                        value="replace",
+                                        label="\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f",
+                                        elem_classes="mode-radio",
+                                    )
+                                    gr.Markdown(
+                                        "**\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f\u8bf4\u660e**  \n"
+                                        "- Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b\uff1a\u7528\u5f53\u524d polygon \u4f5c\u4e3a\u5b8c\u6574 mask prompt\u3002  \n"
+                                        "- Blend \u4e0e\u65e7 mask \u878d\u5408\uff1a\u65e7 logits \u548c polygon logits \u5171\u540c\u5f71\u54cd\u7ed3\u679c\u3002  \n"
+                                        "- Union \u8865\u5145\u533a\u57df\uff1a\u4fdd\u7559\u65e7 mask\uff0c\u5e76\u52a0\u5165 polygon \u533a\u57df\u3002  \n"
+                                        "- Intersect \u9650\u5236\u8303\u56f4\uff1a\u5c06\u7ed3\u679c\u9650\u5236\u5728 polygon \u8303\u56f4\u5185\u3002"
+                                    )
+                                    with gr.Row():
+                                        undo_pvs_btn = gr.Button("\u64a4\u9500")
+                                        delete_pvs_btn = gr.Button("\u5220\u9664")
+                                        accept_pvs_btn = gr.Button("\u786e\u8ba4")
+                                    export_pvs_btn = gr.Button("\u5bfc\u51fa PVS")
+                                    pvs_summary = gr.Textbox(label="PVS \u5b9e\u4f8b", lines=6, interactive=False)
+
+                                with gr.Accordion("\u5bfc\u51fa\u4e0e COCO \u91cf\u5316", open=False):
+                                    coco_dataset = gr.Dropdown(choices=coco_dataset_choices, value=default_coco_dataset, label="\u6307\u6807\u6570\u636e\u96c6")
+                                    coco_image_name = gr.Textbox(label="COCO image file_name\uff08\u53ef\u9009\uff09", lines=1)
+                                    coco_split = gr.Radio(choices=["auto", "val", "train", "test"], value="auto", label="\u6807\u6ce8 split")
+                                    coco_eval_scope = gr.Radio(choices=[coco_eval_scope_overlap, coco_eval_scope_full], value=coco_eval_scope_overlap, label="\u8bc4\u4f30\u8303\u56f4")
+                                    annotation_json_file = gr.File(label="\u4e0a\u4f20 O3/LabelMe-like JSON \u6807\u6ce8\uff08\u4f18\u5148\u4e8e COCO lookup\uff09", file_types=[".json"], type="filepath")
+
+                        with gr.Column(scale=1):
+                            result_image = gr.Image(type="numpy", label="\u5206\u5272\u7ed3\u679c")
+                            analysis_report = gr.Textbox(label="\u5206\u6790\u62a5\u544a", interactive=False, lines=18)
+                            export_file = gr.File(label="\u4e0b\u8f7d\u7ed3\u679c\u5305\uff08PNG + masks + JSON\uff09", interactive=False)
+
+                with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
+                    gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
+
+            common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info]
             image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, *common, export_file], concurrency_limit=1)
-            image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, *common], concurrency_limit=1)
-            finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], concurrency_limit=1)
-            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[pcs_panel, pvs_panel, *common], concurrency_limit=1)
-            add_pcs_box_btn.click(fn=_add_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, bbox_payload, pcs_bbox_kind], outputs=[pcs_state, *common], concurrency_limit=1)
-            clear_pcs_btn.click(fn=_clear_pcs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
+            image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *common], concurrency_limit=1)
+            finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], concurrency_limit=1)
+            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[pcs_bbox_tools, pcs_panel, pvs_panel, *common], concurrency_limit=1)
+            undo_pcs_bbox_btn.click(fn=_undo_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
             create_pvs_btn.click(fn=_create_pvs, inputs=[image_state, pcs_state, pvs_state, mode, bbox_payload], outputs=[pvs_state, *common], concurrency_limit=1)
             pvs_point_btn.click(fn=_pvs_positive_point, inputs=[image_state, pcs_state, pvs_state, mode, point_payload], outputs=[pvs_state, *common], concurrency_limit=1)
             active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
-            refine_polygon_btn.click(fn=_refine_pvs_polygon, inputs=[image_state, pcs_state, pvs_state, mode, polygon_payload], outputs=[pvs_state, *common], concurrency_limit=1)
             undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             accept_pvs_btn.click(fn=_accept_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
