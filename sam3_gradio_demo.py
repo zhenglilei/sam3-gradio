@@ -462,6 +462,157 @@ def load_coco_image_record(image_name, split, dataset_name):
     return None, None, None
 
 
+def resolve_uploaded_json_path(uploaded_file):
+    if not uploaded_file:
+        return None
+    if isinstance(uploaded_file, (list, tuple)):
+        uploaded_file = uploaded_file[0] if uploaded_file else None
+    if isinstance(uploaded_file, (str, os.PathLike)):
+        raw_path = uploaded_file
+    elif isinstance(uploaded_file, dict):
+        raw_path = uploaded_file.get("path") or uploaded_file.get("name")
+    else:
+        raw_path = (
+            getattr(uploaded_file, "path", None)
+            or getattr(uploaded_file, "name", None)
+        )
+    if not raw_path:
+        return None
+    json_path = Path(raw_path)
+    return json_path if json_path.exists() else None
+
+
+def label_text_variants(label):
+    label_text = str(label or "").lower().strip()
+    variants = {
+        label_text,
+        label_text.replace("-", " "),
+        label_text.replace("_", " "),
+    }
+    if "-" in label_text:
+        variants.add(label_text.split("-", 1)[0])
+    return {variant for variant in variants if variant}
+
+
+def infer_labelme_category_ids(text_prompt, categories):
+    text = (text_prompt or "").lower().strip()
+    if not text:
+        return []
+    matched = []
+    for category in categories:
+        if any(
+            variant and (variant in text or text in variant)
+            for variant in label_text_variants(category.get("name", ""))
+        ):
+            matched.append(category["id"])
+    return matched
+
+
+def labelme_shape_segmentation(shape):
+    shape_type = shape.get("shape_type") or "polygon"
+    points = shape.get("points") or []
+    if shape_type == "rectangle" and len(points) >= 2:
+        x1, y1 = points[0]
+        x2, y2 = points[1]
+        points = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+    elif shape_type not in {"polygon", "linestrip"}:
+        return None
+    if shape_type == "linestrip" and len(points) >= 3 and points[0] != points[-1]:
+        points = list(points) + [points[0]]
+
+    segmentation = []
+    for point in points:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            return None
+        try:
+            x, y = float(point[0]), float(point[1])
+        except (TypeError, ValueError):
+            return None
+        segmentation.extend([x, y])
+    return segmentation if len(segmentation) >= 6 else None
+
+
+def load_labelme_annotation_record(annotation_json_file, target_width, target_height):
+    json_path = resolve_uploaded_json_path(annotation_json_file)
+    if json_path is None:
+        return None, "上传 JSON 文件不可读"
+
+    try:
+        with json_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        return None, f"上传 JSON 解析失败: {exc}"
+
+    shapes = data.get("shapes")
+    if not isinstance(shapes, list):
+        return None, "上传 JSON 缺少 shapes 字段"
+
+    source_width = int(data.get("imageWidth") or target_width)
+    source_height = int(data.get("imageHeight") or target_height)
+    warnings = []
+    if (source_width, source_height) != (target_width, target_height):
+        warnings.append(
+            f"JSON image size {source_width}x{source_height} differs from current image {target_width}x{target_height}; shapes were scaled for evaluation"
+        )
+    image_record = {
+        "id": 0,
+        "file_name": data.get("imagePath") or json_path.name,
+        "width": source_width,
+        "height": source_height,
+    }
+
+    label_to_id = {}
+    annotations = []
+    gt_masks = []
+    for shape in shapes:
+        if not isinstance(shape, dict):
+            continue
+        shape_type = shape.get("shape_type") or "polygon"
+        if shape_type == "linestrip":
+            warnings.append(f"linestrip shape for label {shape.get('label') or 'object'} was auto-closed as a mask polygon")
+        segmentation = labelme_shape_segmentation(shape)
+        if segmentation is None:
+            warnings.append(f"skipped invalid {shape_type} shape for label {shape.get('label') or 'object'}")
+            continue
+        label = str(shape.get("label") or "object")
+        if label not in label_to_id:
+            label_to_id[label] = len(label_to_id) + 1
+        annotation = {
+            "id": len(annotations) + 1,
+            "category_id": label_to_id[label],
+            "category_name": label,
+            "segmentation": [segmentation],
+            "iscrowd": 0,
+        }
+        mask = annotation_to_mask(
+            annotation,
+            source_width,
+            source_height,
+            target_width,
+            target_height,
+        )
+        if not mask.any():
+            continue
+        annotation["bbox"] = mask_bbox_xywh(mask)
+        annotation["area"] = int(mask.sum())
+        annotations.append(annotation)
+        gt_masks.append(mask)
+
+    categories = [
+        {"id": category_id, "name": label}
+        for label, category_id in label_to_id.items()
+    ]
+    return {
+        "path": str(json_path),
+        "data": data,
+        "image_record": image_record,
+        "categories": categories,
+        "annotations": annotations,
+        "gt_masks": gt_masks,
+        "warnings": warnings,
+    }, None
+
+
 def infer_prompt_category_ids(text_prompt, categories, dataset_name):
     text = (text_prompt or "").lower()
     if not text:
@@ -653,6 +804,146 @@ def evaluate_prediction_gt_metrics(pred_masks, pred_scores, annotations, gt_mask
     }
 
 
+def compare_with_labelme_json(
+    pred_masks,
+    pred_scores,
+    annotation_json_file,
+    text_prompt,
+    width,
+    height,
+    eval_scope,
+):
+    record, error = load_labelme_annotation_record(annotation_json_file, width, height)
+    if record is None:
+        return {"status": "not_found", "reason": error or "上传 JSON 文件不可读"}
+    if not record["annotations"]:
+        return {
+            "status": "not_found",
+            "reason": f"上传 JSON 中没有可用 polygon/rectangle 标注: {record['path']}",
+            "annotation_format": "labelme",
+            "annotation_file": record["path"],
+        }
+
+    pred_masks = [np.asarray(mask).astype(bool) for mask in pred_masks]
+    if len(pred_scores) != len(pred_masks):
+        pred_scores = [1.0] * len(pred_masks)
+    else:
+        pred_scores = [float(score) for score in pred_scores]
+
+    categories = record["categories"]
+    category_ids = infer_labelme_category_ids(text_prompt, categories)
+    all_annotations = record["annotations"]
+    all_gt_masks = record["gt_masks"]
+    annotation_pairs = [
+        (ann, mask)
+        for ann, mask in zip(all_annotations, all_gt_masks)
+        if not category_ids or ann.get("category_id") in category_ids
+    ]
+    annotations = [ann for ann, _ in annotation_pairs]
+    gt_masks = [mask for _, mask in annotation_pairs]
+    annotations, gt_masks = filter_gt_pairs_by_eval_scope(
+        pred_masks,
+        annotations,
+        gt_masks,
+        eval_scope,
+    )
+
+    result = {
+        "status": "ok",
+        "annotation_format": "labelme",
+        "annotation_file": record["path"],
+        "image_file_name": record["image_record"]["file_name"],
+        "category_filter_ids": category_ids,
+        "eval_scope": eval_scope,
+        "warnings": record.get("warnings", []),
+        **evaluate_prediction_gt_metrics(
+            pred_masks,
+            pred_scores,
+            annotations,
+            gt_masks,
+            width,
+            height,
+        ),
+    }
+
+    per_category = {}
+    for category in categories:
+        label = category.get("name", "")
+        category_pairs = [
+            (ann, mask)
+            for ann, mask in zip(all_annotations, all_gt_masks)
+            if ann.get("category_id") == category.get("id")
+        ]
+        category_annotations = [ann for ann, _ in category_pairs]
+        category_gt_masks = [mask for _, mask in category_pairs]
+        category_annotations, category_gt_masks = filter_gt_pairs_by_eval_scope(
+            pred_masks,
+            category_annotations,
+            category_gt_masks,
+            eval_scope,
+        )
+        pred_indices, category_pred_masks, category_pred_scores = select_predictions_for_gt_masks(
+            pred_masks,
+            pred_scores,
+            category_gt_masks,
+        )
+        category_metrics = evaluate_prediction_gt_metrics(
+            category_pred_masks,
+            category_pred_scores,
+            category_annotations,
+            category_gt_masks,
+            width,
+            height,
+        )
+        for pair in category_metrics["matched_pairs"]:
+            pair["original_prediction_index"] = int(pred_indices[pair["prediction_index"]])
+
+        category_result = {
+            "category_id": int(category.get("id")),
+            "category_name": label,
+            "display_name": label,
+            "prediction_indices": [int(idx) for idx in pred_indices],
+            **category_metrics,
+        }
+        category_result["summary_line"] = (
+            f"{label}: GT {category_result['gt_instances']}, "
+            f"Match {category_result['matched_instances']}, "
+            f"BIoU {category_result['mean_boundary_iou']:.3f}, "
+            f"BAP50 {category_result['boundary_ap50']:.3f}, "
+            f"segm AP50 {category_result['coco_segm'].get('ap_50_all', 0.0):.3f}"
+        )
+        per_category[label] = category_result
+
+    result["per_category"] = per_category
+    result["summary_lines"] = [
+        f"Annotation JSON: {Path(record['path']).name}",
+        *[f"Warning: {warning}" for warning in record.get("warnings", [])],
+        f"- GT instances: {result['gt_instances']}",
+        f"- Matched instances: {result['matched_instances']}",
+        f"- Match recall: {result['match_recall']:.6f}",
+        f"- Mean Boundary IoU: {result['mean_boundary_iou']:.6f}",
+        f"- Boundary AP50: {result['boundary_ap50']:.6f}",
+        f"- Boundary AP75: {result['boundary_ap75']:.6f}",
+        f"- Boundary AP50-95: {result['boundary_ap50_95']:.6f}",
+        f"- Mean HD95 px: {result['mean_hd95_px']:.6f}",
+        f"- Mean Chamfer px: {result['mean_chamfer_px']:.6f}",
+        f"IoU metric: {result['coco_segm'].get('metric', 'segm')}",
+        f" AP 0.50:0.95 all = {result['coco_segm'].get('ap_50_95_all', 0.0):.3f}",
+        f" AP 0.50 all      = {result['coco_segm'].get('ap_50_all', 0.0):.3f}",
+        f" AP 0.75 all      = {result['coco_segm'].get('ap_75_all', 0.0):.3f}",
+        (
+            " AR 0.50:0.95 all maxDets=100 = "
+            f"{result['coco_segm'].get('ar_50_95_all_max_dets_100', 0.0):.3f}"
+        ),
+        "Per-label metrics:",
+    ]
+    for category in categories:
+        label = category.get("name", "")
+        if label in per_category:
+            result["summary_lines"].append(f" {per_category[label]['summary_line']}")
+    return result
+
+
 def compare_with_coco(
     pred_masks,
     pred_scores,
@@ -663,7 +954,22 @@ def compare_with_coco(
     width,
     height,
     eval_scope,
+    annotation_json_file=None,
 ):
+    if annotation_json_file:
+        annotation_json_path = resolve_uploaded_json_path(annotation_json_file)
+        if annotation_json_path is None:
+            return {"status": "not_found", "reason": "上传 JSON 文件不可读"}
+        return compare_with_labelme_json(
+            pred_masks,
+            pred_scores,
+            str(annotation_json_path),
+            text_prompt,
+            width,
+            height,
+            eval_scope,
+        )
+
     if not image_name:
         return {
             "status": "skipped",
@@ -715,6 +1021,7 @@ def compare_with_coco(
         "image_file_name": image_record["file_name"],
         "category_filter_ids": category_ids,
         "eval_scope": eval_scope,
+        "warnings": record.get("warnings", []),
         **evaluate_prediction_gt_metrics(
             pred_masks,
             pred_scores,
@@ -815,6 +1122,7 @@ def create_segmentation_export(
     coco_image_name,
     coco_split,
     coco_eval_scope,
+    annotation_json_file=None,
 ):
     width, height = source_image.size
     masks = state["masks"].detach().cpu().numpy().astype(bool)
@@ -860,6 +1168,7 @@ def create_segmentation_export(
         width,
         height,
         coco_eval_scope,
+        annotation_json_file,
     )
     payload = {
         "export_id": export_id,
@@ -869,6 +1178,7 @@ def create_segmentation_export(
             "coco_dataset": coco_dataset,
             "coco_file_name": coco_image_name.strip() if coco_image_name else "",
             "coco_eval_scope": coco_eval_scope,
+            "annotation_json_file": str(resolve_uploaded_json_path(annotation_json_file) or ""),
         },
         "prompts": prompts,
         "predictions": predictions,
@@ -880,465 +1190,17 @@ def create_segmentation_export(
     with (export_dir / "metrics.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
-    zip_path = runtime_export_dir / f"{safe_stem(coco_image_name)}_{export_id}.zip"
+    annotation_json_path = resolve_uploaded_json_path(annotation_json_file)
+    zip_stem = coco_image_name or (annotation_json_path.stem if annotation_json_path else "")
+    zip_path = runtime_export_dir / f"{safe_stem(zip_stem)}_{export_id}.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for file_path in export_dir.rglob("*"):
             zf.write(file_path, arcname=file_path.relative_to(export_dir))
     return str(zip_path), metrics
 
 
-def handle_image_click(
-    img,
-    original_img,
-    evt: gr.SelectData,
-    mode,
-    prompt_polarity,
-    pos_points,
-    neg_points,
-    pos_boxes,
-    neg_boxes,
-    pos_polygons,
-    neg_polygons,
-    click_state,
-):
-    """处理图像点击事件，提供实时视觉反馈"""
-    if img is None:
-        return (
-            img,
-            pos_points,
-            neg_points,
-            pos_boxes,
-            neg_boxes,
-            pos_polygons,
-            neg_polygons,
-            click_state,
-            "请先上传图像",
-        )
 
-    # 如果没有原始图像，就使用当前图像作为原始图像
-    if original_img is None:
-        original_img = img.copy()
-
-    # 基于当前显示的图像进行绘制
-    vis_img = img.copy()
-
-    x, y = evt.index
-    x, y = int(x), int(y)
-
-    info_msg = ""
-    is_positive = prompt_polarity.startswith("✅")
-
-    if mode == "📍 点提示 (Point)":
-        new_point = f"{x},{y}"
-        if is_positive:
-            if pos_points:
-                pos_points += f";{new_point}"
-            else:
-                pos_points = new_point
-        else:
-            if neg_points:
-                neg_points += f";{new_point}"
-            else:
-                neg_points = new_point
-
-        if is_positive:
-            cv2.circle(vis_img, (x, y), 6, (0, 255, 0), -1)
-        else:
-            cv2.circle(vis_img, (x, y), 6, (255, 0, 0), -1)
-        cv2.circle(vis_img, (x, y), 6, (255, 255, 255), 1)
-
-        info_msg = f"{prompt_polarity} 已添加点: {new_point}"
-        return (
-            vis_img,
-            pos_points,
-            neg_points,
-            pos_boxes,
-            neg_boxes,
-            pos_polygons,
-            neg_polygons,
-            None,
-            info_msg,
-        )
-
-    elif mode == "🔲 框提示 (Box)":
-        if click_state is None:
-            click_state = {"start": [x, y], "label": is_positive}
-            cv2.circle(vis_img, (x, y), 6, (0, 0, 255), -1)
-            cv2.circle(vis_img, (x, y), 6, (255, 255, 255), 1)
-            info_msg = f"{prompt_polarity} 已记录起点: {x},{y}，请点击对角点完成框选"
-            return (
-                vis_img,
-                pos_points,
-                neg_points,
-                pos_boxes,
-                neg_boxes,
-                pos_polygons,
-                neg_polygons,
-                click_state,
-                info_msg,
-            )
-        else:
-            if isinstance(click_state, dict):
-                x1, y1 = click_state.get("start", [x, y])
-                box_is_positive = bool(click_state.get("label", is_positive))
-            else:
-                x1, y1 = click_state
-                box_is_positive = is_positive
-            x2, y2 = x, y
-
-            xmin = min(x1, x2)
-            ymin = min(y1, y2)
-            xmax = max(x1, x2)
-            ymax = max(y1, y2)
-
-            # 确保框有大小
-            if xmin == xmax:
-                xmax += 1
-            if ymin == ymax:
-                ymax += 1
-
-            new_box = f"{xmin},{ymin},{xmax},{ymax}"
-            if box_is_positive:
-                if pos_boxes:
-                    pos_boxes += f";{new_box}"
-                else:
-                    pos_boxes = new_box
-            else:
-                if neg_boxes:
-                    neg_boxes += f";{new_box}"
-                else:
-                    neg_boxes = new_box
-
-            if box_is_positive:
-                cv2.rectangle(vis_img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
-            else:
-                cv2.rectangle(vis_img, (xmin, ymin), (xmax, ymax), (255, 0, 0), 3)
-
-            info_msg = f"{'✅ Positive' if box_is_positive else '❌ Negative'} 已添加框: {new_box}"
-            return (
-                vis_img,
-                pos_points,
-                neg_points,
-                pos_boxes,
-                neg_boxes,
-                pos_polygons,
-                neg_polygons,
-                None,
-                info_msg,
-            )
-
-    elif mode == "✏️ 多边形Mask (Polygon)":
-        if not isinstance(click_state, dict) or click_state.get("type") != "polygon":
-            click_state = {"type": "polygon", "points": [], "label": is_positive}
-
-        polygon_is_positive = bool(click_state.get("label", is_positive))
-        points = click_state.setdefault("points", [])
-        points.append([x, y])
-
-        point_color = (0, 255, 0) if polygon_is_positive else (255, 0, 0)
-        for px, py in points:
-            cv2.circle(vis_img, (int(px), int(py)), 5, point_color, -1)
-            cv2.circle(vis_img, (int(px), int(py)), 5, (255, 255, 255), 1)
-        if len(points) >= 2:
-            pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(vis_img, [pts], isClosed=False, color=point_color, thickness=2)
-
-        info_msg = (
-            f"{'✅ Positive' if polygon_is_positive else '❌ Negative'} "
-            f"多边形已添加 {len(points)} 个顶点，点击“完成多边形对象”闭合"
-        )
-        return (
-            vis_img,
-            pos_points,
-            neg_points,
-            pos_boxes,
-            neg_boxes,
-            pos_polygons,
-            neg_polygons,
-            click_state,
-            info_msg,
-        )
-
-    return (
-        vis_img,
-        pos_points,
-        neg_points,
-        pos_boxes,
-        neg_boxes,
-        pos_polygons,
-        neg_polygons,
-        click_state,
-        info_msg,
-    )
-
-
-def finish_polygon(img, pos_polygons, neg_polygons, click_state):
-    """Close the in-progress polygon and store it as an object mask prompt."""
-    if img is None:
-        return img, pos_polygons, neg_polygons, click_state, "请先上传图像"
-    if not isinstance(click_state, dict) or click_state.get("type") != "polygon":
-        return img, pos_polygons, neg_polygons, click_state, "当前没有正在绘制的多边形"
-
-    points = click_state.get("points", [])
-    if len(points) < 3:
-        return img, pos_polygons, neg_polygons, click_state, "多边形至少需要 3 个顶点"
-
-    polygon_is_positive = bool(click_state.get("label", True))
-    if polygon_is_positive:
-        pos_polygons = append_polygon_prompt(pos_polygons, points)
-    else:
-        neg_polygons = append_polygon_prompt(neg_polygons, points)
-
-    vis_img = img.copy()
-    color = (0, 255, 0) if polygon_is_positive else (255, 0, 0)
-    draw_polygons(vis_img, [points], color)
-    info_msg = (
-        f"{'✅ Positive' if polygon_is_positive else '❌ Negative'} "
-        f"已完成多边形对象，共 {len(points)} 个顶点"
-    )
-    return vis_img, pos_polygons, neg_polygons, None, info_msg
-
-
-def segment_image(
-    input_image,
-    text_prompt,
-    confidence_threshold,
-    pos_point_prompt,
-    neg_point_prompt,
-    pos_box_prompt,
-    neg_box_prompt,
-    pos_polygon_prompt,
-    neg_polygon_prompt,
-    original_image=None,
-    coco_dataset=default_coco_dataset,
-    coco_image_name="",
-    coco_split="auto",
-    coco_eval_scope=coco_eval_scope_overlap,
-    progress=gr.Progress(),
-):
-    """图像分割功能"""
-    # 优先使用原始图像，如果不存在则使用输入图像
-    image_to_process = original_image if original_image is not None else input_image
-
-    if image_to_process is None:
-        return None, "请上传图像", None
-
-    if (
-        not text_prompt
-        and not pos_point_prompt
-        and not neg_point_prompt
-        and not pos_box_prompt
-        and not neg_box_prompt
-        and not pos_polygon_prompt
-        and not neg_polygon_prompt
-    ):
-        return None, "请提供至少一种提示（文本、点、框或多边形）", None
-
-    try:
-        if image_predictor is None:
-            return None, "模型未初始化，请检查模型文件", None
-
-        start_time = time.time()
-        progress(0.1, desc="正在加载图像...")
-
-        # 转换图像格式
-        if isinstance(image_to_process, np.ndarray):
-            image = Image.fromarray(image_to_process)
-        else:
-            image = image_to_process
-
-        # 设置图像
-        state = image_predictor.set_image(image)
-        progress(0.3, desc="解析提示信息...")
-
-        # 处理文本提示
-        if text_prompt:
-            state = image_predictor.set_text_prompt(text_prompt, state)
-
-        width, height = image.size
-
-        def parse_points(points_str):
-            parsed = []
-            if not points_str:
-                return parsed
-            for point_str in points_str.split(";"):
-                if point_str:
-                    try:
-                        x, y = map(float, point_str.split(","))
-                        parsed.append([x, y])
-                    except ValueError:
-                        continue
-            return parsed
-
-        def parse_boxes(boxes_str):
-            parsed = []
-            if not boxes_str:
-                return parsed
-            for box_str in boxes_str.split(";"):
-                if box_str:
-                    try:
-                        x1, y1, x2, y2 = map(float, box_str.split(","))
-                        parsed.append([x1, y1, x2, y2])
-                    except ValueError:
-                        continue
-            return parsed
-
-        def apply_points(points, label, current_state):
-            if not points:
-                return current_state
-            box_size = min(width, height) * 0.05
-            box_width = box_size / width
-            box_height = box_size / height
-            for x, y in points:
-                cx = x / width
-                cy = y / height
-                box = [cx, cy, box_width, box_height]
-                current_state = image_predictor.add_geometric_prompt(
-                    box, label, current_state
-                )
-            return current_state
-
-        def apply_boxes(boxes, label, current_state):
-            if not boxes:
-                return current_state
-            for x1, y1, x2, y2 in boxes:
-                center_x = (x1 + x2) / 2 / width
-                center_y = (y1 + y2) / 2 / height
-                box_width = (x2 - x1) / width
-                box_height = (y2 - y1) / height
-                box = [center_x, center_y, box_width, box_height]
-                current_state = image_predictor.add_geometric_prompt(
-                    box, label, current_state
-                )
-            return current_state
-
-        pos_points = parse_points(pos_point_prompt)
-        neg_points = parse_points(neg_point_prompt)
-        pos_boxes = parse_boxes(pos_box_prompt)
-        neg_boxes = parse_boxes(neg_box_prompt)
-        pos_polygons = parse_polygon_prompt(pos_polygon_prompt)
-        neg_polygons = parse_polygon_prompt(neg_polygon_prompt)
-
-        prompt_payload = {
-            "type": "image_segmentation",
-            "device": DEVICE,
-            "image_size": [width, height],
-            "confidence_threshold": confidence_threshold,
-            "text_prompt": text_prompt or "",
-            "pos_points_count": len(pos_points),
-            "neg_points_count": len(neg_points),
-            "pos_boxes_count": len(pos_boxes),
-            "neg_boxes_count": len(neg_boxes),
-            "pos_polygons_count": len(pos_polygons),
-            "neg_polygons_count": len(neg_polygons),
-            "pos_points": pos_points,
-            "neg_points": neg_points,
-            "pos_boxes_xyxy": pos_boxes,
-            "neg_boxes_xyxy": neg_boxes,
-            "pos_polygons": pos_polygons,
-            "neg_polygons": neg_polygons,
-            "coco_dataset": coco_dataset,
-            "coco_image_name": coco_image_name or "",
-            "coco_split": coco_split,
-            "coco_eval_scope": coco_eval_scope,
-        }
-
-        logger.info(json.dumps(prompt_payload, ensure_ascii=False))
-
-        result_states = []
-        has_classic_prompts = bool(
-            text_prompt or pos_points or neg_points or pos_boxes or neg_boxes
-        )
-
-        state = apply_points(pos_points, True, state)
-        state = apply_points(neg_points, False, state)
-
-        state = apply_boxes(pos_boxes, True, state)
-        state = apply_boxes(neg_boxes, False, state)
-
-        # 设置置信度阈值
-        state = image_predictor.set_confidence_threshold(confidence_threshold, state)
-        if has_classic_prompts and "boxes" in state and len(state["boxes"]) > 0:
-            result_states.append(state)
-
-        if pos_polygons:
-            progress(0.6, desc="处理多边形 mask prompt...")
-            negative_mask = np.zeros((height, width), dtype=np.uint8)
-            for polygon in neg_polygons:
-                negative_mask |= polygon_to_mask(polygon, height, width)
-
-            for polygon in pos_polygons:
-                polygon_mask = polygon_to_mask(polygon, height, width)
-                if negative_mask.any():
-                    polygon_mask[negative_mask > 0] = 0
-                if not polygon_mask.any():
-                    continue
-                polygon_state = image_predictor.predict_mask_prompt(
-                    polygon_mask, state.copy()
-                )
-                if "masks" in polygon_state and len(polygon_state["masks"]) > 0:
-                    if negative_mask.any():
-                        polygon_state["masks"] = polygon_state["masks"].clone()
-                        polygon_state["masks"][:, :, negative_mask > 0] = False
-                        polygon_state["masks_logits"] = polygon_state["masks"].float()
-                    result_states.append(polygon_state)
-
-        if result_states:
-            state["boxes"] = torch.cat([s["boxes"] for s in result_states], dim=0)
-            state["masks"] = torch.cat([s["masks"] for s in result_states], dim=0)
-            state["masks_logits"] = torch.cat(
-                [s["masks_logits"] for s in result_states], dim=0
-            )
-            state["scores"] = torch.cat([s["scores"] for s in result_states], dim=0)
-
-        progress(0.7, desc="模型推理中...")
-
-        # 获取结果
-        if "boxes" in state and len(state["boxes"]) > 0:
-            # 可视化结果
-            import matplotlib.pyplot as plt
-
-            # 使用官方的 plot_results 接口进行绘制
-            # plot_results 内部会创建 figure 并绘制 masks, boxes, scores
-            # 注意：它会打印找到的对象数量，但这不影响 Gradio 显示
-            plot_results(image, state)
-
-            # 获取当前的 figure (由 plot_results 创建) 并转换为 PIL 图像
-            buf = io.BytesIO()
-            plt.savefig(buf, format="png", bbox_inches="tight", pad_inches=0)
-            buf.seek(0)
-            result_image = Image.open(buf)
-            plt.close()  # 关闭 figure 释放内存
-
-            processing_time = time.time() - start_time
-            export_path, metrics = create_segmentation_export(
-                result_image,
-                image,
-                state,
-                prompt_payload,
-                coco_dataset,
-                coco_image_name or "",
-                coco_split,
-                coco_eval_scope,
-            )
-            metric_info = ""
-            if metrics.get("status") == "ok":
-                metric_info = "\n" + "\n".join(metrics.get("summary_lines", []))
-            elif metrics.get("status") in {"skipped", "not_found"}:
-                metric_info = f" | COCO对比: {metrics.get('reason', metrics['status'])}"
-
-            info = (
-                f"✨ 处理完成 | 耗时: {processing_time:.2f}s | "
-                f"检测到 {len(state['boxes'])} 个目标{metric_info}"
-            )
-
-            return result_image, info, export_path
-        else:
-            return image, "⚠️ 未检测到任何对象，请尝试调整提示或降低置信度阈值", None
-
-    except Exception as e:
-        return None, f"❌ 处理失败: {str(e)}", None
-
+# Legacy mixed point/box/polygon image segmentation flow removed.
 
 def convert_output_format(outputs):
     """转换模型输出格式以适配可视化函数"""
@@ -1543,347 +1405,770 @@ def process_video(
         return None, f"❌ 处理失败: {str(e)}"
 
 
+# --- PCS/PVS single-workspace override ---
+import base64 as _sam3_base64
+import threading as _sam3_threading
+
+_PVS_PREDICT_LOCK = _sam3_threading.Lock()
+_WORKSPACE_CACHE = {}
+
+
+def _pil_image(image):
+    if image is None:
+        return None
+    if isinstance(image, Image.Image):
+        return image.convert("RGB")
+    if isinstance(image, np.ndarray):
+        if image.dtype != np.uint8:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+        return Image.fromarray(image).convert("RGB")
+    return Image.open(image).convert("RGB")
+
+
+def _data_url(image):
+    image = _pil_image(image)
+    if image is None:
+        return ""
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return "data:image/png;base64," + _sam3_base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _new_pcs_state():
+    return {"text_prompt": "", "positive_boxes": [], "negative_boxes": [], "instances": {}, "next_instance_id": 1}
+
+
+def _new_pvs_state():
+    return {"instances": {}, "active_instance_id": None, "next_instance_id": 1}
+
+
+def _workspace(image_state):
+    if not image_state or not image_state.get("image_id"):
+        raise ValueError("Load an image first")
+    ws = _WORKSPACE_CACHE.get(image_state["image_id"])
+    if ws is None:
+        raise ValueError("Image state expired; reload the image")
+    return ws
+
+
+def _fresh_state(image_state):
+    base = _workspace(image_state)["base_state"]
+    return {"original_height": base["original_height"], "original_width": base["original_width"], "backbone_out": dict(base["backbone_out"])}
+
+
+def _norm_box(box, width, height):
+    x1, y1, x2, y2 = [float(v) for v in box]
+    x1, x2 = sorted((max(0.0, min(x1, width - 1)), max(0.0, min(x2, width - 1))))
+    y1, y2 = sorted((max(0.0, min(y1, height - 1)), max(0.0, min(y2, height - 1))))
+    if x2 <= x1:
+        x2 = min(width - 1, x1 + 1)
+    if y2 <= y1:
+        y2 = min(height - 1, y1 + 1)
+    return [x1, y1, x2, y2]
+
+
+def _bbox_from_payload(payload, image_state):
+    if not payload:
+        raise ValueError("Draw a bbox first")
+    data = json.loads(payload)
+    box = data.get("box_xyxy_px")
+    if not isinstance(box, list) or len(box) != 4:
+        raise ValueError("bbox payload is missing box_xyxy_px")
+    width = int(image_state.get("width") or data.get("image_width") or 0)
+    height = int(image_state.get("height") or data.get("image_height") or 0)
+    box = _norm_box(box, width, height)
+    if box[2] - box[0] < 2 or box[3] - box[1] < 2:
+        raise ValueError("bbox is too small")
+    return box
+
+
+def _xyxy_to_cxcywh_norm(box, width, height):
+    x1, y1, x2, y2 = _norm_box(box, width, height)
+    return [((x1 + x2) / 2) / width, ((y1 + y2) / 2) / height, max(1.0, x2 - x1) / width, max(1.0, y2 - y1) / height]
+
+
+def _polygon_from_payload(payload, image_state):
+    if not payload:
+        raise ValueError("Draw a positive polygon first")
+    data = json.loads(payload)
+    points = data.get("points")
+    if not isinstance(points, list) or len(points) < 3:
+        raise ValueError("polygon needs at least 3 points")
+    width = int(image_state.get("width") or data.get("image_width") or 0)
+    height = int(image_state.get("height") or data.get("image_height") or 0)
+    parsed = []
+    for point in points:
+        if isinstance(point, (list, tuple)) and len(point) == 2:
+            parsed.append([max(0.0, min(float(point[0]), width - 1)), max(0.0, min(float(point[1]), height - 1))])
+    if len(parsed) < 3:
+        raise ValueError("polygon needs at least 3 valid points")
+    return parsed
+
+
+def _point_from_payload(payload, image_state):
+    if not payload:
+        raise ValueError("Click a positive point first")
+    data = json.loads(payload)
+    point = data.get("point_xy_px")
+    if not isinstance(point, list) or len(point) != 2:
+        raise ValueError("point payload is missing point_xy_px")
+    width = int(image_state.get("width") or data.get("image_width") or 0)
+    height = int(image_state.get("height") or data.get("image_height") or 0)
+    return [max(0.0, min(float(point[0]), width - 1)), max(0.0, min(float(point[1]), height - 1))]
+
+
+def _prompt_mask_size():
+    return tuple(int(v) for v in image_predictor.model.inst_interactive_predictor.model.sam_prompt_encoder.mask_input_size)
+
+
+def _polygon_lowres_logits(polygon, width, height):
+    target_h, target_w = _prompt_mask_size()
+    mask = polygon_to_mask(polygon, height, width).astype(np.float32)
+    lowres = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+    return ((np.clip(lowres, 0.0, 1.0) * 2.0 - 1.0) * 10.0).astype(np.float32)
+
+
+def _combine_logits(active_logits, polygon_logits, mode="replace"):
+    polygon_logits = np.asarray(polygon_logits, dtype=np.float32)
+    if polygon_logits.ndim == 3:
+        polygon_logits = polygon_logits[0]
+    if mode == "blend" and active_logits is not None:
+        active = np.asarray(active_logits, dtype=np.float32)
+        if active.ndim == 3:
+            active = active[0]
+        return np.maximum(active * 0.35, polygon_logits).astype(np.float32)
+    return polygon_logits.astype(np.float32)
+
+
+def _mask_box(mask):
+    ys, xs = np.where(np.asarray(mask).astype(bool))
+    if len(xs) == 0 or len(ys) == 0:
+        return [0.0, 0.0, 1.0, 1.0]
+    return [float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)]
+
+def _predict_inst(base_state, box_xyxy_px=None, mask_input_lowres_logits=None, point_coords_px=None, point_labels=None):
+    if image_predictor is None:
+        raise RuntimeError("Image predictor is not initialized")
+    kwargs = {"multimask_output": True, "return_logits": True}
+    if box_xyxy_px is not None:
+        kwargs["box"] = np.asarray(box_xyxy_px, dtype=np.float32)
+    if point_coords_px is not None:
+        coords = np.asarray(point_coords_px, dtype=np.float32)
+        if coords.ndim == 1:
+            coords = coords[None, :]
+        if coords.ndim != 2 or coords.shape[-1] != 2:
+            raise ValueError("point_coords_px must have shape Nx2")
+        labels = np.ones((coords.shape[0],), dtype=np.int64) if point_labels is None else np.asarray(point_labels, dtype=np.int64).reshape(-1)
+        if labels.shape[0] != coords.shape[0]:
+            raise ValueError("point_labels length must match point_coords_px")
+        kwargs["point_coords"] = coords
+        kwargs["point_labels"] = labels
+    if mask_input_lowres_logits is not None:
+        mask_input = np.asarray(mask_input_lowres_logits, dtype=np.float32)
+        if mask_input.ndim == 2:
+            mask_input = mask_input[None, :, :]
+        expected = _prompt_mask_size()
+        if mask_input.ndim != 3 or tuple(mask_input.shape[-2:]) != expected:
+            raise ValueError(f"mask_input_lowres_logits must be 1x{expected[0]}x{expected[1]}")
+        kwargs["mask_input"] = mask_input
+    with _PVS_PREDICT_LOCK:
+        masks, scores, lowres_logits = image_predictor.model.predict_inst(base_state, **kwargs)
+    masks = np.asarray(masks)
+    if masks.ndim == 2:
+        masks = masks[None, ...]
+    return {
+        "masks": masks > 0,
+        "scores": np.asarray(scores, dtype=np.float32).reshape(-1),
+        "lowres_logits": np.asarray(lowres_logits, dtype=np.float32),
+    }
+
+
+def _best(pred):
+    if len(pred["scores"]) == 0:
+        raise ValueError("predict_inst returned no masks")
+    return int(np.argmax(pred["scores"]))
+
+
+def _make_inst(inst_id, source, mask, box, score, pvs_logits=None, pcs_prob=None, history=None):
+    return {
+        "id": int(inst_id),
+        "source": source,
+        "mask_fullres_bool": np.asarray(mask).astype(bool),
+        "box_xyxy_px": [float(v) for v in box],
+        "score": float(score),
+        "pvs_lowres_logits": None if pvs_logits is None else np.asarray(pvs_logits, dtype=np.float32),
+        "pcs_fullres_prob": None if pcs_prob is None else np.asarray(pcs_prob, dtype=np.float32),
+        "status": "draft",
+        "prompt_history": history or [],
+    }
+
+
+def _snapshot(inst):
+    return {
+        "mask_fullres_bool": np.asarray(inst["mask_fullres_bool"]).copy(),
+        "pvs_lowres_logits": None if inst.get("pvs_lowres_logits") is None else np.asarray(inst["pvs_lowres_logits"]).copy(),
+        "box_xyxy_px": list(inst.get("box_xyxy_px") or []),
+        "score": float(inst.get("score", 0.0)),
+        "status": inst.get("status", "draft"),
+    }
+
+
+def _restore(inst, snap):
+    inst["mask_fullres_bool"] = np.asarray(snap["mask_fullres_bool"]).copy()
+    inst["pvs_lowres_logits"] = None if snap.get("pvs_lowres_logits") is None else np.asarray(snap["pvs_lowres_logits"]).copy()
+    inst["box_xyxy_px"] = list(snap.get("box_xyxy_px") or [])
+    inst["score"] = float(snap.get("score", 0.0))
+    inst["status"] = snap.get("status", inst.get("status", "draft"))
+
+
+def _active_instances(state):
+    return [inst for inst in state.get("instances", {}).values() if inst.get("status") != "deleted"]
+
+
+def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None):
+    image = np.array(_workspace(image_state)["image"].convert("RGB"))
+    overlay = image.copy()
+    line = image.copy()
+
+    def paint(mask, color, alpha):
+        nonlocal overlay
+        mask = np.asarray(mask).astype(bool)
+        if mask.shape[:2] != overlay.shape[:2]:
+            mask = cv2.resize(mask.astype(np.uint8), (overlay.shape[1], overlay.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
+        c = np.array(color, dtype=np.uint8)
+        overlay[mask] = (overlay[mask] * (1 - alpha) + c * alpha).astype(np.uint8)
+
+    if mode == "PCS Auto":
+        for inst in _active_instances(pcs_state):
+            paint(inst["mask_fullres_bool"], (52, 168, 83), 0.24)
+            x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
+            cv2.rectangle(line, (x1, y1), (x2, y2), (52, 168, 83), 3)
+            cv2.putText(line, f"PCS#{inst['id']}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (52, 168, 83), 2)
+    if mode == "PVS Manual":
+        active_id = pvs_state.get("active_instance_id")
+        for inst in _active_instances(pvs_state):
+            is_active = str(inst["id"]) == str(active_id)
+            color = (245, 132, 31) if is_active else (66, 133, 244)
+            paint(inst["mask_fullres_bool"], color, 0.32 if is_active else 0.22)
+            x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
+            cv2.rectangle(line, (x1, y1), (x2, y2), color, 3 if is_active else 2)
+            cv2.putText(line, f"PVS#{inst['id']}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+    if prompt_state:
+        if prompt_state.get("last_bbox"):
+            x1, y1, x2, y2 = [int(round(v)) for v in prompt_state["last_bbox"]]
+            cv2.rectangle(line, (x1, y1), (x2, y2), (255, 193, 7), 3)
+        if prompt_state.get("bbox_start"):
+            x, y = [int(round(v)) for v in prompt_state["bbox_start"]]
+            cv2.circle(line, (x, y), 7, (255, 193, 7), -1)
+            cv2.putText(line, "bbox start", (x + 8, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 193, 7), 2)
+        if prompt_state.get("last_point"):
+            x, y = [int(round(v)) for v in prompt_state["last_point"]]
+            cv2.circle(line, (x, y), 7, (0, 0, 255), -1)
+            cv2.circle(line, (x, y), 9, (255, 255, 255), 2)
+        pts = prompt_state.get("polygon_points") or []
+        if pts:
+            arr = np.array([[int(round(x)), int(round(y))] for x, y in pts], dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(line, [arr], isClosed=len(pts) >= 3, color=(34, 197, 94), thickness=3)
+            for idx, (x, y) in enumerate(pts, start=1):
+                cv2.circle(line, (int(round(x)), int(round(y))), 5, (34, 197, 94), -1)
+                cv2.putText(line, str(idx), (int(round(x)) + 5, int(round(y)) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (34, 197, 94), 1)
+    return Image.fromarray(cv2.addWeighted(overlay, 0.72, line, 0.28, 0))
+
+
+
+def _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None):
+    if not image_state or not image_state.get("image_id"):
+        return None
+    return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state)
+
+
+def _new_prompt_state():
+    return {"bbox_start": None, "last_bbox": None, "last_point": None, "polygon_points": []}
+
+
+def _event_point(evt, image_state):
+    index = getattr(evt, "index", None)
+    if isinstance(index, dict):
+        point = index.get("point") or index.get("index") or index.get("value")
+    else:
+        point = index
+    if not isinstance(point, (list, tuple)) or len(point) < 2:
+        raise ValueError(f"Unsupported Gradio select event index: {index!r}")
+    width = int(image_state.get("width") or 0)
+    height = int(image_state.get("height") or 0)
+    return [max(0.0, min(float(point[0]), width - 1)), max(0.0, min(float(point[1]), height - 1))]
+
+
+def _payload_json(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, prompt_state, evt: gr.SelectData):
+    prompt_state = prompt_state or _new_prompt_state()
+    bbox_payload = gr.update()
+    point_payload = gr.update()
+    polygon_payload = gr.update()
+    try:
+        point = _event_point(evt, image_state)
+        w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
+        if click_tool == "Positive point":
+            prompt_state["last_point"] = point
+            point_payload = _payload_json({"type": "positive_point", "point_xy_px": point, "image_width": w, "image_height": h})
+            info = f"Positive point selected: {[round(v, 1) for v in point]}"
+        elif click_tool == "BBox two-click":
+            if prompt_state.get("bbox_start") is None:
+                prompt_state["bbox_start"] = point
+                prompt_state["last_bbox"] = None
+                info = f"BBox first corner selected: {[round(v, 1) for v in point]}. Click the opposite corner."
+            else:
+                start = prompt_state.get("bbox_start")
+                box = _norm_box([start[0], start[1], point[0], point[1]], w, h)
+                prompt_state["bbox_start"] = None
+                prompt_state["last_bbox"] = box
+                bbox_payload = _payload_json({"type": "bbox", "box_xyxy_px": box, "image_width": w, "image_height": h})
+                info = f"BBox selected: {[round(v, 1) for v in box]}"
+        elif click_tool == "Polygon vertex":
+            points = prompt_state.setdefault("polygon_points", [])
+            points.append(point)
+            info = f"Polygon vertex #{len(points)} selected. Click Finish polygon when done."
+        else:
+            info = f"Unknown click tool: {click_tool}"
+    except Exception as exc:
+        info = f"Image click failed: {exc}"
+    return prompt_state, bbox_payload, point_payload, polygon_payload, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+
+
+def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode):
+    prompt_state = prompt_state or _new_prompt_state()
+    points = prompt_state.get("polygon_points") or []
+    polygon_payload = gr.update()
+    if len(points) < 3:
+        info = "Polygon needs at least 3 vertices"
+        return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+
+    w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
+    polygon_payload = _payload_json({"type": "positive_polygon", "points": points, "image_width": w, "image_height": h})
+
+    if mode != "PVS Manual":
+        info = "Polygon finished. PCS Auto does not use polygon prompts."
+        return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+
+    try:
+        active_id = pvs_state.get("active_instance_id")
+        if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
+            raise ValueError("Create or select a PVS bbox instance before polygon refinement")
+        inst = pvs_state["instances"][int(active_id)]
+        ws = _workspace(image_state)
+        image_w, image_h = ws["image"].size
+        polygon_logits = _polygon_lowres_logits(points, image_w, image_h)
+        combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode="replace")
+        before = _snapshot(inst)
+        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
+        idx = _best(pred)
+        mask = pred["masks"][idx]
+        inst["mask_fullres_bool"] = mask
+        inst["box_xyxy_px"] = _mask_box(mask)
+        inst["score"] = float(pred["scores"][idx])
+        inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
+        after = _snapshot(inst)
+        inst.setdefault("prompt_history", []).append({"op":"positive_polygon_refine","mode":"replace","prompt":{"type":"positive_polygon","points":points},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
+        prompt_state["polygon_points"] = []
+        info = f"PVS #{active_id} refined with the finished polygon"
+    except Exception as exc:
+        info = f"PVS polygon refine failed: {exc}"
+    return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+
+def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
+    prompt_state = _new_prompt_state()
+    return prompt_state, "", "", "", *_view(image_state, pcs_state, pvs_state, mode, "Prompt selection cleared", prompt_state)
+
+def _pcs_choice_update(pcs_state):
+    choices = [(f"PCS #{i['id']} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pcs_state)]
+    return gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+
+def _pvs_choice_update(pvs_state):
+    choices = [(f"PVS #{i['id']} {i['source']} {i.get('status','draft')} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pvs_state)]
+    active = pvs_state.get("active_instance_id")
+    value = str(active) if active is not None and any(c[1] == str(active) for c in choices) else (choices[0][1] if choices else None)
+    return gr.update(choices=choices, value=value)
+
+
+def _pcs_summary(pcs_state):
+    lines = [f"positive bbox exemplars: {len(pcs_state.get('positive_boxes', []))}", f"negative bbox exemplars: {len(pcs_state.get('negative_boxes', []))}"]
+    items = _active_instances(pcs_state)
+    lines.append(f"PCS instances: {len(items)}")
+    for inst in items[:80]:
+        lines.append(f"#{inst['id']} score={inst['score']:.3f} box={[round(v,1) for v in inst['box_xyxy_px']]}")
+    return "\n".join(lines)
+
+
+def _pvs_summary(pvs_state):
+    items = _active_instances(pvs_state)
+    active = pvs_state.get("active_instance_id")
+    lines = [f"PVS instances: {len(items)}", f"active: {active or '-'}"]
+    for inst in items[:80]:
+        mark = "*" if str(inst["id"]) == str(active) else " "
+        lines.append(f"{mark}#{inst['id']} {inst['source']} {inst.get('status','draft')} score={inst['score']:.3f}")
+    return "\n".join(lines)
+
+
+def _view(image_state, pcs_state, pvs_state, mode, info, prompt_state=None):
+    return (_workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state), _pcs_summary(pcs_state), _pvs_summary(pvs_state), _pvs_choice_update(pvs_state), info)
+
+
+def _init_workspace(input_image, mode):
+    pcs_state, pvs_state = _new_pcs_state(), _new_pvs_state()
+    prompt_state = _new_prompt_state()
+    image_state = {"image_id": None, "width": 0, "height": 0}
+    if input_image is None:
+        return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
+    if image_predictor is None:
+        return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
+    image = _pil_image(input_image)
+    image_id = uuid.uuid4().hex
+    _WORKSPACE_CACHE[image_id] = {"image": image, "base_state": image_predictor.set_image(image)}
+    image_state = {"image_id": image_id, "width": image.width, "height": image.height}
+    return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
+
+
+def _add_pcs_bbox(image_state, pcs_state, pvs_state, mode, bbox_payload, kind):
+    try:
+        box = _bbox_from_payload(bbox_payload, image_state)
+        key = "positive_boxes" if kind.startswith("Positive") else "negative_boxes"
+        pcs_state.setdefault(key, []).append(box)
+        info = f"Added PCS {kind}: {[round(v,1) for v in box]}"
+    except Exception as exc:
+        info = f"PCS bbox failed: {exc}"
+    return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _clear_pcs(image_state, pcs_state, pvs_state, mode):
+    pcs_state = _new_pcs_state()
+    return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, "PCS cleared")
+
+
+def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
+    try:
+        ws = _workspace(image_state)
+        w, h = ws["image"].size
+        if not text_prompt and not pcs_state.get("positive_boxes") and not pcs_state.get("negative_boxes"):
+            raise ValueError("PCS needs a text prompt or bbox exemplar")
+        state = _fresh_state(image_state)
+        if text_prompt:
+            state = image_predictor.set_text_prompt(text_prompt, state)
+        for box in pcs_state.get("positive_boxes", []):
+            state = image_predictor.add_geometric_prompt(_xyxy_to_cxcywh_norm(box, w, h), True, state)
+        for box in pcs_state.get("negative_boxes", []):
+            state = image_predictor.add_geometric_prompt(_xyxy_to_cxcywh_norm(box, w, h), False, state)
+        state = image_predictor.set_confidence_threshold(float(threshold), state)
+        masks = state.get("masks")
+        if masks is None or len(masks) == 0:
+            pcs_state["instances"] = {}
+            return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, "PCS found no instances")
+        masks_np = masks.detach().cpu().numpy().astype(bool)
+        if masks_np.ndim == 4:
+            masks_np = masks_np[:, 0]
+        probs = state.get("masks_logits")
+        probs_np = None if probs is None else probs.detach().cpu().numpy().astype(np.float32)
+        if probs_np is not None and probs_np.ndim == 4:
+            probs_np = probs_np[:, 0]
+        boxes_np = state["boxes"].detach().cpu().numpy()
+        scores_np = state["scores"].detach().cpu().numpy()
+        instances = {}
+        for idx, mask in enumerate(masks_np):
+            inst_id = idx + 1
+            instances[inst_id] = _make_inst(inst_id, "pcs", mask, _norm_box(boxes_np[idx].tolist(), w, h), float(scores_np[idx]), pcs_prob=None if probs_np is None else probs_np[idx], history=[{"op":"pcs_grounding","text_prompt":text_prompt or ""}])
+        pcs_state["instances"] = instances
+        pcs_state["next_instance_id"] = len(instances) + 1
+        pcs_state["text_prompt"] = text_prompt or ""
+        info = f"PCS found {len(instances)} instances"
+    except Exception as exc:
+        info = f"PCS failed: {exc}"
+    return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _create_pvs(image_state, pcs_state, pvs_state, mode, bbox_payload):
+    try:
+        box = _bbox_from_payload(bbox_payload, image_state)
+        pred = _predict_inst(_fresh_state(image_state), box_xyxy_px=box)
+        idx = _best(pred)
+        mask = pred["masks"][idx]
+        inst_id = int(pvs_state.get("next_instance_id", 1))
+        pvs_state.setdefault("instances", {})[inst_id] = _make_inst(inst_id, "manual_pvs", mask, _mask_box(mask), pred["scores"][idx], pvs_logits=pred["lowres_logits"][idx], history=[{"op":"create_from_bbox","box_xyxy_px":box,"candidate_scores":pred["scores"].astype(float).tolist()}])
+        pvs_state["active_instance_id"] = inst_id
+        pvs_state["next_instance_id"] = inst_id + 1
+        info = f"Created PVS instance #{inst_id}"
+    except Exception as exc:
+        info = f"PVS bbox failed: {exc}"
+    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _set_active_pvs(image_state, pcs_state, pvs_state, mode, selected_id):
+    if selected_id:
+        pvs_state["active_instance_id"] = int(selected_id)
+        info = f"Selected PVS #{selected_id}"
+    else:
+        info = "No PVS instance selected"
+    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload):
+    try:
+        point = _point_from_payload(point_payload, image_state)
+        active_id = pvs_state.get("active_instance_id")
+        active_inst = None
+        mask_input = None
+        if active_id is not None and int(active_id) in pvs_state.get("instances", {}):
+            active_inst = pvs_state["instances"][int(active_id)]
+            mask_input = active_inst.get("pvs_lowres_logits")
+        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=mask_input, point_coords_px=[point], point_labels=[1])
+        idx = _best(pred)
+        mask = pred["masks"][idx]
+        if active_inst is None:
+            inst_id = int(pvs_state.get("next_instance_id", 1))
+            pvs_state.setdefault("instances", {})[inst_id] = _make_inst(inst_id, "manual_pvs_point", mask, _mask_box(mask), pred["scores"][idx], pvs_logits=pred["lowres_logits"][idx], history=[{"op":"create_from_positive_point","point_xy_px":point,"candidate_scores":pred["scores"].astype(float).tolist()}])
+            pvs_state["active_instance_id"] = inst_id
+            pvs_state["next_instance_id"] = inst_id + 1
+            info = f"Created PVS instance #{inst_id} from positive point"
+        else:
+            before = _snapshot(active_inst)
+            active_inst["mask_fullres_bool"] = mask
+            active_inst["box_xyxy_px"] = _mask_box(mask)
+            active_inst["score"] = float(pred["scores"][idx])
+            active_inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
+            after = _snapshot(active_inst)
+            active_inst.setdefault("prompt_history", []).append({"op":"positive_point_refine","prompt":{"type":"positive_point","point_xy_px":point},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
+            info = f"PVS #{active_id} refined with positive point"
+    except Exception as exc:
+        info = f"PVS positive point failed: {exc}"
+    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+def _refine_pvs_polygon(image_state, pcs_state, pvs_state, mode, polygon_payload):
+    try:
+        active_id = pvs_state.get("active_instance_id")
+        if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
+            raise ValueError("Select an active PVS instance first")
+        inst = pvs_state["instances"][int(active_id)]
+        polygon = _polygon_from_payload(polygon_payload, image_state)
+        ws = _workspace(image_state)
+        w, h = ws["image"].size
+        polygon_logits = _polygon_lowres_logits(polygon, w, h)
+        combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode="replace")
+        before = _snapshot(inst)
+        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
+        idx = _best(pred)
+        mask = pred["masks"][idx]
+        inst["mask_fullres_bool"] = mask
+        inst["box_xyxy_px"] = _mask_box(mask)
+        inst["score"] = float(pred["scores"][idx])
+        inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
+        after = _snapshot(inst)
+        inst.setdefault("prompt_history", []).append({"op":"positive_polygon_refine","mode":"replace","prompt":{"type":"positive_polygon","points":polygon},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
+        info = f"PVS #{active_id} refined with positive polygon"
+    except Exception as exc:
+        info = f"PVS polygon refine failed: {exc}"
+    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _undo_pvs(image_state, pcs_state, pvs_state, mode):
+    try:
+        active_id = pvs_state.get("active_instance_id")
+        if active_id is None:
+            raise ValueError("Select a PVS instance first")
+        inst = pvs_state["instances"][int(active_id)]
+        history = inst.setdefault("prompt_history", [])
+        while history:
+            item = history.pop()
+            if item.get("before") is not None:
+                _restore(inst, item["before"])
+                info = f"Restored PVS #{active_id} to the previous refine state"
+                break
+        else:
+            info = "No refine step to undo"
+    except Exception as exc:
+        info = f"Undo failed: {exc}"
+    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _delete_pvs(image_state, pcs_state, pvs_state, mode):
+    try:
+        active_id = pvs_state.get("active_instance_id")
+        if active_id is None:
+            raise ValueError("Select a PVS instance first")
+        pvs_state["instances"][int(active_id)]["status"] = "deleted"
+        pvs_state["active_instance_id"] = None
+        info = f"Deleted PVS #{active_id}"
+    except Exception as exc:
+        info = f"Delete failed: {exc}"
+    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _accept_pvs(image_state, pcs_state, pvs_state, mode):
+    try:
+        active_id = pvs_state.get("active_instance_id")
+        if active_id is None:
+            raise ValueError("Select a PVS instance first")
+        pvs_state["instances"][int(active_id)]["status"] = "accepted"
+        info = f"PVS #{active_id} accepted"
+    except Exception as exc:
+        info = f"Accept failed: {exc}"
+    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _history_json(history):
+    rows = []
+    for item in history:
+        row = {"op": item.get("op"), "prompt": item.get("prompt"), "box_xyxy_px": item.get("box_xyxy_px"), "candidate_scores": item.get("candidate_scores")}
+        if item.get("before"):
+            row["before"] = {"box_xyxy_px": item["before"].get("box_xyxy_px"), "score": item["before"].get("score"), "status": item["before"].get("status")}
+        if item.get("after"):
+            row["after"] = {"box_xyxy_px": item["after"].get("box_xyxy_px"), "score": item["after"].get("score"), "status": item["after"].get("status")}
+        rows.append({k: v for k, v in row.items() if v is not None})
+    return rows
+
+
+def _export_pool(image_state, pcs_state, pvs_state, mode, pool_name, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file):
+    try:
+        ws = _workspace(image_state)
+        image = ws["image"]
+        pool = pcs_state if pool_name == "pcs" else pvs_state
+        instances = _active_instances(pool)
+        if not instances:
+            raise ValueError(f"No active {pool_name.upper()} instance")
+        export_id = f"{pool_name}_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        export_dir = runtime_export_dir / export_id
+        mask_dir = export_dir / "masks"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        mask_dir.mkdir(exist_ok=True)
+        _overlay(image_state, pcs_state, pvs_state, mode).save(export_dir / "overlay.png")
+        masks, scores, predictions = [], [], []
+        for inst in instances:
+            mask = np.asarray(inst["mask_fullres_bool"]).astype(bool)
+            masks.append(mask)
+            scores.append(float(inst.get("score", 1.0)))
+            mask_path = mask_dir / f"{pool_name}_{inst['id']:03d}.png"
+            cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255)
+            predictions.append({"id": int(inst["id"]), "source": inst.get("source"), "status": inst.get("status"), "score": float(inst.get("score", 0.0)), "bbox_xyxy": [float(v) for v in inst.get("box_xyxy_px", [])], "mask_file": str(mask_path.relative_to(export_dir)), "final_contour_polygon": mask_to_polygons(mask), "prompt_history": _history_json(inst.get("prompt_history", []))})
+        metrics = compare_with_coco(masks, scores, coco_dataset, coco_image_name.strip() if coco_image_name else "", coco_split, pcs_state.get("text_prompt", "") if pool_name == "pcs" else "", image.width, image.height, coco_eval_scope, annotation_json_file)
+        with (export_dir / "prediction.json").open("w", encoding="utf-8") as f:
+            json.dump({"export_id": export_id, "pool": pool_name, "image": {"width": image.width, "height": image.height}, "predictions": predictions, "metrics": metrics}, f, ensure_ascii=False, indent=2)
+        with (export_dir / "metrics.json").open("w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2)
+        zip_path = runtime_export_dir / f"{export_id}.zip"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for file_path in export_dir.rglob("*"):
+                zf.write(file_path, arcname=file_path.relative_to(export_dir))
+        info = f"Exported {len(instances)} {pool_name.upper()} instances: {zip_path}"
+        if metrics.get("summary_lines"):
+            info += "\n" + "\n".join(metrics["summary_lines"])
+        return str(zip_path), info
+    except Exception as exc:
+        return None, f"Export failed: {exc}"
+
+
+def _export_pcs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file):
+    path, info = _export_pool(image_state, pcs_state, pvs_state, mode, "pcs", coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file)
+    return path, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _export_pvs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file):
+    path, info = _export_pool(image_state, pcs_state, pvs_state, mode, "pvs", coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file)
+    return path, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _switch_mode(mode, image_state, pcs_state, pvs_state):
+    return (gr.update(visible=mode == "PCS Auto"), gr.update(visible=mode == "PVS Manual"), *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}"))
+
 def create_demo():
-    """创建美化后的Gradio演示界面"""
-
-    # 自定义CSS
+    """Create the single-workspace PCS/PVS Gradio interface."""
     custom_css = """
-    .container { max-width: 1200px; margin: auto; padding-top: 20px; }
-    h1 { text-align: center; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #2d3748; margin-bottom: 10px; }
-    .description { text-align: center; font-size: 1.1em; color: #4a5568; margin-bottom: 30px; }
-    .gr-button-primary { background: linear-gradient(90deg, #4b6cb7 0%, #182848 100%); border: none; }
-    .gr-box { border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-    #interaction-info { font-weight: bold; color: #2b6cb0; text-align: center; background-color: #ebf8ff; padding: 10px; border-radius: 5px; border: 1px solid #bee3f8; }
-    
-    /* 让Radio按钮组水平撑满 */
-    .mode-radio .wrap { display: flex; width: 100%; gap: 10px; }
-    .mode-radio .wrap label { flex: 1; justify-content: center; text-align: center; }
+    .container { max-width: 1500px; margin: auto; padding-top: 18px; }
+    h1 { text-align: center; color: #1f2937; margin-bottom: 8px; }
+    .description { text-align: center; color: #4b5563; margin-bottom: 20px; }
+    #interaction-info { font-weight: 600; color: #1f2937; background: #eef6ff; border: 1px solid #bfdbfe; padding: 10px; border-radius: 6px; }
+    .hidden-payload { display: none !important; }
+    .sam3-empty-workspace { min-height: 520px; border: 1px dashed #94a3b8; display: flex; align-items: center; justify-content: center; color: #64748b; background: #f8fafc; }
+    .sam3-canvas-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+    .sam3-tool { border: 1px solid #cbd5e1; background: #fff; color: #1f2937; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    .sam3-tool.active { background: #2563eb; color: white; border-color: #2563eb; }
+    .sam3-tool-hint { color: #64748b; font-size: 13px; }
+    .sam3-canvas-stage { position: relative; width: 100%; overflow: auto; border: 1px solid #cbd5e1; border-radius: 6px; background: #0f172a; }
+    .sam3-canvas-stage img { display: block; width: 100%; height: auto; user-select: none; position: relative; z-index: 1; }
+    .sam3-canvas-stage canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; cursor: crosshair; z-index: 2; touch-action: none; }
+    .sam3-panel textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     """
-
-    theme = gr.themes.Soft(
-        primary_hue="blue",
-        secondary_hue="slate",
-        font=[
-            gr.themes.GoogleFont("Inter"),
-            "ui-sans-serif",
-            "system-ui",
-            "sans-serif",
-        ],
-    )
-
-    with gr.Blocks(theme=theme, css=custom_css, title="SAM3 交互式视觉工作台") as demo:
-
+    theme = gr.themes.Soft(primary_hue="blue", secondary_hue="slate", font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"])
+    with gr.Blocks(theme=theme, css=custom_css, title="SAM3 PCS/PVS Workspace") as demo:
         with gr.Column(elem_classes="container"):
-            gr.Markdown("# 👁️ SAM3 交互式视觉工作台")
-            gr.Markdown(
-                "基于 SAM3 的下一代图像分割与视频跟踪系统", elem_classes="description"
-            )
-
-            with gr.Tabs():
-                # ================= 图像分割标签页 =================
-                with gr.TabItem("🖼️ 智能图像分割", id="tab_image"):
+            gr.Markdown("# SAM3 PCS/PVS Workspace")
+            gr.Markdown("Single workspace with PCS Auto and PVS Manual modes.", elem_classes="description")
+            image_state = gr.State({"image_id": None, "width": 0, "height": 0})
+            pcs_state = gr.State(_new_pcs_state())
+            pvs_state = gr.State(_new_pvs_state())
+            prompt_state = gr.State(_new_prompt_state())
+            bbox_payload = gr.Textbox(label="bbox payload", elem_id="bbox_payload", elem_classes="hidden-payload")
+            polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
+            point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
+            with gr.Row():
+                with gr.Column(scale=7):
+                    image_upload = gr.Image(type="numpy", label="Image / workspace (upload and click here)", sources=["upload", "clipboard"])
+                    click_tool = gr.Radio(choices=["Positive point", "BBox two-click", "Polygon vertex"], value="BBox two-click", label="Gradio click tool")
                     with gr.Row():
-                        # 左侧控制栏
-                        with gr.Column(scale=1):
-                            image_input = gr.Image(
-                                type="numpy",
-                                label="原始图像 (点击进行交互)",
-                                elem_id="input_image",
-                            )
-
-                            # 存储原始图像状态
-                            original_image_state = gr.State(None)
-                            click_state = gr.State(None)
-
-                            with gr.Group():
-                                gr.Markdown("### 🎮 交互模式")
-                                # 第一行：模式选择
-                                interaction_mode = gr.Radio(
-                                    choices=[
-                                        "📍 点提示 (Point)",
-                                        "🔲 框提示 (Box)",
-                                        "✏️ 多边形Mask (Polygon)",
-                                    ],
-                                    value="📍 点提示 (Point)",
-                                    label="选择模式",
-                                    show_label=False,
-                                    elem_classes="mode-radio",
-                                )
-                                prompt_polarity = gr.Radio(
-                                    choices=["✅ Positive", "❌ Negative"],
-                                    value="✅ Positive",
-                                    label="提示极性",
-                                    show_label=False,
-                                    elem_classes="mode-radio",
-                                )
-                                # 第二行：清空按钮（全宽）
-                                with gr.Row():
-                                    finish_polygon_btn = gr.Button(
-                                        "✅ 完成多边形对象",
-                                        size="sm",
-                                        variant="secondary",
-                                    )
-                                    clear_prompts_btn = gr.Button(
-                                        "🗑️ 清空提示 (Clear Prompts)",
-                                        size="sm",
-                                        variant="secondary",
-                                    )
-
-                                interaction_info = gr.Markdown(
-                                    "👆 点击图像开始添加提示...",
-                                    elem_id="interaction-info",
-                                )
-
-                            with gr.Accordion("📝 高级提示选项", open=True):
-                                text_prompt = gr.Textbox(
-                                    label="文本提示 (Text Prompt)",
-                                    placeholder="输入物体描述，例如：'a red car' 或 '一只猫'",
-                                    lines=1,
-                                )
-
-                                with gr.Row():
-                                    gr.Markdown("示例快速填充：")
-                                    example_text_btn = gr.Button("🐱 猫", size="sm")
-                                    example_point_btn = gr.Button(
-                                        "📍 示例点", size="sm"
-                                    )
-
-                                with gr.Row(
-                                    visible=False
-                                ):  # 隐藏原始坐标输入框，保持后端逻辑但减少界面干扰
-                                    pos_point_prompt = gr.Textbox(label="正点坐标")
-                                    neg_point_prompt = gr.Textbox(label="负点坐标")
-                                    pos_box_prompt = gr.Textbox(label="正框坐标")
-                                    neg_box_prompt = gr.Textbox(label="负框坐标")
-                                    pos_polygon_prompt = gr.Textbox(label="正多边形坐标")
-                                    neg_polygon_prompt = gr.Textbox(label="负多边形坐标")
-
-                            confidence_threshold = gr.Slider(
-                                minimum=0.0,
-                                maximum=1.0,
-                                value=0.4,
-                                step=0.05,
-                                label="🎯 置信度阈值 (Confidence)",
-                            )
-
-                            with gr.Accordion("📦 导出与 COCO 量化", open=False):
-                                coco_dataset = gr.Dropdown(
-                                    choices=coco_dataset_choices,
-                                    value=default_coco_dataset,
-                                    label="指标数据集",
-                                )
-                                coco_image_name = gr.Textbox(
-                                    label="COCO image file_name（可选）",
-                                    placeholder="填写所选数据集里的图片文件名；留空则只导出预测结果",
-                                    lines=1,
-                                )
-                                coco_split = gr.Radio(
-                                    choices=["auto", "val", "train", "test"],
-                                    value="auto",
-                                    label="标注 split",
-                                )
-                                coco_eval_scope = gr.Radio(
-                                    choices=[coco_eval_scope_overlap, coco_eval_scope_full],
-                                    value=coco_eval_scope_overlap,
-                                    label="评估范围",
-                                )
-
-                            segment_button = gr.Button(
-                                "🚀 开始分割 (Segment)", variant="primary", size="lg"
-                            )
-
-                        # 右侧结果栏
-                        with gr.Column(scale=1):
-                            image_output = gr.Image(type="numpy", label="✨ 分割结果")
-                            image_info = gr.Textbox(
-                                label="📊 分析报告", interactive=False, lines=18
-                            )
-                            export_file = gr.File(
-                                label="📦 下载结果包（PNG + masks + JSON）",
-                                interactive=False,
-                            )
-
-                    # 事件绑定
-
-                    # 1. 上传图片时保存原图
-                    def store_original_image(img):
-                        return img, None, "", "", "", "", "", "", "👆 点击图像开始添加提示...", None
-
-                    image_input.upload(
-                        fn=store_original_image,
-                        inputs=[image_input],
-                        outputs=[
-                            original_image_state,
-                            click_state,
-                            pos_point_prompt,
-                            neg_point_prompt,
-                            pos_box_prompt,
-                            neg_box_prompt,
-                            pos_polygon_prompt,
-                            neg_polygon_prompt,
-                            interaction_info,
-                            export_file,
-                        ],
-                    )
-
-                    # 2. 点击图片处理
-                    image_input.select(
-                        fn=handle_image_click,
-                        inputs=[
-                            image_input,
-                            original_image_state,
-                            interaction_mode,
-                            prompt_polarity,
-                            pos_point_prompt,
-                            neg_point_prompt,
-                            pos_box_prompt,
-                            neg_box_prompt,
-                            pos_polygon_prompt,
-                            neg_polygon_prompt,
-                            click_state,
-                        ],
-                        outputs=[
-                            image_input,
-                            pos_point_prompt,
-                            neg_point_prompt,
-                            pos_box_prompt,
-                            neg_box_prompt,
-                            pos_polygon_prompt,
-                            neg_polygon_prompt,
-                            click_state,
-                            interaction_info,
-                        ],
-                    )
-
-                    # 3. 完成多边形对象
-                    finish_polygon_btn.click(
-                        fn=finish_polygon,
-                        inputs=[
-                            image_input,
-                            pos_polygon_prompt,
-                            neg_polygon_prompt,
-                            click_state,
-                        ],
-                        outputs=[
-                            image_input,
-                            pos_polygon_prompt,
-                            neg_polygon_prompt,
-                            click_state,
-                            interaction_info,
-                        ],
-                    )
-
-                    # 4. 清空提示
-                    def clear_prompts(orig_img):
-                        if orig_img is None:
-                            return None, "", "", "", "", "", "", None, "请先上传图像"
-                        return (
-                            orig_img,
-                            "",
-                            "",
-                            "",
-                            "",
-                            "",
-                            "",
-                            None,
-                            "♻️ 提示已清空，图像已重置",
-                        )
-
-                    clear_prompts_btn.click(
-                        fn=clear_prompts,
-                        inputs=[original_image_state],
-                        outputs=[
-                            image_input,
-                            pos_point_prompt,
-                            neg_point_prompt,
-                            pos_box_prompt,
-                            neg_box_prompt,
-                            pos_polygon_prompt,
-                            neg_polygon_prompt,
-                            click_state,
-                            interaction_info,
-                        ],
-                    )
-
-                    # 5. 分割按钮
-                    segment_button.click(
-                        fn=segment_image,
-                        inputs=[
-                            image_input,
-                            text_prompt,
-                            confidence_threshold,
-                            pos_point_prompt,
-                            neg_point_prompt,
-                            pos_box_prompt,
-                            neg_box_prompt,
-                            pos_polygon_prompt,
-                            neg_polygon_prompt,
-                            original_image_state,
-                            coco_dataset,
-                            coco_image_name,
-                            coco_split,
-                            coco_eval_scope,
-                        ],
-                        outputs=[image_output, image_info, export_file],
-                    )
-
-                    # 6. 示例按钮
-                    example_text_btn.click(fn=lambda: "a cat", outputs=[text_prompt])
-                    example_point_btn.click(
-                        fn=lambda: "100,100", outputs=[pos_point_prompt]
-                    )
-
-                # ================= 视频跟踪标签页 =================
-                with gr.TabItem("🎬 视频目标跟踪", id="tab_video"):
-                    with gr.Row():
-                        with gr.Column(scale=1):
-                            video_input = gr.Video(label="📂 上传视频文件")
-
-                            with gr.Group():
-                                video_text_prompt = gr.Textbox(
-                                    label="📝 跟踪目标描述",
-                                    placeholder="例如：'a person running' (目前仅支持第一帧文本提示)",
-                                    lines=2,
-                                )
-                                video_confidence_threshold = gr.Slider(
-                                    minimum=0.0,
-                                    maximum=1.0,
-                                    value=0.5,
-                                    step=0.05,
-                                    label="🎯 跟踪置信度",
-                                )
-
-                            process_button = gr.Button(
-                                "▶️ 开始跟踪处理", variant="primary", size="lg"
-                            )
-
-                        with gr.Column(scale=1):
-                            video_output = gr.Video(label="✨ 跟踪结果")
-                            video_info = gr.Textbox(
-                                label="📊 处理报告", interactive=False
-                            )
-
-                    process_button.click(
-                        fn=process_video,
-                        inputs=[
-                            video_input,
-                            video_text_prompt,
-                            video_confidence_threshold,
-                        ],
-                        outputs=[video_output, video_info],
-                    )
-
-        # 页脚
-        gr.Markdown(
-            """
-        ---
-        <div style="text-align: center; color: #718096; font-size: 0.9em;">
-            Powered by <strong>SAM3</strong> | 2025 SAM3 Interactive Studio
-        </div>
-        """
-        )
-
+                        finish_polygon_btn = gr.Button("Finish polygon / refine active PVS")
+                        clear_prompt_btn = gr.Button("Clear prompt selection")
+                with gr.Column(scale=4, elem_classes="sam3-panel"):
+                    mode = gr.Radio(choices=["PCS Auto", "PVS Manual"], value="PVS Manual", label="Mode")
+                    interaction_info = gr.Markdown("Upload an image to start.", elem_id="interaction-info")
+                    with gr.Accordion("GT / Evaluation", open=False):
+                        coco_dataset = gr.Dropdown(choices=coco_dataset_choices, value=default_coco_dataset, label="COCO dataset")
+                        coco_image_name = gr.Textbox(label="COCO image file_name", lines=1)
+                        coco_split = gr.Radio(choices=["auto", "val", "train", "test"], value="auto", label="COCO split")
+                        coco_eval_scope = gr.Radio(choices=[coco_eval_scope_overlap, coco_eval_scope_full], value=coco_eval_scope_overlap, label="Evaluation scope")
+                        annotation_json_file = gr.File(label="Upload O3/LabelMe-like JSON (overrides COCO lookup)", file_types=[".json"], type="filepath")
+                    with gr.Group(visible=True) as pvs_panel:
+                        gr.Markdown("### PVS Manual")
+                        create_pvs_btn = gr.Button("Create PVS instance from bbox", variant="primary")
+                        pvs_point_btn = gr.Button("Create/refine with positive point")
+                        active_pvs = gr.Dropdown(choices=[], label="Active PVS instance")
+                        refine_polygon_btn = gr.Button("Refine active PVS with current polygon", variant="primary")
+                        with gr.Row():
+                            undo_pvs_btn = gr.Button("Undo")
+                            delete_pvs_btn = gr.Button("Delete")
+                            accept_pvs_btn = gr.Button("Accept")
+                        export_pvs_btn = gr.Button("Export PVS")
+                        pvs_summary = gr.Textbox(label="PVS instances", lines=10, interactive=False)
+                    with gr.Group(visible=False) as pcs_panel:
+                        gr.Markdown("### PCS Auto")
+                        text_prompt = gr.Textbox(label="Text prompt", placeholder="e.g. GE1_1 / ACT-1 / red apple", lines=1)
+                        pcs_bbox_kind = gr.Radio(choices=["Positive exemplar", "Negative exemplar"], value="Positive exemplar", label="Selected bbox role")
+                        add_pcs_box_btn = gr.Button("Add selected bbox to PCS exemplars")
+                        confidence_threshold = gr.Slider(minimum=0.0, maximum=1.0, value=0.4, step=0.05, label="PCS confidence threshold")
+                        run_pcs_btn = gr.Button("Run PCS", variant="primary")
+                        clear_pcs_btn = gr.Button("Clear PCS")
+                        export_pcs_btn = gr.Button("Export PCS")
+                        pcs_summary = gr.Textbox(label="PCS instances", lines=10, interactive=False)
+                    export_file = gr.File(label="Export zip", interactive=False)
+            common = [image_upload, pcs_summary, pvs_summary, active_pvs, interaction_info]
+            image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, *common, export_file], concurrency_limit=1)
+            image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, *common], concurrency_limit=1)
+            finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], concurrency_limit=1)
+            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[pcs_panel, pvs_panel, *common], concurrency_limit=1)
+            add_pcs_box_btn.click(fn=_add_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, bbox_payload, pcs_bbox_kind], outputs=[pcs_state, *common], concurrency_limit=1)
+            clear_pcs_btn.click(fn=_clear_pcs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
+            run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
+            create_pvs_btn.click(fn=_create_pvs, inputs=[image_state, pcs_state, pvs_state, mode, bbox_payload], outputs=[pvs_state, *common], concurrency_limit=1)
+            pvs_point_btn.click(fn=_pvs_positive_point, inputs=[image_state, pcs_state, pvs_state, mode, point_payload], outputs=[pvs_state, *common], concurrency_limit=1)
+            active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
+            refine_polygon_btn.click(fn=_refine_pvs_polygon, inputs=[image_state, pcs_state, pvs_state, mode, polygon_payload], outputs=[pvs_state, *common], concurrency_limit=1)
+            undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
+            delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
+            accept_pvs_btn.click(fn=_accept_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
+            export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1)
+            export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1)
+        gr.Markdown("---\n<div style='text-align:center;color:#718096;font-size:0.9em;'>Powered by SAM3</div>")
     return demo
+# --- end PCS/PVS single-workspace override ---
 
 
 def main():
@@ -1915,6 +2200,7 @@ def main():
 
     print("🚀 正在启动 SAM3 交互式视觉工作台...")
     demo = create_demo()
+    demo.queue(default_concurrency_limit=1)
     demo.launch(
         server_name="0.0.0.0",
         server_port=7890,
