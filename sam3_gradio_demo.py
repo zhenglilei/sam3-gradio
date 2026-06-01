@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import io
+import gc
 import logging
 from pathlib import Path
 import tempfile
@@ -1430,6 +1431,13 @@ _PVS_PREDICT_LOCK = _sam3_threading.Lock()
 _WORKSPACE_CACHE = {}
 
 
+def _clear_workspace_cache():
+    _WORKSPACE_CACHE.clear()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _pil_image(image):
     if image is None:
         return None
@@ -1678,6 +1686,9 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
     image = np.array(_workspace(image_state)["image"].convert("RGB"))
     overlay = image.copy()
     line = image.copy()
+    box_draws = []
+    label_draws = []
+    polygon_draws = []
 
     def paint(mask, color, alpha):
         nonlocal overlay
@@ -1687,33 +1698,42 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
         c = np.array(color, dtype=np.uint8)
         overlay[mask] = (overlay[mask] * (1 - alpha) + c * alpha).astype(np.uint8)
 
+    def queue_box(box, color, thickness=3):
+        x1, y1, x2, y2 = [int(round(v)) for v in box]
+        box_draws.append((x1, y1, x2, y2, color, thickness))
+
+    def queue_label(text, x, y, color):
+        label_draws.append((text, int(round(x)), int(round(y)), color))
+
+    def queue_polygon(points, color):
+        arr = np.array([[int(round(x)), int(round(y))] for x, y in points], dtype=np.int32).reshape((-1, 1, 2))
+        polygon_draws.append((arr, color, len(points) >= 3))
+
     if show_instances and mode == "PCS Auto":
         for inst in _active_instances(pcs_state):
-            paint(inst["mask_fullres_bool"], (52, 168, 83), 0.24)
+            color = (0, 255, 90)
+            paint(inst["mask_fullres_bool"], color, 0.24)
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
-            cv2.rectangle(line, (x1, y1), (x2, y2), (52, 168, 83), 3)
-            cv2.putText(line, f"PCS#{inst['id']}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (52, 168, 83), 2)
+            queue_box((x1, y1, x2, y2), color, 3)
+            queue_label(f"PCS#{inst['id']}", x1, max(18, y1 - 6), color)
     if show_instances and mode == "PVS Manual":
         active_id = pvs_state.get("active_instance_id")
         for inst in _active_instances(pvs_state):
             is_active = str(inst["id"]) == str(active_id)
-            color = (245, 132, 31) if is_active else (66, 133, 244)
+            color = (255, 0, 220) if is_active else (0, 185, 255)
             paint(inst["mask_fullres_bool"], color, 0.32 if is_active else 0.22)
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
-            cv2.rectangle(line, (x1, y1), (x2, y2), color, 3 if is_active else 2)
-            cv2.putText(line, f"PVS#{inst['id']}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+            queue_box((x1, y1, x2, y2), color, 4 if is_active else 3)
+            queue_label(f"PVS#{inst['id']}", x1, max(18, y1 - 6), color)
     if mode == "PCS Auto":
         for box in pcs_state.get("positive_boxes", []):
-            x1, y1, x2, y2 = [int(round(v)) for v in box]
-            cv2.rectangle(line, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            queue_box(box, (0, 255, 90), 3)
         for box in pcs_state.get("negative_boxes", []):
-            x1, y1, x2, y2 = [int(round(v)) for v in box]
-            cv2.rectangle(line, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            queue_box(box, (255, 48, 48), 3)
     if prompt_state:
-        bbox_color = (255, 0, 0) if prompt_state.get("bbox_role") == "negative" else (0, 255, 0)
+        bbox_color = (255, 48, 48) if prompt_state.get("bbox_role") == "negative" else (0, 255, 90)
         if prompt_state.get("last_bbox"):
-            x1, y1, x2, y2 = [int(round(v)) for v in prompt_state["last_bbox"]]
-            cv2.rectangle(line, (x1, y1), (x2, y2), bbox_color, 3)
+            queue_box(prompt_state["last_bbox"], bbox_color, 4)
         if prompt_state.get("bbox_start"):
             x, y = [int(round(v)) for v in prompt_state["bbox_start"]]
             cv2.circle(line, (x, y), 7, bbox_color, -1)
@@ -1724,12 +1744,26 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             cv2.circle(line, (x, y), 9, (255, 255, 255), 2)
         pts = prompt_state.get("polygon_points") or []
         if pts:
-            arr = np.array([[int(round(x)), int(round(y))] for x, y in pts], dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(line, [arr], isClosed=len(pts) >= 3, color=(34, 197, 94), thickness=3)
-            for idx, (x, y) in enumerate(pts, start=1):
-                cv2.circle(line, (int(round(x)), int(round(y))), 5, (34, 197, 94), -1)
-                cv2.putText(line, str(idx), (int(round(x)) + 5, int(round(y)) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (34, 197, 94), 1)
-    return Image.fromarray(cv2.addWeighted(overlay, 0.72, line, 0.28, 0))
+            queue_polygon(pts, (0, 255, 60))
+    result = cv2.addWeighted(overlay, 0.72, line, 0.28, 0)
+    for arr, color, is_closed in polygon_draws:
+        if is_closed:
+            filled = result.copy()
+            cv2.fillPoly(filled, [arr], color)
+            result = cv2.addWeighted(filled, 0.18, result, 0.82, 0)
+        cv2.polylines(result, [arr], isClosed=is_closed, color=(0, 0, 0), thickness=5)
+        cv2.polylines(result, [arr], isClosed=is_closed, color=color, thickness=3)
+        for point in arr.reshape((-1, 2)):
+            x, y = int(point[0]), int(point[1])
+            cv2.circle(result, (x, y), 6, (0, 0, 0), -1)
+            cv2.circle(result, (x, y), 4, color, -1)
+    for x1, y1, x2, y2, color, thickness in box_draws:
+        cv2.rectangle(result, (x1, y1), (x2, y2), (0, 0, 0), thickness + 2)
+        cv2.rectangle(result, (x1, y1), (x2, y2), color, thickness)
+    for text, x, y, color in label_draws:
+        cv2.putText(result, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 4)
+        cv2.putText(result, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+    return Image.fromarray(result)
 
 
 def _instances_for_mode(pcs_state, pvs_state, mode):
@@ -1973,7 +2007,14 @@ def _init_workspace(input_image, mode):
         return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
     image = _pil_image(input_image)
     image_id = uuid.uuid4().hex
-    _WORKSPACE_CACHE[image_id] = {"image": image, "base_state": image_predictor.set_image(image)}
+    _clear_workspace_cache()
+    try:
+        base_state = image_predictor.set_image(image)
+    except torch.OutOfMemoryError:
+        _clear_workspace_cache()
+        info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5df2\u6e05\u7406\u5f53\u524d\u5de5\u4f5c\u53f0\u7f13\u5b58\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
+        return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
+    _WORKSPACE_CACHE[image_id] = {"image": image, "base_state": base_state}
     image_state = {"image_id": image_id, "width": image.width, "height": image.height}
     return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
 
@@ -2001,8 +2042,13 @@ def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
     try:
         ws = _workspace(image_state)
         w, h = ws["image"].size
-        if not text_prompt and not pcs_state.get("positive_boxes") and not pcs_state.get("negative_boxes"):
+        text_prompt = (text_prompt or "").strip()
+        has_positive = bool(pcs_state.get("positive_boxes"))
+        has_negative = bool(pcs_state.get("negative_boxes"))
+        if not text_prompt and not has_positive and not has_negative:
             raise ValueError("PCS needs a text prompt or bbox exemplar")
+        if has_negative and not text_prompt and not has_positive:
+            raise ValueError("PCS \u4e0d\u652f\u6301\u53ea\u4f7f\u7528\u8d1f\u6837\u672c bbox\uff0c\u8bf7\u5148\u6dfb\u52a0\u6587\u672c\u63d0\u793a\u6216\u6b63\u6837\u672c bbox")
         state = _fresh_state(image_state)
         if text_prompt:
             state = image_predictor.set_text_prompt(text_prompt, state)
@@ -2199,11 +2245,16 @@ def _export_pvs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_imag
 
 
 def _switch_mode(mode, image_state, pcs_state, pvs_state):
+    prompt_state = _new_prompt_state()
     return (
+        prompt_state,
+        "",
+        "",
+        "",
         gr.update(visible=mode == "PCS Auto"),
         gr.update(visible=mode == "PCS Auto"),
         gr.update(visible=mode == "PVS Manual"),
-        *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}"),
+        *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}\uff0c\u4ea4\u4e92\u63d0\u793a\u5df2\u91cd\u7f6e", prompt_state),
     )
 
 def create_demo():
@@ -2326,7 +2377,7 @@ def create_demo():
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[pcs_bbox_tools, pcs_panel, pvs_panel, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_bbox_tools, pcs_panel, pvs_panel, *common], concurrency_limit=1)
             undo_pcs_bbox_btn.click(fn=_undo_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
             create_pvs_btn.click(fn=_create_pvs, inputs=[image_state, pcs_state, pvs_state, mode, bbox_payload], outputs=[pvs_state, *common], concurrency_limit=1)
