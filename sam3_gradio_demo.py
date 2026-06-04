@@ -1782,13 +1782,20 @@ def _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None)
     return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state, show_instances=False)
 
 
+def _result_placeholder(image_state):
+    if not image_state or not image_state.get("image_id"):
+        return None
+    width = max(1, int(image_state.get("width") or 1))
+    height = max(1, int(image_state.get("height") or 1))
+    return Image.new("RGB", (width, height), (248, 250, 252))
+
+
 def _result_image(image_state, pcs_state, pvs_state, mode):
     if not image_state or not image_state.get("image_id"):
         return None
     if not _instances_for_mode(pcs_state, pvs_state, mode):
-        return None
+        return _result_placeholder(image_state)
     return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True)
-
 
 def _new_prompt_state():
     return {"bbox_start": None, "last_bbox": None, "last_point": None, "polygon_points": [], "bbox_role": "positive"}
@@ -1840,6 +1847,8 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
         point = _event_point(evt, image_state)
         w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
         tool = _click_tool_key(click_tool)
+        if mode == "PCS Auto" and tool != "bbox":
+            tool = "bbox"
         if tool == "point":
             prompt_state["last_point"] = point
             point_payload = _payload_json({"type": "positive_point", "point_xy_px": point, "image_width": w, "image_height": h})
@@ -1959,12 +1968,15 @@ def _pcs_choice_update(pcs_state):
     return gr.update(choices=choices, value=choices[0][1] if choices else None)
 
 
+def _status_label(status):
+    return {"draft": "草稿", "accepted": "已确认", "deleted": "已删除"}.get(str(status or "draft"), str(status or "草稿"))
+
+
 def _pvs_choice_update(pvs_state):
-    choices = [(f"PVS #{i['id']} {i['source']} {i.get('status','draft')} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pvs_state)]
+    choices = [(f"PVS #{i['id']} {_status_label(i.get('status'))} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pvs_state)]
     active = pvs_state.get("active_instance_id")
     value = str(active) if active is not None and any(c[1] == str(active) for c in choices) else (choices[0][1] if choices else None)
     return gr.update(choices=choices, value=value)
-
 
 def _pcs_summary(pcs_state):
     lines = [f"\u6b63\u6837\u672c bbox: {len(pcs_state.get('positive_boxes', []))}", f"\u8d1f\u6837\u672c bbox: {len(pcs_state.get('negative_boxes', []))}"]
@@ -1979,14 +1991,18 @@ def _pvs_summary(pvs_state):
     items = _active_instances(pvs_state)
     active = pvs_state.get("active_instance_id")
     pending = pvs_state.get("pending_boxes", [])
-    lines = [f"PVS \u5b9e\u4f8b: {len(items)}", f"\u5f85\u751f\u6210 bbox: {len(pending)}", f"\u5f53\u524d\u5b9e\u4f8b: {active or '-'}"]
+    lines = [
+        f"PVS 实例: {len(items)}",
+        f"待生成 bbox: {len(pending)}",
+        f"当前实例: {active or '-'}",
+        "说明: 草稿=draft，表示还未点击确认；score 是 SAM3 返回的候选 mask 质量/置信估计，不等同于人工质检分数。",
+    ]
     for idx, box in enumerate(pending[:20], start=1):
         lines.append(f"pending#{idx} box={[round(v,1) for v in box]}")
     for inst in items[:80]:
         mark = "*" if str(inst["id"]) == str(active) else " "
-        lines.append(f"{mark}#{inst['id']} {inst['source']} {inst.get('status','draft')} score={inst['score']:.3f}")
+        lines.append(f"{mark}#{inst['id']} {inst['source']} {_status_label(inst.get('status'))} score={inst['score']:.3f}")
     return "\n".join(lines)
-
 
 def _analysis_report(pcs_state, pvs_state, mode, info):
     sections = [str(info or "")]
@@ -2143,7 +2159,18 @@ def _undo_pending_pvs_bbox(image_state, pcs_state, pvs_state, mode):
 def _clear_pending_pvs_boxes(image_state, pcs_state, pvs_state, mode):
     count = len(pvs_state.get("pending_boxes", []))
     pvs_state["pending_boxes"] = []
-    info = f"\u5df2\u6e05\u7a7a {count} \u4e2a\u5f85\u751f\u6210 PVS bbox"
+    info = f"已清空 {count} 个待生成 PVS bbox；已生成实例不会被删除"
+    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _clear_draft_pvs_instances(image_state, pcs_state, pvs_state, mode):
+    instances = pvs_state.setdefault("instances", {})
+    draft_ids = [inst_id for inst_id, inst in list(instances.items()) if inst.get("status", "draft") == "draft"]
+    for inst_id in draft_ids:
+        instances[inst_id]["status"] = "deleted"
+    if pvs_state.get("active_instance_id") in draft_ids:
+        pvs_state["active_instance_id"] = None
+    info = f"已清空 {len(draft_ids)} 个草稿 PVS 实例；已确认实例保留"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
@@ -2294,15 +2321,27 @@ def _export_pvs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_imag
 
 def _switch_mode(mode, image_state, pcs_state, pvs_state):
     prompt_state = _new_prompt_state()
+    if mode == "PCS Auto":
+        tool_update = gr.update(choices=[("框提示 (Box)", "BBox two-click")], value="BBox two-click")
+        finish_update = gr.update(visible=False)
+    else:
+        tool_update = gr.update(
+            choices=[("点提示 (Point)", "Positive point"), ("框提示 (Box)", "BBox two-click"), ("多边形Mask (Polygon)", "Polygon vertex")],
+            value="BBox two-click",
+        )
+        finish_update = gr.update(visible=True)
     return (
         prompt_state,
         "",
         "",
         "",
+        tool_update,
+        finish_update,
         gr.update(visible=mode == "PCS Auto"),
         gr.update(visible=mode == "PCS Auto"),
         gr.update(visible=mode == "PVS Manual"),
-        *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}\uff0c\u4ea4\u4e92\u63d0\u793a\u5df2\u91cd\u7f6e", prompt_state),
+        gr.update(visible=mode == "PVS Manual"),
+        *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
 
 def create_demo():
@@ -2333,10 +2372,16 @@ def create_demo():
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
 
             with gr.Tabs():
-                with gr.TabItem("\u667a\u80fd\u56fe\u50cf\u5206\u5272", id="tab_image"):
+                with gr.TabItem("智能图像分割", id="tab_image"):
+                    mode = gr.Radio(
+                        choices=[("PCS Auto 自动概念分割", "PCS Auto"), ("PVS Manual 手动实例分割", "PVS Manual")],
+                        value="PVS Manual",
+                        label="功能模式",
+                        elem_classes="mode-radio",
+                    )
                     with gr.Row():
                         with gr.Column(scale=1):
-                            image_upload = gr.Image(type="numpy", label="\u539f\u59cb\u56fe\u50cf (\u70b9\u51fb\u8fdb\u884c\u4ea4\u4e92)", sources=["upload", "clipboard"], elem_id="input_image")
+                            image_upload = gr.Image(type="numpy", label="原始图像", show_label=False, sources=["upload", "clipboard"], elem_id="input_image")
                             with gr.Group():
                                 gr.Markdown("### \u4ea4\u4e92\u6a21\u5f0f")
                                 click_tool = gr.Radio(
@@ -2360,12 +2405,6 @@ def create_demo():
                                 interaction_info = gr.Markdown("\u70b9\u51fb\u56fe\u50cf\u5f00\u59cb\u6dfb\u52a0\u63d0\u793a...", elem_id="interaction-info")
 
                             with gr.Accordion("\u9ad8\u7ea7\u63d0\u793a\u9009\u9879", open=True):
-                                mode = gr.Radio(
-                                    choices=[("PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272", "PCS Auto"), ("PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272", "PVS Manual")],
-                                    value="PVS Manual",
-                                    label="\u529f\u80fd\u6a21\u5f0f",
-                                    elem_classes="mode-radio",
-                                )
                                 with gr.Group(visible=False) as pcs_panel:
                                     gr.Markdown("### PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272")
                                     text_prompt = gr.Textbox(label="\u6587\u672c\u63d0\u793a (Text Prompt)", placeholder="\u8f93\u5165\u7269\u4f53\u63cf\u8ff0\uff0c\u4f8b\u5982\uff1a'a red car' \u6216 '\u4e00\u53ea\u732b'", lines=1)
@@ -2378,35 +2417,13 @@ def create_demo():
                                     gr.Markdown("### PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272")
                                     create_pvs_batch_btn = gr.Button("\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b", variant="primary")
                                     with gr.Row():
-                                        undo_pending_bbox_btn = gr.Button("\u64a4\u9500\u6700\u8fd1 bbox", size="sm", variant="secondary")
-                                        clear_pending_bbox_btn = gr.Button("\u6e05\u7a7a\u5f85\u751f\u6210 bbox", size="sm", variant="secondary")
-                                    pvs_point_btn = gr.Button("\u7528\u6b63\u5411\u70b9\u521b\u5efa/\u7cbe\u4fee")
+                                        undo_pending_bbox_btn = gr.Button("撤销最近待生成 bbox", size="sm", variant="secondary")
+                                        clear_pending_bbox_btn = gr.Button("清空待生成 bbox", size="sm", variant="secondary")
+                                    clear_draft_pvs_btn = gr.Button("清空草稿 PVS 实例", size="sm", variant="secondary")
+                                    pvs_point_btn = gr.Button("用正向点创建/精修")
                                     active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
-                                    polygon_action = gr.Radio(
-                                        choices=[("\u521b\u5efa\u65b0 PVS \u5b9e\u4f8b", "create"), ("\u7cbe\u4fee\u5f53\u524d PVS \u5b9e\u4f8b", "refine")],
-                                        value="create",
-                                        label="\u591a\u8fb9\u5f62\u52a8\u4f5c",
-                                        elem_classes="mode-radio",
-                                    )
-                                    polygon_combine_mode = gr.Radio(
-                                        choices=[("Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b", "replace"), ("Blend \u4e0e\u65e7 mask \u878d\u5408", "blend"), ("Union \u8865\u5145\u533a\u57df", "union"), ("Intersect \u9650\u5236\u8303\u56f4", "intersect")],
-                                        value="replace",
-                                        label="\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f",
-                                        elem_classes="mode-radio",
-                                    )
-                                    gr.Markdown(
-                                        "**\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f\u8bf4\u660e**  \n"
-                                        "- Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b\uff1a\u7528\u5f53\u524d polygon \u4f5c\u4e3a\u5b8c\u6574 mask prompt\u3002  \n"
-                                        "- Blend \u4e0e\u65e7 mask \u878d\u5408\uff1a\u65e7 logits \u548c polygon logits \u5171\u540c\u5f71\u54cd\u7ed3\u679c\u3002  \n"
-                                        "- Union \u8865\u5145\u533a\u57df\uff1a\u4fdd\u7559\u65e7 mask\uff0c\u5e76\u52a0\u5165 polygon \u533a\u57df\u3002  \n"
-                                        "- Intersect \u9650\u5236\u8303\u56f4\uff1a\u5c06\u7ed3\u679c\u9650\u5236\u5728 polygon \u8303\u56f4\u5185\u3002"
-                                    )
-                                    with gr.Row():
-                                        undo_pvs_btn = gr.Button("\u64a4\u9500")
-                                        delete_pvs_btn = gr.Button("\u5220\u9664")
-                                        accept_pvs_btn = gr.Button("\u786e\u8ba4")
-                                    export_pvs_btn = gr.Button("\u5bfc\u51fa PVS")
-                                    pvs_summary = gr.Textbox(label="PVS \u5b9e\u4f8b", lines=6, interactive=False)
+                                    analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
+                                    pvs_summary = gr.Textbox(label="PVS 实例", lines=6, interactive=False, visible=False)
 
                                 with gr.Accordion("\u5bfc\u51fa\u4e0e COCO \u91cf\u5316", open=False):
                                     coco_dataset = gr.Dropdown(choices=coco_dataset_choices, value=default_coco_dataset, label="\u6307\u6807\u6570\u636e\u96c6")
@@ -2417,7 +2434,32 @@ def create_demo():
 
                         with gr.Column(scale=1):
                             result_image = gr.Image(type="numpy", label="\u5206\u5272\u7ed3\u679c")
-                            analysis_report = gr.Textbox(label="\u5206\u6790\u62a5\u544a", interactive=False, lines=18)
+                            with gr.Group(visible=True) as pvs_action_panel:
+                                gr.Markdown("### PVS 实例操作")
+                                polygon_action = gr.Radio(
+                                    choices=[("\u521b\u5efa\u65b0 PVS \u5b9e\u4f8b", "create"), ("\u7cbe\u4fee\u5f53\u524d PVS \u5b9e\u4f8b", "refine")],
+                                    value="create",
+                                    label="\u591a\u8fb9\u5f62\u52a8\u4f5c",
+                                    elem_classes="mode-radio",
+                                )
+                                polygon_combine_mode = gr.Radio(
+                                    choices=[("Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b", "replace"), ("Blend \u4e0e\u65e7 mask \u878d\u5408", "blend"), ("Union \u8865\u5145\u533a\u57df", "union"), ("Intersect \u9650\u5236\u8303\u56f4", "intersect")],
+                                    value="replace",
+                                    label="\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f",
+                                    elem_classes="mode-radio",
+                                )
+                                gr.Markdown(
+                                    "**\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f\u8bf4\u660e**  \n"
+                                    "- Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b\uff1a\u7528\u5f53\u524d polygon \u4f5c\u4e3a\u5b8c\u6574 mask prompt\u3002  \n"
+                                    "- Blend \u4e0e\u65e7 mask \u878d\u5408\uff1a\u65e7 logits \u548c polygon logits \u5171\u540c\u5f71\u54cd\u7ed3\u679c\u3002  \n"
+                                    "- Union \u8865\u5145\u533a\u57df\uff1a\u4fdd\u7559\u65e7 mask\uff0c\u5e76\u52a0\u5165 polygon \u533a\u57df\u3002  \n"
+                                    "- Intersect \u9650\u5236\u8303\u56f4\uff1a\u5c06\u7ed3\u679c\u9650\u5236\u5728 polygon \u8303\u56f4\u5185\u3002"
+                                )
+                                with gr.Row():
+                                    undo_pvs_btn = gr.Button("\u64a4\u9500")
+                                    delete_pvs_btn = gr.Button("\u5220\u9664")
+                                    accept_pvs_btn = gr.Button("确认", variant="primary")
+                                export_pvs_btn = gr.Button("\u5bfc\u51fa PVS")
                             export_file = gr.File(label="\u4e0b\u8f7d\u7ed3\u679c\u5305\uff08PNG + masks + JSON\uff09", interactive=False)
 
                 with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
@@ -2428,12 +2470,13 @@ def create_demo():
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_bbox_tools, pcs_panel, pvs_panel, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, *common], concurrency_limit=1)
             undo_pcs_bbox_btn.click(fn=_undo_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
             create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             undo_pending_bbox_btn.click(fn=_undo_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
+            clear_draft_pvs_btn.click(fn=_clear_draft_pvs_instances, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             pvs_point_btn.click(fn=_pvs_positive_point, inputs=[image_state, pcs_state, pvs_state, mode, point_payload], outputs=[pvs_state, *common], concurrency_limit=1)
             active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
             undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
