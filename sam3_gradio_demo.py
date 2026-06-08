@@ -273,6 +273,66 @@ def mask_bbox_xywh(mask):
     return [float(x1), float(y1), float(x2 - x1 + 1), float(y2 - y1 + 1)]
 
 
+def create_prediction_coco_json(
+    masks,
+    scores,
+    width,
+    height,
+    image_file_name="source_image",
+    category_name="object",
+    export_id="",
+    annotation_extras=None,
+):
+    annotations = []
+    if annotation_extras is None:
+        annotation_extras = []
+    if scores is None:
+        scores = []
+    for idx, mask in enumerate(masks):
+        mask_bool = np.asarray(mask).astype(bool)
+        annotation = {
+            "id": idx + 1,
+            "image_id": 1,
+            "category_id": 1,
+            "segmentation": encode_binary_mask(mask_bool),
+            "area": int(mask_bool.sum()),
+            "bbox": mask_bbox_xywh(mask_bool),
+            "iscrowd": 1,
+            "segmentation_format": "coco_rle",
+        }
+        if idx < len(scores):
+            annotation["score"] = float(scores[idx])
+        if idx < len(annotation_extras):
+            annotation.update(annotation_extras[idx])
+        annotations.append(annotation)
+
+    return {
+        "info": {
+            "description": "SAM3 predicted instance masks exported in COCO format",
+            "version": "1.0",
+            "export_id": export_id,
+            "date_created": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+        "licenses": [],
+        "images": [
+            {
+                "id": 1,
+                "file_name": image_file_name or "source_image",
+                "width": int(width),
+                "height": int(height),
+            }
+        ],
+        "annotations": annotations,
+        "categories": [
+            {
+                "id": 1,
+                "name": category_name or "object",
+                "supercategory": "sam3_prediction",
+            }
+        ],
+    }
+
+
 def mask_boundary(mask):
     mask_u8 = mask.astype(np.uint8)
     if not mask_u8.any():
@@ -1160,10 +1220,12 @@ def create_segmentation_export(
     np.savez_compressed(export_dir / "masks.npz", masks=masks.astype(np.uint8))
 
     predictions = []
+    coco_annotation_extras = []
     for idx, mask in enumerate(masks):
         mask_path = mask_dir / f"mask_{idx:03d}.png"
         cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255)
         x1, y1, x2, y2 = boxes[idx].tolist()
+        mask_file = str(mask_path.relative_to(export_dir))
         predictions.append(
             {
                 "id": idx,
@@ -1171,8 +1233,15 @@ def create_segmentation_export(
                 "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
                 "bbox_xywh": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
                 "area": int(mask.sum()),
-                "mask_file": str(mask_path.relative_to(export_dir)),
+                "mask_file": mask_file,
                 "segmentation": mask_to_polygons(mask),
+            }
+        )
+        coco_annotation_extras.append(
+            {
+                "prediction_id": int(idx),
+                "mask_file": mask_file,
+                "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
             }
         )
 
@@ -1207,6 +1276,18 @@ def create_segmentation_export(
         json.dump(payload, f, ensure_ascii=False, indent=2)
     with (export_dir / "metrics.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
+    coco_payload = create_prediction_coco_json(
+        masks,
+        scores.tolist(),
+        width,
+        height,
+        image_file_name=coco_image_name.strip() if coco_image_name else "source_image",
+        category_name="object",
+        export_id=export_id,
+        annotation_extras=coco_annotation_extras,
+    )
+    with (export_dir / "coco_masks.json").open("w", encoding="utf-8") as f:
+        json.dump(coco_payload, f, ensure_ascii=False, indent=2)
 
     annotation_json_path = resolve_uploaded_json_path(annotation_json_file)
     zip_stem = coco_image_name or (annotation_json_path.stem if annotation_json_path else "")
@@ -1828,12 +1909,15 @@ def _append_pcs_bbox_sample(pcs_state, box, bbox_role):
 
 
 def _click_tool_key(click_tool):
-    text = str(click_tool or "")
-    if "Point" in text or "\u70b9" in text:
+    text = str(click_tool or "").strip()
+    lower = text.lower()
+    if lower in {"point", "bbox", "polygon"}:
+        return lower
+    if "point" in lower or "\u70b9" in text:
         return "point"
-    if "BBox" in text or "Box" in text or "\u6846" in text:
+    if "bbox" in lower or "box" in lower or "\u6846" in text:
         return "bbox"
-    if "Polygon" in text or "\u591a\u8fb9\u5f62" in text:
+    if "polygon" in lower or "\u591a\u8fb9\u5f62" in text:
         return "polygon"
     return ""
 
@@ -2285,18 +2369,34 @@ def _export_pool(image_state, pcs_state, pvs_state, mode, pool_name, coco_datase
         mask_dir.mkdir(exist_ok=True)
         _overlay(image_state, pcs_state, pvs_state, mode).save(export_dir / "overlay.png")
         masks, scores, predictions = [], [], []
+        coco_annotation_extras = []
         for inst in instances:
             mask = np.asarray(inst["mask_fullres_bool"]).astype(bool)
             masks.append(mask)
             scores.append(float(inst.get("score", 1.0)))
             mask_path = mask_dir / f"{pool_name}_{inst['id']:03d}.png"
             cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255)
-            predictions.append({"id": int(inst["id"]), "source": inst.get("source"), "status": inst.get("status"), "score": float(inst.get("score", 0.0)), "bbox_xyxy": [float(v) for v in inst.get("box_xyxy_px", [])], "mask_file": str(mask_path.relative_to(export_dir)), "final_contour_polygon": mask_to_polygons(mask), "prompt_history": _history_json(inst.get("prompt_history", []))})
+            mask_file = str(mask_path.relative_to(export_dir))
+            bbox_xyxy = [float(v) for v in inst.get("box_xyxy_px", [])]
+            predictions.append({"id": int(inst["id"]), "source": inst.get("source"), "status": inst.get("status"), "score": float(inst.get("score", 0.0)), "bbox_xyxy": bbox_xyxy, "mask_file": mask_file, "final_contour_polygon": mask_to_polygons(mask), "prompt_history": _history_json(inst.get("prompt_history", []))})
+            coco_annotation_extras.append({"instance_id": int(inst["id"]), "source": inst.get("source"), "status": inst.get("status"), "mask_file": mask_file, "bbox_xyxy": bbox_xyxy})
         metrics = compare_with_coco(masks, scores, coco_dataset, coco_image_name.strip() if coco_image_name else "", coco_split, pcs_state.get("text_prompt", "") if pool_name == "pcs" else "", image.width, image.height, coco_eval_scope, annotation_json_file)
         with (export_dir / "prediction.json").open("w", encoding="utf-8") as f:
             json.dump({"export_id": export_id, "pool": pool_name, "image": {"width": image.width, "height": image.height}, "predictions": predictions, "metrics": metrics}, f, ensure_ascii=False, indent=2)
         with (export_dir / "metrics.json").open("w", encoding="utf-8") as f:
             json.dump(metrics, f, ensure_ascii=False, indent=2)
+        coco_payload = create_prediction_coco_json(
+            masks,
+            scores,
+            image.width,
+            image.height,
+            image_file_name=coco_image_name.strip() if coco_image_name else "source_image",
+            category_name=f"{pool_name}_object",
+            export_id=export_id,
+            annotation_extras=coco_annotation_extras,
+        )
+        with (export_dir / "coco_masks.json").open("w", encoding="utf-8") as f:
+            json.dump(coco_payload, f, ensure_ascii=False, indent=2)
         zip_path = runtime_export_dir / f"{export_id}.zip"
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for file_path in export_dir.rglob("*"):
@@ -2322,12 +2422,12 @@ def _export_pvs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_imag
 def _switch_mode(mode, image_state, pcs_state, pvs_state):
     prompt_state = _new_prompt_state()
     if mode == "PCS Auto":
-        tool_update = gr.update(choices=[("框提示 (Box)", "BBox two-click")], value="BBox two-click")
+        tool_update = gr.update(choices=[("框提示 (Box)", "bbox")], value="bbox")
         finish_update = gr.update(visible=False)
     else:
         tool_update = gr.update(
-            choices=[("点提示 (Point)", "Positive point"), ("框提示 (Box)", "BBox two-click"), ("多边形Mask (Polygon)", "Polygon vertex")],
-            value="BBox two-click",
+            choices=[("点提示 (Point)", "point"), ("框提示 (Box)", "bbox"), ("多边形Mask (Polygon)", "polygon")],
+            value="bbox",
         )
         finish_update = gr.update(visible=True)
     return (
@@ -2385,8 +2485,8 @@ def create_demo():
                             with gr.Group():
                                 gr.Markdown("### \u4ea4\u4e92\u6a21\u5f0f")
                                 click_tool = gr.Radio(
-                                    choices=[("\u70b9\u63d0\u793a (Point)", "Positive point"), ("\u6846\u63d0\u793a (Box)", "BBox two-click"), ("\u591a\u8fb9\u5f62Mask (Polygon)", "Polygon vertex")],
-                                    value="BBox two-click",
+                                    choices=[("\u70b9\u63d0\u793a (Point)", "point"), ("\u6846\u63d0\u793a (Box)", "bbox"), ("\u591a\u8fb9\u5f62Mask (Polygon)", "polygon")],
+                                    value="bbox",
                                     label="\u9009\u62e9\u6a21\u5f0f",
                                     show_label=False,
                                     elem_classes="mode-radio",
