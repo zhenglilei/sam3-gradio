@@ -1721,6 +1721,14 @@ def _predict_inst(base_state, box_xyxy_px=None, mask_input_lowres_logits=None, p
     }
 
 
+def _pvs_progress(progress, value, desc, delay=0.08):
+    if progress is None:
+        return
+    progress(float(value), desc=desc)
+    if delay:
+        time.sleep(delay)
+
+
 def _best(pred):
     if len(pred["scores"]) == 0:
         raise ValueError("predict_inst returned no masks")
@@ -1971,15 +1979,18 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
     return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
 
-def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refine", combine_mode="replace"):
+def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refine", combine_mode="replace", progress=None):
     action = _polygon_action_key(polygon_action)
     combine = _polygon_combine_key(combine_mode)
     ws = _workspace(image_state)
     w, h = ws["image"].size
+    _pvs_progress(progress, 0.18, "转换 polygon 为 PVS mask prompt")
     polygon_logits = _polygon_lowres_logits(polygon, w, h)
 
     if action == "create":
+        _pvs_progress(progress, 0.42, "SAM3 正在根据 polygon 创建实例", delay=0.12)
         pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=polygon_logits)
+        _pvs_progress(progress, 0.82, "整理 polygon 候选 mask")
         idx = _best(pred)
         mask = pred["masks"][idx]
         inst_id = int(pvs_state.get("next_instance_id", 1))
@@ -2000,9 +2011,12 @@ def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refin
     if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
         raise ValueError("\u8bf7\u5148\u521b\u5efa\u6216\u9009\u62e9\u4e00\u4e2a PVS \u5b9e\u4f8b\uff0c\u6216\u5c06 polygon \u52a8\u4f5c\u6539\u4e3a\u201c\u521b\u5efa\u65b0\u5b9e\u4f8b\u201d")
     inst = pvs_state["instances"][int(active_id)]
+    _pvs_progress(progress, 0.34, f"融合当前实例 logits: {combine}")
     combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode=combine)
     before = _snapshot(inst)
+    _pvs_progress(progress, 0.52, "SAM3 正在精修当前 PVS 实例", delay=0.12)
     pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
+    _pvs_progress(progress, 0.84, "更新实例 mask 与 logits")
     idx = _best(pred)
     mask = pred["masks"][idx]
     inst["mask_fullres_bool"] = mask
@@ -2014,10 +2028,11 @@ def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refin
     return f"\u5df2\u7528\u591a\u8fb9\u5f62\u7cbe\u4fee PVS #{active_id}\uff0c\u878d\u5408\u65b9\u5f0f: {combine}"
 
 
-def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action="create", polygon_combine_mode="replace"):
+def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action="create", polygon_combine_mode="replace", progress=gr.Progress(track_tqdm=False)):
     prompt_state = prompt_state or _new_prompt_state()
     points = prompt_state.get("polygon_points") or []
     polygon_payload = gr.update()
+    _pvs_progress(progress, 0.03, "准备 PVS 多边形操作")
     if len(points) < 3:
         info = "\u591a\u8fb9\u5f62\u81f3\u5c11\u9700\u8981 3 \u4e2a\u9876\u70b9"
         return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
@@ -2030,8 +2045,9 @@ def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode
         return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
     try:
-        info = _apply_polygon_to_pvs(image_state, pvs_state, points, polygon_action, polygon_combine_mode)
+        info = _apply_polygon_to_pvs(image_state, pvs_state, points, polygon_action, polygon_combine_mode, progress)
         prompt_state["polygon_points"] = []
+        _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
     except Exception as exc:
         info = f"PVS \u591a\u8fb9\u5f62\u5904\u7406\u5931\u8d25: {exc}"
     return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
@@ -2195,15 +2211,19 @@ def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
     return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
-def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode):
+def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode, progress=gr.Progress(track_tqdm=False)):
     try:
+        _pvs_progress(progress, 0.03, "准备批量生成 PVS 实例")
         boxes = list(pvs_state.get("pending_boxes", []))
         if not boxes:
             raise ValueError("\u6ca1\u6709\u5f85\u751f\u6210\u7684 PVS bbox\uff0c\u8bf7\u5148\u5728\u56fe\u50cf\u4e0a\u6846\u9009\u4e00\u4e2a\u6216\u591a\u4e2a\u76ee\u6807")
 
         created_ids = []
+        _pvs_progress(progress, 0.12, f"读取图像缓存，共 {len(boxes)} 个 bbox")
         base_state = _fresh_state(image_state)
-        for box in boxes:
+        for box_idx, box in enumerate(boxes, start=1):
+            start = 0.18 + 0.62 * (box_idx - 1) / max(1, len(boxes))
+            _pvs_progress(progress, start, f"SAM3 正在生成第 {box_idx}/{len(boxes)} 个 PVS 实例", delay=0.06)
             pred = _predict_inst(base_state, box_xyxy_px=box)
             idx = _best(pred)
             mask = pred["masks"][idx]
@@ -2220,9 +2240,11 @@ def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode):
             pvs_state["next_instance_id"] = inst_id + 1
             created_ids.append(inst_id)
 
+        _pvs_progress(progress, 0.86, "更新 PVS 实例池")
         pvs_state["active_instance_id"] = created_ids[-1]
         pvs_state["pending_boxes"] = []
         info = f"\u5df2\u4ece {len(created_ids)} \u4e2a\u5f85\u751f\u6210 bbox \u521b\u5efa PVS \u5b9e\u4f8b: {created_ids}"
+        _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
     except Exception as exc:
         info = f"PVS \u6279\u91cf bbox \u751f\u6210\u5931\u8d25: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
@@ -2266,8 +2288,9 @@ def _set_active_pvs(image_state, pcs_state, pvs_state, mode, selected_id):
         info = "No PVS instance selected"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
-def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload):
+def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload, progress=gr.Progress(track_tqdm=False)):
     try:
+        _pvs_progress(progress, 0.04, "准备正向点 PVS 操作")
         point = _point_from_payload(point_payload, image_state)
         active_id = pvs_state.get("active_instance_id")
         active_inst = None
@@ -2275,7 +2298,9 @@ def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload):
         if active_id is not None and int(active_id) in pvs_state.get("instances", {}):
             active_inst = pvs_state["instances"][int(active_id)]
             mask_input = active_inst.get("pvs_lowres_logits")
+        _pvs_progress(progress, 0.32, "SAM3 正在根据正向点预测 mask", delay=0.12)
         pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=mask_input, point_coords_px=[point], point_labels=[1])
+        _pvs_progress(progress, 0.78, "整理正向点候选 mask")
         idx = _best(pred)
         mask = pred["masks"][idx]
         if active_inst is None:
@@ -2293,6 +2318,7 @@ def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload):
             after = _snapshot(active_inst)
             active_inst.setdefault("prompt_history", []).append({"op":"positive_point_refine","prompt":{"type":"positive_point","point_xy_px":point},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
             info = f"PVS #{active_id} refined with positive point"
+        _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
     except Exception as exc:
         info = f"PVS positive point failed: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
@@ -2568,16 +2594,16 @@ def create_demo():
             common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info]
             image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, *common, export_file], concurrency_limit=1)
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, *common], concurrency_limit=1)
-            finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], concurrency_limit=1)
+            finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *common], concurrency_limit=1)
             mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, *common], concurrency_limit=1)
             undo_pcs_bbox_btn.click(fn=_undo_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
-            create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
+            create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             undo_pending_bbox_btn.click(fn=_undo_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             clear_draft_pvs_btn.click(fn=_clear_draft_pvs_instances, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
-            pvs_point_btn.click(fn=_pvs_positive_point, inputs=[image_state, pcs_state, pvs_state, mode, point_payload], outputs=[pvs_state, *common], concurrency_limit=1)
+            pvs_point_btn.click(fn=_pvs_positive_point, inputs=[image_state, pcs_state, pvs_state, mode, point_payload], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
             undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
