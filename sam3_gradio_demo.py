@@ -1805,7 +1805,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             queue_box((x1, y1, x2, y2), color, 3)
             queue_label(f"PCS#{inst['id']}", x1, max(18, y1 - 6), color)
-    if mode == "PVS Manual":
+    if mode == "PVS Manual" and prompt_state is not None:
         for idx, box in enumerate(pvs_state.get("pending_boxes", []), start=1):
             color = (0, 255, 90)
             queue_box(box, color, 3)
@@ -1820,7 +1820,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             queue_box((x1, y1, x2, y2), color, 4 if is_active else 3)
             queue_label(f"PVS#{inst['id']}", x1, max(18, y1 - 6), color)
-    if mode == "PCS Auto":
+    if mode == "PCS Auto" and prompt_state is not None:
         for box in pcs_state.get("positive_boxes", []):
             queue_box(box, (0, 255, 90), 3)
         for box in pcs_state.get("negative_boxes", []):
