@@ -2077,7 +2077,7 @@ def _status_label(status):
 
 
 def _pvs_choice_update(pvs_state):
-    choices = [(f"PVS #{i['id']} {_status_label(i.get('status'))} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pvs_state)]
+    choices = [(f"PVS #{i['id']} {_status_label(i.get('status'))}", str(i["id"])) for i in _active_instances(pvs_state)]
     active = pvs_state.get("active_instance_id")
     value = str(active) if active is not None and any(c[1] == str(active) for c in choices) else (choices[0][1] if choices else None)
     return gr.update(choices=choices, value=value)
@@ -2712,8 +2712,6 @@ def create_demo():
                                                 "- Intersect \u9650\u5236\u8303\u56f4\uff1a\u5c06\u7ed3\u679c\u9650\u5236\u5728 polygon \u8303\u56f4\u5185\u3002"
                                             )
                                     clear_draft_pvs_btn = gr.Button("清空草稿 PVS 实例", size="sm", variant="secondary")
-                                    active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
-                                    analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
                                     pvs_summary = gr.Textbox(label="PVS 实例", lines=6, interactive=False, visible=False)
 
                                 with gr.Accordion("\u5bfc\u51fa\u4e0e COCO \u91cf\u5316", open=False):
@@ -2725,8 +2723,10 @@ def create_demo():
 
                         with gr.Column(scale=1):
                             result_image = gr.Image(type="numpy", label="\u5206\u5272\u7ed3\u679c")
+                            analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
                             with gr.Group(visible=True) as pvs_action_panel:
                                 gr.Markdown("### PVS 实例操作")
+                                active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
                                 with gr.Row():
                                     undo_pvs_btn = gr.Button("\u64a4\u9500")
                                     delete_pvs_btn = gr.Button("\u5220\u9664")
