@@ -2082,6 +2082,11 @@ def _pvs_choice_update(pvs_state):
     value = str(active) if active is not None and any(c[1] == str(active) for c in choices) else (choices[0][1] if choices else None)
     return gr.update(choices=choices, value=value)
 
+
+def _pvs_pending_count_text(pvs_state):
+    return f"待生成 bbox 数量: {len(pvs_state.get('pending_boxes', []))}"
+
+
 def _pcs_summary(pcs_state):
     lines = [f"\u6b63\u6837\u672c bbox: {len(pcs_state.get('positive_boxes', []))}", f"\u8d1f\u6837\u672c bbox: {len(pcs_state.get('negative_boxes', []))}"]
     items = _active_instances(pcs_state)
@@ -2126,6 +2131,7 @@ def _view(image_state, pcs_state, pvs_state, mode, info, prompt_state=None):
         _pvs_summary(pvs_state),
         _pvs_choice_update(pvs_state),
         info,
+        _pvs_pending_count_text(pvs_state),
     )
 
 
@@ -2293,9 +2299,12 @@ def _set_active_pvs(image_state, pcs_state, pvs_state, mode, selected_id):
         info = "No PVS instance selected"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
-def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload, progress=gr.Progress(track_tqdm=False)):
+def _pvs_point_prompt(image_state, pcs_state, pvs_state, mode, point_payload, point_kind, progress=gr.Progress(track_tqdm=False)):
     try:
-        _pvs_progress(progress, 0.04, "准备正向点 PVS 操作")
+        is_negative = str(point_kind or "positive") == "negative"
+        point_label = 0 if is_negative else 1
+        point_name = "负向点" if is_negative else "正向点"
+        _pvs_progress(progress, 0.04, f"准备{point_name} PVS 操作")
         point = _point_from_payload(point_payload, image_state)
         active_id = pvs_state.get("active_instance_id")
         active_inst = None
@@ -2303,9 +2312,11 @@ def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload, 
         if active_id is not None and int(active_id) in pvs_state.get("instances", {}):
             active_inst = pvs_state["instances"][int(active_id)]
             mask_input = active_inst.get("pvs_lowres_logits")
-        _pvs_progress(progress, 0.32, "SAM3 正在根据正向点预测 mask", delay=0.12)
-        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=mask_input, point_coords_px=[point], point_labels=[1])
-        _pvs_progress(progress, 0.78, "整理正向点候选 mask")
+        if is_negative and active_inst is None:
+            raise ValueError("负向点必须先选择一个 active PVS instance")
+        _pvs_progress(progress, 0.32, f"SAM3 正在根据{point_name}预测 mask", delay=0.12)
+        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=mask_input, point_coords_px=[point], point_labels=[point_label])
+        _pvs_progress(progress, 0.78, f"整理{point_name}候选 mask")
         idx = _best(pred)
         mask = pred["masks"][idx]
         if active_inst is None:
@@ -2321,11 +2332,13 @@ def _pvs_positive_point(image_state, pcs_state, pvs_state, mode, point_payload, 
             active_inst["score"] = float(pred["scores"][idx])
             active_inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
             after = _snapshot(active_inst)
-            active_inst.setdefault("prompt_history", []).append({"op":"positive_point_refine","prompt":{"type":"positive_point","point_xy_px":point},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
-            info = f"PVS #{active_id} refined with positive point"
+            op = "negative_point_refine" if is_negative else "positive_point_refine"
+            prompt_type = "negative_point" if is_negative else "positive_point"
+            active_inst.setdefault("prompt_history", []).append({"op":op,"prompt":{"type":prompt_type,"point_xy_px":point},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
+            info = f"PVS #{active_id} refined with {prompt_type}"
         _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
     except Exception as exc:
-        info = f"PVS positive point failed: {exc}"
+        info = f"PVS point prompt failed: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 def _undo_pvs(image_state, pcs_state, pvs_state, mode):
@@ -2571,8 +2584,22 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         gr.update(visible=is_pcs),
         gr.update(visible=is_pvs),
         gr.update(visible=is_pvs),
+        gr.update(visible=is_pvs),
+        gr.update(visible=False),
+        gr.update(visible=False),
         *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
+
+
+def _switch_click_tool(click_tool, mode):
+    tool = _click_tool_key(click_tool)
+    is_pvs = mode == "PVS Manual"
+    return (
+        gr.update(visible=is_pvs and tool == "bbox"),
+        gr.update(visible=is_pvs and tool == "point"),
+        gr.update(visible=is_pvs and tool == "polygon"),
+    )
+
 
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
@@ -2631,7 +2658,6 @@ def create_demo():
                                     )
                                     undo_pcs_bbox_btn = gr.Button("\u64a4\u9500\u6700\u8fd1 PCS bbox", size="sm", variant="secondary")
                                 with gr.Row():
-                                    finish_polygon_btn = gr.Button("\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61", size="sm", variant="secondary")
                                     clear_prompt_btn = gr.Button("\u6e05\u7a7a\u63d0\u793a (Clear Prompts)", size="sm", variant="secondary")
                                 interaction_info = gr.Markdown("\u70b9\u51fb\u56fe\u50cf\u5f00\u59cb\u6dfb\u52a0\u63d0\u793a...", elem_id="interaction-info")
 
@@ -2646,12 +2672,32 @@ def create_demo():
 
                                 with gr.Group(visible=True) as pvs_panel:
                                     gr.Markdown("### PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272")
-                                    create_pvs_batch_btn = gr.Button("\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b", variant="primary")
-                                    with gr.Row():
-                                        undo_pending_bbox_btn = gr.Button("撤销最近待生成 bbox", size="sm", variant="secondary")
-                                        clear_pending_bbox_btn = gr.Button("清空待生成 bbox", size="sm", variant="secondary")
+                                    with gr.Group(visible=True) as pvs_bbox_prompt_panel:
+                                        gr.Markdown("#### BBox prompt")
+                                        pvs_pending_count = gr.Markdown("待生成 bbox 数量: 0")
+                                        create_pvs_batch_btn = gr.Button("\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b", variant="primary")
+                                        with gr.Row():
+                                            undo_pending_bbox_btn = gr.Button("移除上一个待生成 bbox", size="sm", variant="secondary")
+                                            clear_pending_bbox_btn = gr.Button("清空待生成 bbox", size="sm", variant="secondary")
+                                    with gr.Group(visible=False) as pvs_point_prompt_panel:
+                                        gr.Markdown("#### Point prompt")
+                                        pvs_point_kind = gr.Radio(
+                                            choices=[("正向点", "positive"), ("负向点", "negative")],
+                                            value="positive",
+                                            label="点类型",
+                                            elem_classes="mode-radio",
+                                        )
+                                        pvs_point_btn = gr.Button("应用点提示", variant="primary")
+                                    with gr.Group(visible=False) as pvs_polygon_prompt_panel:
+                                        gr.Markdown("#### Polygon prompt")
+                                        polygon_action = gr.Radio(
+                                            choices=[("\u521b\u5efa\u65b0 PVS \u5b9e\u4f8b", "create"), ("\u7cbe\u4fee\u5f53\u524d PVS \u5b9e\u4f8b", "refine")],
+                                            value="create",
+                                            label="\u591a\u8fb9\u5f62\u52a8\u4f5c",
+                                            elem_classes="mode-radio",
+                                        )
+                                        finish_polygon_btn = gr.Button("\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61", size="sm", variant="primary")
                                     clear_draft_pvs_btn = gr.Button("清空草稿 PVS 实例", size="sm", variant="secondary")
-                                    pvs_point_btn = gr.Button("用正向点创建/精修")
                                     active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
                                     analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
                                     pvs_summary = gr.Textbox(label="PVS 实例", lines=6, interactive=False, visible=False)
@@ -2667,12 +2713,6 @@ def create_demo():
                             result_image = gr.Image(type="numpy", label="\u5206\u5272\u7ed3\u679c")
                             with gr.Group(visible=True) as pvs_action_panel:
                                 gr.Markdown("### PVS 实例操作")
-                                polygon_action = gr.Radio(
-                                    choices=[("\u521b\u5efa\u65b0 PVS \u5b9e\u4f8b", "create"), ("\u7cbe\u4fee\u5f53\u524d PVS \u5b9e\u4f8b", "refine")],
-                                    value="create",
-                                    label="\u591a\u8fb9\u5f62\u52a8\u4f5c",
-                                    elem_classes="mode-radio",
-                                )
                                 polygon_combine_mode = gr.Radio(
                                     choices=[("Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b", "replace"), ("Blend \u4e0e\u65e7 mask \u878d\u5408", "blend"), ("Union \u8865\u5145\u533a\u57df", "union"), ("Intersect \u9650\u5236\u8303\u56f4", "intersect")],
                                     value="replace",
@@ -2709,19 +2749,20 @@ def create_demo():
                 with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
                     gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
 
-            common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info]
+            common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
             image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, *common, export_file], concurrency_limit=1)
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, *common], concurrency_limit=1)
+            click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
             undo_pcs_bbox_btn.click(fn=_undo_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
             create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             undo_pending_bbox_btn.click(fn=_undo_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             clear_draft_pvs_btn.click(fn=_clear_draft_pvs_instances, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
-            pvs_point_btn.click(fn=_pvs_positive_point, inputs=[image_state, pcs_state, pvs_state, mode, point_payload], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
+            pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
             undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
