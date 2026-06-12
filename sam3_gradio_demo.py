@@ -2549,7 +2549,9 @@ def _export_pvs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_imag
 
 def _switch_mode(mode, image_state, pcs_state, pvs_state):
     prompt_state = _new_prompt_state()
-    if mode == "PCS Auto":
+    is_pcs = mode == "PCS Auto"
+    is_pvs = mode == "PVS Manual"
+    if is_pcs:
         tool_update = gr.update(choices=[("框提示 (Box)", "bbox")], value="bbox")
         finish_update = gr.update(visible=False)
     else:
@@ -2565,10 +2567,10 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         "",
         tool_update,
         finish_update,
-        gr.update(visible=mode == "PCS Auto"),
-        gr.update(visible=mode == "PCS Auto"),
-        gr.update(visible=mode == "PVS Manual"),
-        gr.update(visible=mode == "PVS Manual"),
+        gr.update(visible=is_pcs),
+        gr.update(visible=is_pcs),
+        gr.update(visible=is_pvs),
+        gr.update(visible=is_pvs),
         *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
 
