@@ -23,6 +23,7 @@ runtime_tmp_dir = runtime_dir / "tmp"
 runtime_gradio_dir = runtime_dir / "gradio"
 runtime_video_dir = runtime_dir / "videos"
 runtime_export_dir = runtime_dir / "exports"
+runtime_feedback_dir = runtime_dir / "feedback"
 runtime_log_dir = runtime_dir / "logs"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
 ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
@@ -49,6 +50,8 @@ for path in (
     runtime_gradio_dir,
     runtime_video_dir,
     runtime_export_dir,
+    runtime_feedback_dir,
+    runtime_feedback_dir / "samples",
     runtime_log_dir,
     current_dir / ".gradio",
     qiyuan_cache_dir,
@@ -1509,6 +1512,7 @@ import base64 as _sam3_base64
 import threading as _sam3_threading
 
 _PVS_PREDICT_LOCK = _sam3_threading.Lock()
+_FEEDBACK_WRITE_LOCK = _sam3_threading.Lock()
 _WORKSPACE_CACHE = {}
 
 
@@ -2275,7 +2279,8 @@ def _clear_draft_pvs_instances(image_state, pcs_state, pvs_state, mode):
     for inst_id in draft_ids:
         instances[inst_id]["status"] = "deleted"
     if pvs_state.get("active_instance_id") in draft_ids:
-        pvs_state["active_instance_id"] = None
+        remaining = _active_instances(pvs_state)
+        pvs_state["active_instance_id"] = remaining[0]["id"] if remaining else None
     info = f"已清空 {len(draft_ids)} 个草稿 PVS 实例；已确认实例保留"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
@@ -2378,6 +2383,78 @@ def _history_json(history):
             row["after"] = {"box_xyxy_px": item["after"].get("box_xyxy_px"), "score": item["after"].get("score"), "status": item["after"].get("status")}
         rows.append({k: v for k, v in row.items() if v is not None})
     return rows
+
+
+def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_tags, feedback_comment):
+    try:
+        if mode != "PVS Manual":
+            raise ValueError("Feedback 首版只支持 PVS Manual 的当前实例")
+        active_id = pvs_state.get("active_instance_id")
+        if active_id is None:
+            raise ValueError("请先选择一个 active PVS instance")
+        inst = pvs_state.get("instances", {}).get(int(active_id))
+        if inst is None or inst.get("status") == "deleted":
+            raise ValueError("当前 active PVS instance 不存在或已删除")
+
+        ws = _workspace(image_state)
+        image = ws["image"]
+        feedback_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        sample_dir = runtime_feedback_dir / "samples" / feedback_id
+        sample_dir.mkdir(parents=True, exist_ok=False)
+
+        image_path = sample_dir / "image.png"
+        overlay_path = sample_dir / "overlay.png"
+        mask_path = sample_dir / "mask.png"
+        npz_path = sample_dir / "mask.npz"
+        feedback_path = sample_dir / "feedback.json"
+
+        image.save(image_path)
+        overlay = _result_image(image_state, pcs_state, pvs_state, mode)
+        if overlay is not None:
+            overlay.save(overlay_path)
+
+        mask = np.asarray(inst["mask_fullres_bool"]).astype(bool)
+        cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255)
+        pvs_logits = inst.get("pvs_lowres_logits")
+        pcs_prob = inst.get("pcs_fullres_prob")
+        np.savez_compressed(
+            npz_path,
+            mask_fullres_uint8=mask.astype(np.uint8),
+            pvs_lowres_logits=np.asarray(pvs_logits, dtype=np.float32) if pvs_logits is not None else np.empty((0,), dtype=np.float32),
+            pcs_fullres_prob=np.asarray(pcs_prob, dtype=np.float32) if pcs_prob is not None else np.empty((0,), dtype=np.float32),
+        )
+
+        payload = {
+            "feedback_id": feedback_id,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": mode,
+            "rating": rating,
+            "tags": feedback_tags or [],
+            "comment": feedback_comment or "",
+            "image_id": image_state.get("image_id"),
+            "image_size": [int(image.width), int(image.height)],
+            "instance_id": int(inst["id"]),
+            "source": inst.get("source"),
+            "status": inst.get("status"),
+            "score": float(inst.get("score", 0.0)),
+            "bbox_xyxy_px": [float(v) for v in inst.get("box_xyxy_px", [])],
+            "prompt_history": _history_json(inst.get("prompt_history", [])),
+            "image_file": str(image_path),
+            "overlay_file": str(overlay_path) if overlay is not None else None,
+            "mask_file": str(mask_path),
+            "mask_npz_file": str(npz_path),
+            "branch": "Zhengqiyuan/PVS-demo",
+        }
+
+        with feedback_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        with _FEEDBACK_WRITE_LOCK:
+            with (runtime_feedback_dir / "feedback.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        info = f"反馈已保存: {feedback_id}"
+    except Exception as exc:
+        info = f"反馈保存失败: {exc}"
+    return _view(image_state, pcs_state, pvs_state, mode, info)
 
 
 def _export_pool(image_state, pcs_state, pvs_state, mode, pool_name, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file):
@@ -2507,6 +2584,7 @@ def create_demo():
                     )
                     with gr.Row():
                         with gr.Column(scale=1):
+                            gr.Markdown("### 原始图像（点击进行交互）")
                             image_upload = gr.Image(type="numpy", label="原始图像", show_label=False, sources=["upload", "clipboard"], elem_id="input_image")
                             with gr.Group():
                                 gr.Markdown("### \u4ea4\u4e92\u6a21\u5f0f")
@@ -2587,6 +2665,19 @@ def create_demo():
                                     accept_pvs_btn = gr.Button("确认", variant="primary")
                                 export_pvs_btn = gr.Button("\u5bfc\u51fa PVS")
                             export_file = gr.File(label="\u4e0b\u8f7d\u7ed3\u679c\u5305\uff08PNG + masks + JSON\uff09", interactive=False)
+                            with gr.Accordion("结果反馈（用于 RL 数据收集）", open=False):
+                                feedback_rating = gr.Radio(
+                                    choices=[("好", "good"), ("及格", "pass"), ("差", "bad")],
+                                    value="pass",
+                                    label="结果质量",
+                                    elem_classes="mode-radio",
+                                )
+                                feedback_tags = gr.CheckboxGroup(
+                                    choices=["毛边", "空缺", "漏检", "误检", "边界偏移", "多分/粘连", "polygon 不贴合", "其他"],
+                                    label="问题标签",
+                                )
+                                feedback_comment = gr.Textbox(label="备注", lines=3, placeholder="可选：描述这次生成的问题或可用性")
+                                submit_feedback_btn = gr.Button("提交反馈", variant="primary")
 
                 with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
                     gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
@@ -2610,6 +2701,7 @@ def create_demo():
             accept_pvs_btn.click(fn=_accept_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1)
             export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1)
+            submit_feedback_btn.click(fn=_submit_feedback, inputs=[image_state, pcs_state, pvs_state, mode, feedback_rating, feedback_tags, feedback_comment], outputs=common, concurrency_limit=1)
         gr.Markdown("---\n<div style='text-align:center;color:#718096;font-size:0.9em;'>Powered by SAM3</div>")
     return demo
 # --- end PCS/PVS single-workspace override ---

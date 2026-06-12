@@ -24,6 +24,7 @@ This project provides a Gradio-based SAM3 image segmentation workspace focused o
 
 - **PCS Auto 自动概念分割**：通过文本提示和正/负 bbox 样本，让 SAM3 自动找出某个概念的所有实例。
 - **PVS Manual 手动实例分割**：由业务人员手动选择目标位置，再用 bbox、point 或 polygon mask prompt 创建/精修实例。
+- **Feedback 结果反馈**：对 active PVS 实例记录好/及格/差、问题标签和备注，用于后续 RL / 偏好数据收集。
 
 The current branch intentionally focuses on image segmentation. The video tab is kept only as a reminder; video tracking should use the original demo branch.
 
@@ -95,6 +96,16 @@ Polygon supports two actions:
 | `Intersect` | 限制范围，将结果限制在 polygon 范围内 | Restrict the result inside the polygon region |
 
 默认推荐使用 `Replace`，适合业务人员画完整目标轮廓的场景。
+
+### 6. 结果反馈 / Feedback
+
+Feedback 用于收集 PVS 分割结果的人工质量判断。首版只支持当前 active PVS instance；没有 active PVS instance 时不会写入空反馈。
+
+支持内容：
+
+- `结果质量`：好 / 及格 / 差。
+- `问题标签`：毛边、空缺、漏检、误检、边界偏移、多分/粘连、polygon 不贴合、其他。
+- `备注`：记录具体问题或可用性说明。
 
 ---
 
@@ -293,6 +304,45 @@ PVS 适合业务人员手动指定目标，然后让 SAM3 生成或精修实例 
 
 ---
 
+### 4. Feedback 使用流程
+
+Feedback 适合在生成 PVS 实例后记录人工质量判断，用于后续 RL / 偏好优化数据收集。
+
+1. 选择 `PVS Manual 手动实例分割`。
+2. 通过 bbox、point 或 polygon 创建 PVS 实例。
+3. 在 `当前 PVS 实例` 下拉框中选择需要评价的 active instance。
+4. 打开右侧 `结果反馈（用于 RL 数据收集）` 面板。
+5. 选择 `结果质量`：好 / 及格 / 差。
+6. 可选勾选问题标签并填写备注。
+7. 点击 `提交反馈`。
+
+反馈会写入：
+
+```text
+.runtime/feedback/feedback.jsonl
+.runtime/feedback/samples/<feedback_id>/
+```
+
+单条 sample 目录包含：
+
+```text
+image.png
+overlay.png
+mask.png
+mask.npz
+feedback.json
+```
+
+`mask.npz` 中字段固定为：
+
+```text
+mask_fullres_uint8
+pvs_lowres_logits
+pcs_fullres_prob
+```
+
+---
+
 ## 分析报告字段说明 / Report Fields
 
 分析报告会根据当前模式显示不同内容。
@@ -378,6 +428,7 @@ Uploaded JSON has priority over COCO lookup.
 overlay.png
 prediction.json
 metrics.json
+coco_masks.json
 masks/*.png
 ```
 
@@ -390,6 +441,7 @@ masks/*.png
 - bbox_xyxy
 - mask file
 - final contour polygon
+- COCO RLE mask in `coco_masks.json`
 - prompt history
 
 ---
@@ -455,6 +507,7 @@ masks/*.png
 - PCS 不使用 point/polygon；PVS 支持 point/bbox/polygon。
 - PVS 中 `清空待生成 bbox` 不会删除已生成实例。
 - `清空草稿 PVS 实例` 只删除 draft 实例，不删除 accepted 实例。
+- Feedback 首版只记录 active PVS instance；没有 active PVS instance 时不会写入空记录。
 - 高分辨率图片和大量实例会占用更多显存和内存。
 - 首次启动需要加载 SAM3 模型，可能需要等待一段时间。
 
