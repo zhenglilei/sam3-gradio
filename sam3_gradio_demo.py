@@ -2697,6 +2697,20 @@ def create_demo():
                                             elem_classes="mode-radio",
                                         )
                                         finish_polygon_btn = gr.Button("\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61", size="sm", variant="primary")
+                                        with gr.Accordion("高级 Polygon 融合方式", open=False):
+                                            polygon_combine_mode = gr.Radio(
+                                                choices=[("Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b", "replace"), ("Blend \u4e0e\u65e7 mask \u878d\u5408", "blend"), ("Union \u8865\u5145\u533a\u57df", "union"), ("Intersect \u9650\u5236\u8303\u56f4", "intersect")],
+                                                value="replace",
+                                                label="\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f",
+                                                elem_classes="mode-radio",
+                                            )
+                                            gr.Markdown(
+                                                "**\u4ee5\u4e0a\u56db\u79cd\u90fd\u662f Positive Polygon \u7684\u878d\u5408\u65b9\u5f0f\uff0c\u4e0d\u5305\u542b negative prompt\u3002**  \n"
+                                                "- Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b\uff1a\u7528\u5f53\u524d polygon \u4f5c\u4e3a\u5b8c\u6574 mask prompt\u3002  \n"
+                                                "- Blend \u4e0e\u65e7 mask \u878d\u5408\uff1a\u65e7 logits \u548c polygon logits \u5171\u540c\u5f71\u54cd\u7ed3\u679c\u3002  \n"
+                                                "- Union \u8865\u5145\u533a\u57df\uff1a\u4fdd\u7559\u65e7 mask\uff0c\u5e76\u52a0\u5165 polygon \u533a\u57df\u3002  \n"
+                                                "- Intersect \u9650\u5236\u8303\u56f4\uff1a\u5c06\u7ed3\u679c\u9650\u5236\u5728 polygon \u8303\u56f4\u5185\u3002"
+                                            )
                                     clear_draft_pvs_btn = gr.Button("清空草稿 PVS 实例", size="sm", variant="secondary")
                                     active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
                                     analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
@@ -2713,19 +2727,6 @@ def create_demo():
                             result_image = gr.Image(type="numpy", label="\u5206\u5272\u7ed3\u679c")
                             with gr.Group(visible=True) as pvs_action_panel:
                                 gr.Markdown("### PVS 实例操作")
-                                polygon_combine_mode = gr.Radio(
-                                    choices=[("Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b", "replace"), ("Blend \u4e0e\u65e7 mask \u878d\u5408", "blend"), ("Union \u8865\u5145\u533a\u57df", "union"), ("Intersect \u9650\u5236\u8303\u56f4", "intersect")],
-                                    value="replace",
-                                    label="\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f",
-                                    elem_classes="mode-radio",
-                                )
-                                gr.Markdown(
-                                    "**\u591a\u8fb9\u5f62\u878d\u5408\u65b9\u5f0f\u8bf4\u660e**  \n"
-                                    "- Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b\uff1a\u7528\u5f53\u524d polygon \u4f5c\u4e3a\u5b8c\u6574 mask prompt\u3002  \n"
-                                    "- Blend \u4e0e\u65e7 mask \u878d\u5408\uff1a\u65e7 logits \u548c polygon logits \u5171\u540c\u5f71\u54cd\u7ed3\u679c\u3002  \n"
-                                    "- Union \u8865\u5145\u533a\u57df\uff1a\u4fdd\u7559\u65e7 mask\uff0c\u5e76\u52a0\u5165 polygon \u533a\u57df\u3002  \n"
-                                    "- Intersect \u9650\u5236\u8303\u56f4\uff1a\u5c06\u7ed3\u679c\u9650\u5236\u5728 polygon \u8303\u56f4\u5185\u3002"
-                                )
                                 with gr.Row():
                                     undo_pvs_btn = gr.Button("\u64a4\u9500")
                                     delete_pvs_btn = gr.Button("\u5220\u9664")
