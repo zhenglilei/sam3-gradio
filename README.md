@@ -299,7 +299,6 @@ PVS 适合业务人员手动指定目标，然后让 SAM3 生成或精修实例 
 - `撤销`：撤销当前实例最近一次 refine 操作。
 - `删除`：将当前实例标记为 deleted。
 - `确认`：将当前实例标记为 accepted。
-- `清空草稿 PVS 实例`：只删除未确认的 draft 实例，保留 accepted 实例。
 - `导出 PVS`：导出当前有效 PVS 实例。
 
 ---
@@ -506,7 +505,6 @@ masks/*.png
 - PCS 和 PVS 是不同语义：PCS 走概念 grounding，PVS 走实例交互分割。
 - PCS 不使用 point/polygon；PVS 支持 point/bbox/polygon。
 - PVS 中 `清空待生成 bbox` 不会删除已生成实例。
-- `清空草稿 PVS 实例` 只删除 draft 实例，不删除 accepted 实例。
 - Feedback 在 PCS 模式记录当前 PCS 结果池，在 PVS 模式记录 active PVS instance；没有对应结果时不会写入空记录。
 - 高分辨率图片和大量实例会占用更多显存和内存。
 - 首次启动需要加载 SAM3 模型，可能需要等待一段时间。

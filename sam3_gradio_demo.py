@@ -2060,11 +2060,16 @@ def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode
 def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
     prompt_state = _new_prompt_state()
     if mode == "PCS Auto":
-        pcs_state = _new_pcs_state()
-        info = "PCS \u63d0\u793a\u5df2\u6e05\u7a7a"
+        pcs_state["text_prompt"] = ""
+        pcs_state["positive_boxes"] = []
+        pcs_state["negative_boxes"] = []
+        pcs_state["bbox_history"] = []
+        text_prompt_update = ""
+        info = "PCS prompt 已清空；已有 PCS 分割结果不会被删除"
     else:
-        info = "\u63d0\u793a\u5df2\u6e05\u7a7a"
-    return prompt_state, "", "", "", pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+        text_prompt_update = gr.update()
+        info = "\u4e34\u65f6\u63d0\u793a\u5df2\u6e05\u7a7a\uff1b\u5df2\u751f\u6210\u5b9e\u4f8b\u4e0d\u4f1a\u88ab\u5220\u9664"
+    return prompt_state, "", "", "", pcs_state, text_prompt_update, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
 
 def _pcs_choice_update(pcs_state):
@@ -2264,11 +2269,11 @@ def _undo_pending_pvs_bbox(image_state, pcs_state, pvs_state, mode):
     try:
         pending = pvs_state.setdefault("pending_boxes", [])
         if not pending:
-            raise ValueError("\u6ca1\u6709\u53ef\u64a4\u9500\u7684\u5f85\u751f\u6210 bbox")
+            raise ValueError("\u6ca1\u6709\u53ef\u79fb\u9664\u7684\u5f85\u751f\u6210 bbox")
         removed = pending.pop()
-        info = f"\u5df2\u64a4\u9500\u6700\u8fd1\u4e00\u4e2a\u5f85\u751f\u6210 bbox: {[round(v, 1) for v in removed]}"
+        info = f"\u5df2\u79fb\u9664\u4e0a\u4e00\u4e2a\u5f85\u751f\u6210 bbox: {[round(v, 1) for v in removed]}"
     except Exception as exc:
-        info = f"\u64a4\u9500\u5f85\u751f\u6210 bbox \u5931\u8d25: {exc}"
+        info = f"\u79fb\u9664\u5f85\u751f\u6210 bbox \u5931\u8d25: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
@@ -2276,18 +2281,6 @@ def _clear_pending_pvs_boxes(image_state, pcs_state, pvs_state, mode):
     count = len(pvs_state.get("pending_boxes", []))
     pvs_state["pending_boxes"] = []
     info = f"已清空 {count} 个待生成 PVS bbox；已生成实例不会被删除"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
-
-
-def _clear_draft_pvs_instances(image_state, pcs_state, pvs_state, mode):
-    instances = pvs_state.setdefault("instances", {})
-    draft_ids = [inst_id for inst_id, inst in list(instances.items()) if inst.get("status", "draft") == "draft"]
-    for inst_id in draft_ids:
-        instances[inst_id]["status"] = "deleted"
-    if pvs_state.get("active_instance_id") in draft_ids:
-        remaining = _active_instances(pvs_state)
-        pvs_state["active_instance_id"] = remaining[0]["id"] if remaining else None
-    info = f"已清空 {len(draft_ids)} 个草稿 PVS 实例；已确认实例保留"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
@@ -2711,7 +2704,6 @@ def create_demo():
                                                 "- Union \u8865\u5145\u533a\u57df\uff1a\u4fdd\u7559\u65e7 mask\uff0c\u5e76\u52a0\u5165 polygon \u533a\u57df\u3002  \n"
                                                 "- Intersect \u9650\u5236\u8303\u56f4\uff1a\u5c06\u7ed3\u679c\u9650\u5236\u5728 polygon \u8303\u56f4\u5185\u3002"
                                             )
-                                    clear_draft_pvs_btn = gr.Button("清空草稿 PVS 实例", size="sm", variant="secondary")
                                     pvs_summary = gr.Textbox(label="PVS 实例", lines=6, interactive=False, visible=False)
 
                                 with gr.Accordion("\u5bfc\u51fa\u4e0e COCO \u91cf\u5316", open=False):
@@ -2754,7 +2746,7 @@ def create_demo():
             image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, *common, export_file], concurrency_limit=1)
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
-            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, *common], concurrency_limit=1)
+            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, text_prompt, *common], concurrency_limit=1)
             mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, *common], concurrency_limit=1)
             click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
             undo_pcs_bbox_btn.click(fn=_undo_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
@@ -2762,7 +2754,6 @@ def create_demo():
             create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             undo_pending_bbox_btn.click(fn=_undo_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
-            clear_draft_pvs_btn.click(fn=_clear_draft_pvs_instances, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
             undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
