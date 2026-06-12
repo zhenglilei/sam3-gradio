@@ -2387,14 +2387,23 @@ def _history_json(history):
 
 def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_tags, feedback_comment):
     try:
-        if mode != "PVS Manual":
-            raise ValueError("Feedback 首版只支持 PVS Manual 的当前实例")
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None:
-            raise ValueError("请先选择一个 active PVS instance")
-        inst = pvs_state.get("instances", {}).get(int(active_id))
-        if inst is None or inst.get("status") == "deleted":
-            raise ValueError("当前 active PVS instance 不存在或已删除")
+        if mode == "PVS Manual":
+            active_id = pvs_state.get("active_instance_id")
+            if active_id is None:
+                raise ValueError("请先选择一个 active PVS instance")
+            inst = pvs_state.get("instances", {}).get(int(active_id))
+            if inst is None or inst.get("status") == "deleted":
+                raise ValueError("当前 active PVS instance 不存在或已删除")
+            feedback_instances = [inst]
+            feedback_target = "active_pvs_instance"
+        elif mode == "PCS Auto":
+            feedback_instances = _active_instances(pcs_state)
+            if not feedback_instances:
+                raise ValueError("请先运行 PCS 并生成至少一个 PCS instance")
+            inst = None
+            feedback_target = "pcs_instance_pool"
+        else:
+            raise ValueError(f"不支持的 feedback 模式: {mode}")
 
         ws = _workspace(image_state)
         image = ws["image"]
@@ -2413,32 +2422,48 @@ def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_t
         if overlay is not None:
             overlay.save(overlay_path)
 
-        mask = np.asarray(inst["mask_fullres_bool"]).astype(bool)
-        cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255)
-        pvs_logits = inst.get("pvs_lowres_logits")
-        pcs_prob = inst.get("pcs_fullres_prob")
+        masks = [np.asarray(item["mask_fullres_bool"]).astype(bool) for item in feedback_instances]
+        mask_stack = np.stack([mask.astype(np.uint8) for mask in masks], axis=0)
+        mask_preview = np.any(mask_stack.astype(bool), axis=0).astype(np.uint8)
+        cv2.imwrite(str(mask_path), mask_preview * 255)
+        pvs_logits_values = [item.get("pvs_lowres_logits") for item in feedback_instances if item.get("pvs_lowres_logits") is not None]
+        pcs_prob_values = [item.get("pcs_fullres_prob") for item in feedback_instances if item.get("pcs_fullres_prob") is not None]
         np.savez_compressed(
             npz_path,
-            mask_fullres_uint8=mask.astype(np.uint8),
-            pvs_lowres_logits=np.asarray(pvs_logits, dtype=np.float32) if pvs_logits is not None else np.empty((0,), dtype=np.float32),
-            pcs_fullres_prob=np.asarray(pcs_prob, dtype=np.float32) if pcs_prob is not None else np.empty((0,), dtype=np.float32),
+            mask_fullres_uint8=mask_stack,
+            pvs_lowres_logits=np.stack([np.asarray(v, dtype=np.float32) for v in pvs_logits_values], axis=0) if pvs_logits_values else np.empty((0,), dtype=np.float32),
+            pcs_fullres_prob=np.stack([np.asarray(v, dtype=np.float32) for v in pcs_prob_values], axis=0) if pcs_prob_values else np.empty((0,), dtype=np.float32),
         )
+        instance_rows = [
+            {
+                "instance_id": int(item["id"]),
+                "source": item.get("source"),
+                "status": item.get("status"),
+                "score": float(item.get("score", 0.0)),
+                "bbox_xyxy_px": [float(v) for v in item.get("box_xyxy_px", [])],
+                "prompt_history": _history_json(item.get("prompt_history", [])),
+            }
+            for item in feedback_instances
+        ]
 
         payload = {
             "feedback_id": feedback_id,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "mode": mode,
+            "target": feedback_target,
             "rating": rating,
             "tags": feedback_tags or [],
             "comment": feedback_comment or "",
             "image_id": image_state.get("image_id"),
             "image_size": [int(image.width), int(image.height)],
-            "instance_id": int(inst["id"]),
-            "source": inst.get("source"),
-            "status": inst.get("status"),
-            "score": float(inst.get("score", 0.0)),
-            "bbox_xyxy_px": [float(v) for v in inst.get("box_xyxy_px", [])],
-            "prompt_history": _history_json(inst.get("prompt_history", [])),
+            "instance_id": int(inst["id"]) if inst is not None else None,
+            "source": inst.get("source") if inst is not None else "pcs",
+            "status": inst.get("status") if inst is not None else None,
+            "score": float(inst.get("score", 0.0)) if inst is not None else None,
+            "bbox_xyxy_px": [float(v) for v in inst.get("box_xyxy_px", [])] if inst is not None else None,
+            "prompt_history": _history_json(inst.get("prompt_history", [])) if inst is not None else [],
+            "instance_count": len(feedback_instances),
+            "instances": instance_rows,
             "image_file": str(image_path),
             "overlay_file": str(overlay_path) if overlay is not None else None,
             "mask_file": str(mask_path),
@@ -2665,7 +2690,7 @@ def create_demo():
                                     accept_pvs_btn = gr.Button("确认", variant="primary")
                                 export_pvs_btn = gr.Button("\u5bfc\u51fa PVS")
                             export_file = gr.File(label="\u4e0b\u8f7d\u7ed3\u679c\u5305\uff08PNG + masks + JSON\uff09", interactive=False)
-                            with gr.Accordion("结果反馈（用于 RL 数据收集）", open=False):
+                            with gr.Accordion("结果反馈（PCS 结果 / PVS 当前实例，用于 RL 数据收集）", open=False):
                                 feedback_rating = gr.Radio(
                                     choices=[("好", "good"), ("及格", "pass"), ("差", "bad")],
                                     value="pass",

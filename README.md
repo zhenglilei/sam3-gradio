@@ -24,7 +24,7 @@ This project provides a Gradio-based SAM3 image segmentation workspace focused o
 
 - **PCS Auto 自动概念分割**：通过文本提示和正/负 bbox 样本，让 SAM3 自动找出某个概念的所有实例。
 - **PVS Manual 手动实例分割**：由业务人员手动选择目标位置，再用 bbox、point 或 polygon mask prompt 创建/精修实例。
-- **Feedback 结果反馈**：对 active PVS 实例记录好/及格/差、问题标签和备注，用于后续 RL / 偏好数据收集。
+- **Feedback 结果反馈**：对 PCS 当前结果池或 active PVS 实例记录好/及格/差、问题标签和备注，用于后续 RL / 偏好数据收集。
 
 The current branch intentionally focuses on image segmentation. The video tab is kept only as a reminder; video tracking should use the original demo branch.
 
@@ -99,7 +99,7 @@ Polygon supports two actions:
 
 ### 6. 结果反馈 / Feedback
 
-Feedback 用于收集 PVS 分割结果的人工质量判断。首版只支持当前 active PVS instance；没有 active PVS instance 时不会写入空反馈。
+Feedback 用于收集分割结果的人工质量判断。PCS 模式记录当前 PCS 结果池；PVS 模式记录当前 active PVS instance。没有对应结果时不会写入空反馈。
 
 支持内容：
 
@@ -306,12 +306,12 @@ PVS 适合业务人员手动指定目标，然后让 SAM3 生成或精修实例 
 
 ### 4. Feedback 使用流程
 
-Feedback 适合在生成 PVS 实例后记录人工质量判断，用于后续 RL / 偏好优化数据收集。
+Feedback 适合在生成 PCS/PVS 分割结果后记录人工质量判断，用于后续 RL / 偏好优化数据收集。
 
-1. 选择 `PVS Manual 手动实例分割`。
-2. 通过 bbox、point 或 polygon 创建 PVS 实例。
-3. 在 `当前 PVS 实例` 下拉框中选择需要评价的 active instance。
-4. 打开右侧 `结果反馈（用于 RL 数据收集）` 面板。
+1. 如需评价 PCS，选择 `PCS Auto 自动概念分割` 并先运行 `开始 PCS 分割`。
+2. 如需评价 PVS，选择 `PVS Manual 手动实例分割`，并在 `当前 PVS 实例` 下拉框中选择 active instance。
+3. 打开右侧 `结果反馈（PCS 结果 / PVS 当前实例，用于 RL 数据收集）` 面板。
+4. PCS 会记录当前 PCS 结果池；PVS 会记录当前 active PVS instance。
 5. 选择 `结果质量`：好 / 及格 / 差。
 6. 可选勾选问题标签并填写备注。
 7. 点击 `提交反馈`。
@@ -507,7 +507,7 @@ masks/*.png
 - PCS 不使用 point/polygon；PVS 支持 point/bbox/polygon。
 - PVS 中 `清空待生成 bbox` 不会删除已生成实例。
 - `清空草稿 PVS 实例` 只删除 draft 实例，不删除 accepted 实例。
-- Feedback 首版只记录 active PVS instance；没有 active PVS instance 时不会写入空记录。
+- Feedback 在 PCS 模式记录当前 PCS 结果池，在 PVS 模式记录 active PVS instance；没有对应结果时不会写入空记录。
 - 高分辨率图片和大量实例会占用更多显存和内存。
 - 首次启动需要加载 SAM3 模型，可能需要等待一段时间。
 
