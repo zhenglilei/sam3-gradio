@@ -2596,6 +2596,39 @@ def _history_json(history):
     return rows
 
 
+
+def _latest_layout_prompt_from_instances(instances):
+    for item in reversed(list(instances or [])):
+        for hist in reversed(item.get("prompt_history", []) or []):
+            prompt = hist.get("prompt") or {}
+            if hist.get("op") in {"create_from_layout_mask", "refine_with_layout_mask"} or prompt.get("type") == "layout_mask":
+                return prompt
+    return None
+
+
+def _write_feedback_layout_artifacts(sample_dir, layout_prompt):
+    if not layout_prompt:
+        return {}
+    transform_path = sample_dir / "layout_transform.json"
+    layout_id = layout_prompt.get("layout_id")
+    cached = _LAYOUT_CACHE.get(str(layout_id)) if layout_id else None
+    transformed_mask_path = None
+    if cached is not None and cached.get("transformed_mask") is not None:
+        transformed_mask_path = sample_dir / "layout_transformed_mask.png"
+        cv2.imwrite(str(transformed_mask_path), np.asarray(cached["transformed_mask"], dtype=np.uint8) * 255)
+    payload = {
+        "layout_prompt": layout_prompt,
+        "layout_id": layout_id,
+        "has_cached_transformed_mask": transformed_mask_path is not None,
+        "layout_transformed_mask_file": str(transformed_mask_path) if transformed_mask_path is not None else None,
+    }
+    with transform_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return {
+        "layout_transform_file": str(transform_path),
+        "layout_transformed_mask_file": str(transformed_mask_path) if transformed_mask_path is not None else None,
+    }
+
 def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_tags, feedback_comment):
     try:
         if mode == "PVS Manual":
@@ -2656,6 +2689,7 @@ def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_t
             }
             for item in feedback_instances
         ]
+        layout_artifacts = _write_feedback_layout_artifacts(sample_dir, _latest_layout_prompt_from_instances(feedback_instances))
 
         payload = {
             "feedback_id": feedback_id,
@@ -2679,6 +2713,8 @@ def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_t
             "overlay_file": str(overlay_path) if overlay is not None else None,
             "mask_file": str(mask_path),
             "mask_npz_file": str(npz_path),
+            "layout_transform_file": layout_artifacts.get("layout_transform_file"),
+            "layout_transformed_mask_file": layout_artifacts.get("layout_transformed_mask_file"),
             "branch": "Zhengqiyuan/PVS-demo",
         }
 
@@ -3223,36 +3259,12 @@ def _use_current_layout_mask(layout_state):
         return layout_state or _new_layout_state(), f"当前版图 mask 不可用: {exc}"
 
 
-def _update_layout_controls(layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha):
-    try:
-        _layout_cache_get(layout_state)
-        state = dict(layout_state or _new_layout_state())
-        state.update({
-            "enabled": bool(enabled),
-            "tx": float(tx or 0.0),
-            "ty": float(ty or 0.0),
-            "scale": float(scale or 1.0),
-            "rotation_deg": float(rotation_deg or 0.0),
-            "preview_alpha": float(preview_alpha or 0.35),
-        })
-        return state, "版图变换参数已更新。\n" + _layout_state_summary(state)
-    except Exception as exc:
-        return layout_state or _new_layout_state(), f"版图变换参数更新失败: {exc}"
-
-
 def _reset_layout_controls(layout_state):
     state = dict(layout_state or _new_layout_state())
     state.update({"enabled": bool(state.get("layout_id")), "tx": 0.0, "ty": 0.0, "scale": 1.0, "rotation_deg": 0.0, "preview_alpha": 0.35})
     info = "版图变换参数已重置。\n" + _layout_state_summary(state)
     return state, True if state.get("layout_id") else False, 0.0, 0.0, 1.0, 0.0, 0.35, info
 
-
-def _layout_pvs_action_not_ready(layout_state, action):
-    try:
-        _layout_cache_get(layout_state)
-        return f"{action} 将在 Step 5 接入 SAM3 PVS mask_input。当前已准备好版图 mask。\n" + _layout_state_summary(layout_state)
-    except Exception as exc:
-        return f"{action} 失败: {exc}"
 
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
