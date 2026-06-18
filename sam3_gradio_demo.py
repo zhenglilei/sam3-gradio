@@ -1558,7 +1558,14 @@ def _new_pcs_state():
 
 
 def _new_pvs_state():
-    return {"instances": {}, "active_instance_id": None, "next_instance_id": 1, "pending_boxes": []}
+    return {
+        "instances": {},
+        "active_instance_id": None,
+        "next_instance_id": 1,
+        "pending_boxes": [],
+        "pending_bbox_records": [],
+        "next_pending_bbox_id": 1,
+    }
 
 
 def _workspace(image_state):
@@ -1819,11 +1826,14 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             queue_box((x1, y1, x2, y2), color, 3)
             queue_label(f"PCS#{inst['id']}", x1, max(18, y1 - 6), color)
     if mode == "PVS Manual" and not show_instances:
-        for idx, box in enumerate(pvs_state.get("pending_boxes", []), start=1):
+        for rec in _pvs_pending_bbox_records(pvs_state):
+            box = rec.get("box", [])
+            if len(box) != 4:
+                continue
             color = (0, 255, 90)
             queue_box(box, color, 3)
             x1, y1, x2, y2 = [int(round(v)) for v in box]
-            queue_label(f"pending#{idx}", x1, max(18, y1 - 6), color)
+            queue_label(f"B-ID{rec.get('id')}", x1, max(18, y1 - 6), color)
     if show_instances and mode == "PVS Manual":
         active_id = pvs_state.get("active_instance_id")
         for inst in _active_instances(pvs_state):
@@ -1976,6 +1986,50 @@ def _append_pcs_bbox_sample(pcs_state, box, bbox_role):
     return key
 
 
+
+def _pvs_pending_bbox_records(pvs_state):
+    records = pvs_state.setdefault("pending_bbox_records", [])
+    if records:
+        return records
+
+    next_id = int(pvs_state.get("next_pending_bbox_id", 1) or 1)
+    rebuilt = []
+    for box in pvs_state.get("pending_boxes", []):
+        rebuilt.append({"id": next_id, "box": box})
+        next_id += 1
+    if rebuilt:
+        pvs_state["pending_bbox_records"] = rebuilt
+        pvs_state["next_pending_bbox_id"] = next_id
+    return pvs_state.setdefault("pending_bbox_records", [])
+
+
+def _sync_pvs_pending_boxes_from_records(pvs_state):
+    pvs_state["pending_boxes"] = [rec.get("box") for rec in _pvs_pending_bbox_records(pvs_state)]
+
+
+def _pvs_pending_bbox_choices(pvs_state):
+    choices = []
+    for rec in _pvs_pending_bbox_records(pvs_state):
+        box = [round(float(v), 1) for v in rec.get("box", [])]
+        choices.append((f"ID {rec.get('id')} \u5f85\u751f\u6210 bbox {box}", str(rec.get("id"))))
+    return gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+
+def _append_pvs_pending_bbox(pvs_state, box):
+    _pvs_pending_bbox_records(pvs_state)
+    bbox_id = int(pvs_state.get("next_pending_bbox_id", 1) or 1)
+    pvs_state.setdefault("pending_bbox_records", []).append({"id": bbox_id, "box": box})
+    pvs_state["next_pending_bbox_id"] = bbox_id + 1
+    _sync_pvs_pending_boxes_from_records(pvs_state)
+    return bbox_id
+
+
+def _clear_pvs_pending_bboxes(pvs_state):
+    count = len(_pvs_pending_bbox_records(pvs_state))
+    pvs_state["pending_bbox_records"] = []
+    pvs_state["pending_boxes"] = []
+    return count
+
 def _click_tool_key(click_tool):
     text = str(click_tool or "").strip()
     lower = text.lower()
@@ -2024,10 +2078,9 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
                     label = "\u8d1f\u6837\u672c" if key == "negative_boxes" else "\u6b63\u6837\u672c"
                     info = f"\u5df2\u81ea\u52a8\u6dfb\u52a0 PCS {label} bbox: {[round(v, 1) for v in box]}"
                 else:
-                    pending = pvs_state.setdefault("pending_boxes", [])
-                    pending.append(box)
+                    bbox_id = _append_pvs_pending_bbox(pvs_state, box)
                     prompt_state["last_bbox"] = None
-                    info = f"\u5df2\u52a0\u5165 PVS \u5f85\u751f\u6210 bbox #{len(pending)}: {[round(v, 1) for v in box]}\u3002\u7ee7\u7eed\u6846\u9009\u6216\u70b9\u51fb\u201c\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b\u201d\u3002"
+                    info = f"\u5df2\u52a0\u5165 PVS \u5f85\u751f\u6210 bbox ID {bbox_id}: {[round(v, 1) for v in box]}\u3002\u7ee7\u7eed\u6846\u9009\u6216\u70b9\u51fb\u201c\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b\u201d\u3002"
         elif tool == "polygon":
             points = prompt_state.setdefault("polygon_points", [])
             points.append(point)
@@ -2036,7 +2089,7 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
             info = f"\u672a\u77e5\u4ea4\u4e92\u5de5\u5177: {click_tool}"
     except Exception as exc:
         info = f"\u56fe\u50cf\u70b9\u51fb\u5931\u8d25: {exc}"
-    return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+    return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
 
 def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refine", combine_mode="replace", progress=None):
@@ -2123,11 +2176,12 @@ def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
         pcs_state["bbox_records"] = []
         pcs_state["next_bbox_id"] = 1
         text_prompt_update = ""
-        info = "PCS prompt 已清空；已有 PCS 分割结果不会被删除"
+        info = "PCS prompt \u5df2\u6e05\u7a7a\uff1b\u5df2\u6709 PCS \u5206\u5272\u7ed3\u679c\u4e0d\u4f1a\u88ab\u5220\u9664"
     else:
+        cleared = _clear_pvs_pending_bboxes(pvs_state)
         text_prompt_update = gr.update()
-        info = "临时提示已清空；已生成实例不会被删除"
-    return prompt_state, "", "", "", pcs_state, _pcs_bbox_choices(pcs_state), text_prompt_update, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+        info = f"\u4e34\u65f6\u63d0\u793a\u5df2\u6e05\u7a7a\uff0c\u5305\u62ec {cleared} \u4e2a\u5f85\u751f\u6210 PVS bbox\uff1b\u5df2\u751f\u6210\u5b9e\u4f8b\u4e0d\u4f1a\u88ab\u5220\u9664"
+    return prompt_state, "", "", "", pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), text_prompt_update, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
 
 def _pcs_choice_update(pcs_state):
@@ -2147,7 +2201,8 @@ def _pvs_choice_update(pvs_state):
 
 
 def _pvs_pending_count_text(pvs_state):
-    return f"待生成 bbox 数量: {len(pvs_state.get('pending_boxes', []))}"
+    _sync_pvs_pending_boxes_from_records(pvs_state)
+    return f"\u5f85\u751f\u6210 bbox \u6570\u91cf: {len(pvs_state.get('pending_boxes', []))}"
 
 
 def _pcs_summary(pcs_state):
@@ -2207,9 +2262,9 @@ def _init_workspace(input_image, mode):
     prompt_state = _new_prompt_state()
     image_state = {"image_id": None, "width": 0, "height": 0}
     if input_image is None:
-        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
+        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
     if image_predictor is None:
-        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
+        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
     image = _pil_image(input_image)
     image_id = uuid.uuid4().hex
     _clear_workspace_cache()
@@ -2218,10 +2273,10 @@ def _init_workspace(input_image, mode):
     except torch.OutOfMemoryError:
         _clear_workspace_cache()
         info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5df2\u6e05\u7406\u5f53\u524d\u5de5\u4f5c\u53f0\u7f13\u5b58\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
-        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
+        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
     _WORKSPACE_CACHE[image_id] = {"image": image, "base_state": base_state}
     image_state = {"image_id": image_id, "width": image.width, "height": image.height}
-    return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
+    return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
 
 
 def _delete_selected_pcs_bbox(image_state, pcs_state, pvs_state, mode, selected_bbox_id):
@@ -2291,17 +2346,18 @@ def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
 
 def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode, progress=gr.Progress(track_tqdm=False)):
     try:
-        _pvs_progress(progress, 0.03, "准备批量生成 PVS 实例")
+        _pvs_progress(progress, 0.03, "\u51c6\u5907\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b")
+        _sync_pvs_pending_boxes_from_records(pvs_state)
         boxes = list(pvs_state.get("pending_boxes", []))
         if not boxes:
             raise ValueError("\u6ca1\u6709\u5f85\u751f\u6210\u7684 PVS bbox\uff0c\u8bf7\u5148\u5728\u56fe\u50cf\u4e0a\u6846\u9009\u4e00\u4e2a\u6216\u591a\u4e2a\u76ee\u6807")
 
         created_ids = []
-        _pvs_progress(progress, 0.12, f"读取图像缓存，共 {len(boxes)} 个 bbox")
+        _pvs_progress(progress, 0.12, f"\u8bfb\u53d6\u56fe\u50cf\u7f13\u5b58\uff0c\u5171 {len(boxes)} \u4e2a bbox")
         base_state = _fresh_state(image_state)
         for box_idx, box in enumerate(boxes, start=1):
             start = 0.18 + 0.62 * (box_idx - 1) / max(1, len(boxes))
-            _pvs_progress(progress, start, f"SAM3 正在生成第 {box_idx}/{len(boxes)} 个 PVS 实例", delay=0.06)
+            _pvs_progress(progress, start, f"SAM3 \u6b63\u5728\u751f\u6210\u7b2c {box_idx}/{len(boxes)} \u4e2a PVS \u5b9e\u4f8b", delay=0.06)
             pred = _predict_inst(base_state, box_xyxy_px=box)
             idx = _best(pred)
             mask = pred["masks"][idx]
@@ -2318,33 +2374,37 @@ def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode, prog
             pvs_state["next_instance_id"] = inst_id + 1
             created_ids.append(inst_id)
 
-        _pvs_progress(progress, 0.86, "更新 PVS 实例池")
+        _pvs_progress(progress, 0.86, "\u66f4\u65b0 PVS \u5b9e\u4f8b\u6c60")
         pvs_state["active_instance_id"] = created_ids[-1]
-        pvs_state["pending_boxes"] = []
+        _clear_pvs_pending_bboxes(pvs_state)
         info = f"\u5df2\u4ece {len(created_ids)} \u4e2a\u5f85\u751f\u6210 bbox \u521b\u5efa PVS \u5b9e\u4f8b: {created_ids}"
-        _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
+        _pvs_progress(progress, 0.96, "\u6e32\u67d3 PVS \u5206\u5272\u7ed3\u679c", delay=0.16)
     except Exception as exc:
         info = f"PVS \u6279\u91cf bbox \u751f\u6210\u5931\u8d25: {exc}"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return pvs_state, _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
-def _undo_pending_pvs_bbox(image_state, pcs_state, pvs_state, mode):
+def _delete_selected_pending_pvs_bbox(image_state, pcs_state, pvs_state, mode, selected_bbox_id):
     try:
-        pending = pvs_state.setdefault("pending_boxes", [])
-        if not pending:
-            raise ValueError("\u6ca1\u6709\u53ef\u79fb\u9664\u7684\u5f85\u751f\u6210 bbox")
-        removed = pending.pop()
-        info = f"\u5df2\u79fb\u9664\u4e0a\u4e00\u4e2a\u5f85\u751f\u6210 bbox: {[round(v, 1) for v in removed]}"
+        records = list(_pvs_pending_bbox_records(pvs_state))
+        if not selected_bbox_id:
+            raise ValueError("\u8bf7\u5148\u5728 PVS \u5f85\u751f\u6210 bbox \u5217\u8868\u4e2d\u9009\u62e9\u4e00\u4e2a bbox")
+        target_id = int(selected_bbox_id)
+        target = next((rec for rec in records if int(rec.get("id", -1)) == target_id), None)
+        if target is None:
+            raise ValueError("\u9009\u4e2d\u7684 PVS \u5f85\u751f\u6210 bbox \u5df2\u4e0d\u5b58\u5728\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9")
+        pvs_state["pending_bbox_records"] = [rec for rec in records if int(rec.get("id", -1)) != target_id]
+        _sync_pvs_pending_boxes_from_records(pvs_state)
+        info = f"\u5df2\u5220\u9664 PVS \u5f85\u751f\u6210 bbox ID {target_id}: {[round(float(v), 1) for v in target.get('box', [])]}"
     except Exception as exc:
-        info = f"\u79fb\u9664\u5f85\u751f\u6210 bbox \u5931\u8d25: {exc}"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+        info = f"\u5220\u9664 PVS \u5f85\u751f\u6210 bbox \u5931\u8d25: {exc}"
+    return pvs_state, _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
 def _clear_pending_pvs_boxes(image_state, pcs_state, pvs_state, mode):
-    count = len(pvs_state.get("pending_boxes", []))
-    pvs_state["pending_boxes"] = []
-    info = f"已清空 {count} 个待生成 PVS bbox；已生成实例不会被删除"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+    count = _clear_pvs_pending_bboxes(pvs_state)
+    info = f"\u5df2\u6e05\u7a7a {count} \u4e2a\u5f85\u751f\u6210 PVS bbox\uff1b\u5df2\u751f\u6210\u5b9e\u4f8b\u4e0d\u4f1a\u88ab\u5220\u9664"
+    return pvs_state, _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
 def _set_active_pvs(image_state, pcs_state, pvs_state, mode, selected_id):
@@ -2641,6 +2701,7 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         gr.update(visible=False),
         gr.update(visible=False),
         _pcs_bbox_choices(pcs_state),
+        _pvs_pending_bbox_choices(pvs_state),
         *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
 
@@ -2736,11 +2797,12 @@ def create_demo():
                                     gr.Markdown("### PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272")
                                     with gr.Group(visible=True) as pvs_bbox_prompt_panel:
                                         gr.Markdown("#### BBox prompt")
-                                        pvs_pending_count = gr.Markdown("待生成 bbox 数量: 0")
+                                        pvs_pending_count = gr.Markdown("\u5f85\u751f\u6210 bbox \u6570\u91cf: 0")
+                                        pvs_pending_bbox_selector = gr.Dropdown(choices=[], label="PVS \u5f85\u751f\u6210 bbox \u5217\u8868", interactive=True)
                                         create_pvs_batch_btn = gr.Button("\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b", variant="primary")
                                         with gr.Row():
-                                            undo_pending_bbox_btn = gr.Button("移除上一个待生成 bbox", size="sm", variant="secondary")
-                                            clear_pending_bbox_btn = gr.Button("清空待生成 bbox", size="sm", variant="secondary")
+                                            delete_selected_pending_bbox_btn = gr.Button("\u5220\u9664\u9009\u4e2d\u5f85\u751f\u6210 bbox", size="sm", variant="secondary")
+                                            clear_pending_bbox_btn = gr.Button("\u6e05\u7a7a\u5f85\u751f\u6210 bbox", size="sm", variant="secondary")
                                     with gr.Group(visible=False) as pvs_point_prompt_panel:
                                         gr.Markdown("#### Point prompt")
                                         pvs_point_kind = gr.Radio(
@@ -2813,17 +2875,17 @@ def create_demo():
                     gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
 
             common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
-            image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, *common, export_file], concurrency_limit=1)
-            image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, *common], concurrency_limit=1)
+            image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file], concurrency_limit=1)
+            image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
-            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pcs_bbox_selector, text_prompt, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, *common], concurrency_limit=1)
+            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
             delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
-            create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
-            undo_pending_bbox_btn.click(fn=_undo_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
-            clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
+            create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
+            delete_selected_pending_bbox_btn.click(fn=_delete_selected_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pvs_pending_bbox_selector], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1)
+            clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
             undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
