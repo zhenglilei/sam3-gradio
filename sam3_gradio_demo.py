@@ -1809,7 +1809,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             queue_box((x1, y1, x2, y2), color, 3)
             queue_label(f"PCS#{inst['id']}", x1, max(18, y1 - 6), color)
-    if mode == "PVS Manual" and prompt_state is not None:
+    if mode == "PVS Manual" and not show_instances:
         for idx, box in enumerate(pvs_state.get("pending_boxes", []), start=1):
             color = (0, 255, 90)
             queue_box(box, color, 3)
@@ -1824,7 +1824,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             queue_box((x1, y1, x2, y2), color, 4 if is_active else 3)
             queue_label(f"PVS#{inst['id']}", x1, max(18, y1 - 6), color)
-    if mode == "PCS Auto" and prompt_state is not None:
+    if mode == "PCS Auto" and not show_instances:
         for box in pcs_state.get("positive_boxes", []):
             queue_box(box, (0, 255, 90), 3)
         for box in pcs_state.get("negative_boxes", []):
@@ -2336,34 +2336,31 @@ def _pvs_point_prompt(image_state, pcs_state, pvs_state, mode, point_payload, po
 
 def _undo_pvs(image_state, pcs_state, pvs_state, mode):
     try:
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None:
-            raise ValueError("Select a PVS instance first")
-        inst = pvs_state["instances"][int(active_id)]
-        history = inst.setdefault("prompt_history", [])
-        while history:
-            item = history.pop()
-            if item.get("before") is not None:
-                _restore(inst, item["before"])
-                info = f"Restored PVS #{active_id} to the previous refine state"
-                break
-        else:
-            info = "No refine step to undo"
+        items = _active_instances(pvs_state)
+        if not items:
+            raise ValueError("没有可撤销的 PVS 实例")
+        inst = max(items, key=lambda item: int(item["id"]))
+        inst["status"] = "deleted"
+        if str(pvs_state.get("active_instance_id")) == str(inst["id"]):
+            remaining = _active_instances(pvs_state)
+            pvs_state["active_instance_id"] = max(remaining, key=lambda item: int(item["id"]))["id"] if remaining else None
+        info = f"已撤销上一个 PVS 实例 #{inst['id']}"
     except Exception as exc:
-        info = f"Undo failed: {exc}"
+        info = f"撤销上一个实例失败: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
 def _delete_pvs(image_state, pcs_state, pvs_state, mode):
     try:
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None:
-            raise ValueError("Select a PVS instance first")
-        pvs_state["instances"][int(active_id)]["status"] = "deleted"
+        items = _active_instances(pvs_state)
+        if not items:
+            raise ValueError("没有可清空的 PVS 实例")
+        for inst in items:
+            pvs_state["instances"][int(inst["id"])]["status"] = "deleted"
         pvs_state["active_instance_id"] = None
-        info = f"Deleted PVS #{active_id}"
+        info = f"已清空 {len(items)} 个 PVS 实例；待生成 bbox 不受影响"
     except Exception as exc:
-        info = f"Delete failed: {exc}"
+        info = f"清空实例失败: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
@@ -2607,6 +2604,13 @@ def create_demo():
     .mode-radio .wrap { display: flex; width: 100%; gap: 10px; }
     .mode-radio .wrap label { flex: 1; justify-content: center; text-align: center; }
     .sam3-panel textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .polygon-finish-btn button {
+        width: 100%;
+        min-height: 42px;
+        font-weight: 700;
+        border-radius: 6px;
+        box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+    }
     """
     theme = gr.themes.Soft(primary_hue="blue", secondary_hue="slate", font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"])
     with gr.Blocks(theme=theme, css=custom_css, title="SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0") as demo:
@@ -2689,7 +2693,7 @@ def create_demo():
                                             label="\u591a\u8fb9\u5f62\u52a8\u4f5c",
                                             elem_classes="mode-radio",
                                         )
-                                        finish_polygon_btn = gr.Button("\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61", size="sm", variant="primary")
+                                        finish_polygon_btn = gr.Button("\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61", variant="primary", elem_classes="polygon-finish-btn")
                                         with gr.Accordion("高级 Polygon 融合方式", open=False):
                                             polygon_combine_mode = gr.Radio(
                                                 choices=[("Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b", "replace"), ("Blend \u4e0e\u65e7 mask \u878d\u5408", "blend"), ("Union \u8865\u5145\u533a\u57df", "union"), ("Intersect \u9650\u5236\u8303\u56f4", "intersect")],
@@ -2720,8 +2724,8 @@ def create_demo():
                                 gr.Markdown("### PVS 实例操作")
                                 active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
                                 with gr.Row():
-                                    undo_pvs_btn = gr.Button("\u64a4\u9500")
-                                    delete_pvs_btn = gr.Button("\u5220\u9664")
+                                    undo_pvs_btn = gr.Button("撤销上一个实例")
+                                    delete_pvs_btn = gr.Button("清空实例")
                                     accept_pvs_btn = gr.Button("确认", variant="primary")
                                 export_pvs_btn = gr.Button("\u5bfc\u51fa PVS")
                             export_file = gr.File(label="\u4e0b\u8f7d\u7ed3\u679c\u5305\uff08PNG + masks + JSON\uff09", interactive=False)
