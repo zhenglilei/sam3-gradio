@@ -24,6 +24,7 @@ runtime_gradio_dir = runtime_dir / "gradio"
 runtime_video_dir = runtime_dir / "videos"
 runtime_export_dir = runtime_dir / "exports"
 runtime_feedback_dir = runtime_dir / "feedback"
+runtime_layout_dir = runtime_dir / "layout_masks"
 runtime_log_dir = runtime_dir / "logs"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
 ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
@@ -52,6 +53,7 @@ for path in (
     runtime_export_dir,
     runtime_feedback_dir,
     runtime_feedback_dir / "samples",
+    runtime_layout_dir,
     runtime_log_dir,
     current_dir / ".gradio",
     qiyuan_cache_dir,
@@ -76,6 +78,13 @@ import torch
 import gradio as gr
 from PIL import Image
 import cv2
+
+try:
+    from scripts.layout_image_to_mask import extract_layout_mask as _layout_extract_mask
+    _layout_extract_mask_import_error = None
+except Exception as exc:
+    _layout_extract_mask = None
+    _layout_extract_mask_import_error = exc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2716,6 +2725,171 @@ def _switch_click_tool(click_tool, mode):
     )
 
 
+
+def _binarize_layout_image(input_image, threshold=12, invert=False, open_kernel=0, close_kernel=0):
+    image = _pil_image(input_image)
+    if image is None:
+        raise ValueError("请先上传版图截图")
+    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    threshold = int(np.clip(int(threshold), 0, 255))
+    if _layout_extract_mask is not None:
+        mask = _layout_extract_mask(rgb, saturation_min=max(1, threshold), value_min=1, chroma_min=0)
+    else:
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        mask = hsv[..., 1] >= max(1, threshold)
+    if not np.asarray(mask).any():
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        mask = gray <= max(1, 255 - threshold)
+    mask = np.asarray(mask, dtype=bool)
+    if invert:
+        mask = ~mask
+    open_kernel = int(max(0, open_kernel or 0))
+    close_kernel = int(max(0, close_kernel or 0))
+    work = mask.astype(np.uint8)
+    if open_kernel > 1:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_kernel, open_kernel))
+        work = cv2.morphologyEx(work, cv2.MORPH_OPEN, k, iterations=1)
+    if close_kernel > 1:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel, close_kernel))
+        work = cv2.morphologyEx(work, cv2.MORPH_CLOSE, k, iterations=1)
+    return image, work.astype(bool)
+
+
+def _filter_layout_components(mask, min_component_area=0, region_mode="all"):
+    mask = np.asarray(mask, dtype=bool)
+    min_area = max(0, int(min_component_area or 0))
+    region_mode = str(region_mode or "all")
+    if not mask.any():
+        return mask.astype(bool)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+    if num_labels <= 1:
+        return mask.astype(bool)
+    component_ids = list(range(1, num_labels))
+    if min_area > 0:
+        component_ids = [idx for idx in component_ids if int(stats[idx, cv2.CC_STAT_AREA]) >= min_area]
+    if region_mode == "largest" and component_ids:
+        component_ids = [max(component_ids, key=lambda idx: int(stats[idx, cv2.CC_STAT_AREA]))]
+    filtered = np.isin(labels, component_ids)
+    return filtered.astype(bool)
+
+
+def _layout_mask_contours(mask):
+    mask_u8 = np.asarray(mask, dtype=np.uint8)
+    contours, hierarchy = cv2.findContours(mask_u8, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    hierarchy_rows = hierarchy[0] if hierarchy is not None else []
+    rows = []
+    for idx, contour in enumerate(contours):
+        if contour.shape[0] < 3:
+            continue
+        points = contour.reshape(-1, 2).astype(float).tolist()
+        x, y, w, h = cv2.boundingRect(contour)
+        parent = int(hierarchy_rows[idx][3]) if len(hierarchy_rows) else -1
+        rows.append({
+            "id": idx + 1,
+            "is_hole": parent >= 0,
+            "area": float(cv2.contourArea(contour)),
+            "bbox_xywh": [float(x), float(y), float(w), float(h)],
+            "points": points,
+        })
+    return rows
+
+
+def _layout_mask_to_preview(mask):
+    mask = np.asarray(mask, dtype=bool)
+    preview = np.where(mask, 0, 255).astype(np.uint8)
+    return Image.fromarray(preview, mode="L").convert("RGB")
+
+
+def _layout_contour_overlay(image, mask, contours):
+    base = np.asarray(_pil_image(image).convert("RGB"), dtype=np.uint8).copy()
+    mask = np.asarray(mask, dtype=bool)
+    fill = base.copy()
+    fill[mask] = (40, 220, 80)
+    vis = cv2.addWeighted(fill, 0.32, base, 0.68, 0)
+    for item in contours:
+        pts = np.asarray(item.get("points", []), dtype=np.int32).reshape((-1, 1, 2))
+        if pts.shape[0] < 3:
+            continue
+        color = (255, 60, 60) if item.get("is_hole") else (0, 255, 80)
+        cv2.polylines(vis, [pts], isClosed=True, color=(0, 0, 0), thickness=4)
+        cv2.polylines(vis, [pts], isClosed=True, color=color, thickness=2)
+    return Image.fromarray(vis)
+
+
+def _save_layout_mask_files(source_image, mask, contours, params):
+    layout_id = f"layout_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    out_dir = runtime_layout_dir / layout_id
+    out_dir.mkdir(parents=True, exist_ok=False)
+    image = _pil_image(source_image)
+    mask_bool = np.asarray(mask, dtype=bool)
+    image_path = out_dir / "source.png"
+    mask_path = out_dir / "mask.png"
+    contour_path = out_dir / "contours.json"
+    overlay_path = out_dir / "contour_overlay.png"
+    image.save(image_path)
+    cv2.imwrite(str(mask_path), mask_bool.astype(np.uint8) * 255)
+    overlay = _layout_contour_overlay(image, mask_bool, contours)
+    overlay.save(overlay_path)
+    payload = {
+        "layout_id": layout_id,
+        "image_size": [int(image.width), int(image.height)],
+        "mask_semantics": {"foreground": 1, "background": 0},
+        "foreground_pixels": int(mask_bool.sum()),
+        "foreground_ratio": float(mask_bool.mean()),
+        "binarize_params": params,
+        "contours": contours,
+    }
+    with contour_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    state = {
+        "layout_id": layout_id,
+        "enabled": True,
+        "source_width": int(image.width),
+        "source_height": int(image.height),
+        "mask_path": str(mask_path),
+        "contour_json_path": str(contour_path),
+        "overlay_path": str(overlay_path),
+        "binarize_params": params,
+    }
+    return state, str(mask_path), str(contour_path), overlay
+
+
+def _run_layout_mask_page(input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode):
+    try:
+        image, mask = _binarize_layout_image(input_image, threshold, invert, open_kernel, close_kernel)
+        mask = _filter_layout_components(mask, min_component_area, region_mode)
+        if not mask.any():
+            raise ValueError("二值 mask 为空，请调低 threshold 或检查 invert 设置")
+        contours = _layout_mask_contours(mask)
+        params = {
+            "threshold": int(threshold),
+            "invert": bool(invert),
+            "open_kernel": int(open_kernel or 0),
+            "close_kernel": int(close_kernel or 0),
+            "min_component_area": int(min_component_area or 0),
+            "region_mode": str(region_mode or "all"),
+        }
+        state, mask_path, contour_path, overlay = _save_layout_mask_files(image, mask, contours, params)
+        info = (
+            f"已生成当前版图 mask: {state['layout_id']}\n"
+            f"尺寸: {image.width}x{image.height}\n"
+            f"前景像素: {int(mask.sum())} ({mask.mean():.4f})\n"
+            f"contours: {len(contours)}\n"
+            f"mask: {mask_path}\ncontours: {contour_path}"
+        )
+        return state, image, _layout_mask_to_preview(mask), overlay, mask_path, contour_path, info
+    except Exception as exc:
+        info = f"版图截图转 mask 失败: {exc}"
+        return {}, None, None, None, None, None, info
+
+
+def _save_current_layout_mask(layout_mask_state):
+    if not layout_mask_state or not layout_mask_state.get("layout_id"):
+        return None, None, "当前没有已生成的版图 mask，请先点击生成。"
+    mask_path = layout_mask_state.get("mask_path")
+    contour_path = layout_mask_state.get("contour_json_path")
+    return mask_path, contour_path, f"当前版图 mask 已保存: {layout_mask_state.get('layout_id')}"
+
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
     custom_css = """
@@ -2746,6 +2920,7 @@ def create_demo():
             pcs_state = gr.State(_new_pcs_state())
             pvs_state = gr.State(_new_pvs_state())
             prompt_state = gr.State(_new_prompt_state())
+            layout_mask_state = gr.State({})
             bbox_payload = gr.Textbox(label="bbox payload", elem_id="bbox_payload", elem_classes="hidden-payload")
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
@@ -2871,8 +3046,51 @@ def create_demo():
                                 feedback_comment = gr.Textbox(label="备注", lines=3, placeholder="可选：描述这次生成的问题或可用性")
                                 submit_feedback_btn = gr.Button("提交反馈", variant="primary")
 
+                with gr.TabItem("版图截图转掩码", id="tab_layout_mask"):
+                    gr.Markdown("### 版图截图转二值 mask")
+                    gr.Markdown("binary mask 是唯一权威数据；contour 仅用于预览和导出。")
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            layout_input = gr.Image(type="numpy", label="上传版图截图", sources=["upload", "clipboard"])
+                            layout_threshold = gr.Slider(minimum=0, maximum=255, value=12, step=1, label="threshold（色彩/饱和度阈值）")
+                            layout_invert = gr.Checkbox(value=False, label="invert（反转前景/背景）")
+                            with gr.Row():
+                                layout_open_kernel = gr.Slider(minimum=0, maximum=31, value=0, step=1, label="open kernel")
+                                layout_close_kernel = gr.Slider(minimum=0, maximum=31, value=0, step=1, label="close kernel")
+                            layout_min_area = gr.Number(value=0, precision=0, label="min component area")
+                            layout_region_mode = gr.Radio(
+                                choices=[("全部区域", "all"), ("最大连通区域", "largest")],
+                                value="all",
+                                label="区域模式",
+                                elem_classes="mode-radio",
+                            )
+                            run_layout_mask_btn = gr.Button("生成并保存当前版图 mask", variant="primary")
+                            save_layout_mask_btn = gr.Button("保存为当前版图 mask", variant="secondary")
+                            layout_info = gr.Textbox(label="处理信息", lines=8, interactive=False)
+                            with gr.Row():
+                                layout_mask_file = gr.File(label="下载 mask PNG", interactive=False)
+                                layout_contour_file = gr.File(label="下载 contour JSON", interactive=False)
+                        with gr.Column(scale=1):
+                            with gr.Row():
+                                layout_source_preview = gr.Image(type="pil", label="原图预览", show_label=True)
+                                layout_mask_preview = gr.Image(type="pil", label="binary mask 预览", show_label=True)
+                            layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=True)
+
                 with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
                     gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
+
+            run_layout_mask_btn.click(
+                fn=_run_layout_mask_page,
+                inputs=[layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode],
+                outputs=[layout_mask_state, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
+                concurrency_limit=1,
+            )
+            save_layout_mask_btn.click(
+                fn=_save_current_layout_mask,
+                inputs=[layout_mask_state],
+                outputs=[layout_mask_file, layout_contour_file, layout_info],
+                concurrency_limit=1,
+            )
 
             common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
             image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file], concurrency_limit=1)
