@@ -2754,6 +2754,7 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         gr.update(visible=is_pvs),
         gr.update(visible=is_pvs),
         gr.update(visible=is_pvs),
+        gr.update(visible=is_pvs),
         gr.update(visible=False),
         gr.update(visible=False),
         _pcs_bbox_choices(pcs_state),
@@ -2955,6 +2956,83 @@ def _clear_current_layout_mask(layout_state):
     _clear_layout_cache(layout_state)
     return _new_layout_state(), None, None, None, None, None, "当前版图 mask 已清除"
 
+
+def _layout_state_summary(layout_state):
+    if not layout_state or not layout_state.get("layout_id"):
+        return "当前未选择版图 mask"
+    return (
+        f"当前版图: {layout_state.get('layout_id')}\n"
+        f"enabled: {bool(layout_state.get('enabled'))}\n"
+        f"source: {int(layout_state.get('source_width') or 0)}x{int(layout_state.get('source_height') or 0)}\n"
+        f"tx={float(layout_state.get('tx') or 0):.1f}, ty={float(layout_state.get('ty') or 0):.1f}, "
+        f"scale={float(layout_state.get('scale') or 1):.3f}, rotation={float(layout_state.get('rotation_deg') or 0):.1f}, "
+        f"alpha={float(layout_state.get('preview_alpha') or 0.35):.2f}"
+    )
+
+
+def _load_layout_binary_mask_png(input_image, region_mode="all"):
+    try:
+        image = _pil_image(input_image)
+        if image is None:
+            raise ValueError("请先上传二值 mask PNG")
+        gray = cv2.cvtColor(np.asarray(image.convert("RGB"), dtype=np.uint8), cv2.COLOR_RGB2GRAY)
+        white_fg = gray >= 128
+        black_fg = gray < 128
+        candidates = [mask for mask in (white_fg, black_fg) if mask.any()]
+        if not candidates:
+            raise ValueError("上传的二值 mask 没有前景像素")
+        mask = min(candidates, key=lambda arr: float(arr.mean()))
+        mask = _filter_layout_components(mask, 0, region_mode)
+        if not mask.any():
+            raise ValueError("二值 mask 过滤后为空")
+        contours = _layout_mask_contours(mask)
+        params = {"source": "uploaded_binary_mask_png", "region_mode": str(region_mode or "all"), "foreground_rule": "auto_smaller_nonzero"}
+        state, mask_path, contour_path, _ = _save_layout_mask_files(image, mask, contours, params)
+        info = f"已载入二值 mask PNG。\n{_layout_state_summary(state)}\nmask: {mask_path}\ncontours: {contour_path}"
+        return state, info
+    except Exception as exc:
+        return _new_layout_state(), f"载入二值 mask PNG 失败: {exc}"
+
+
+def _use_current_layout_mask(layout_state):
+    try:
+        _layout_cache_get(layout_state)
+        return layout_state, "已使用当前保存的版图 mask。\n" + _layout_state_summary(layout_state)
+    except Exception as exc:
+        return layout_state or _new_layout_state(), f"当前版图 mask 不可用: {exc}"
+
+
+def _update_layout_controls(layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha):
+    try:
+        _layout_cache_get(layout_state)
+        state = dict(layout_state or _new_layout_state())
+        state.update({
+            "enabled": bool(enabled),
+            "tx": float(tx or 0.0),
+            "ty": float(ty or 0.0),
+            "scale": float(scale or 1.0),
+            "rotation_deg": float(rotation_deg or 0.0),
+            "preview_alpha": float(preview_alpha or 0.35),
+        })
+        return state, "版图变换参数已更新。\n" + _layout_state_summary(state)
+    except Exception as exc:
+        return layout_state or _new_layout_state(), f"版图变换参数更新失败: {exc}"
+
+
+def _reset_layout_controls(layout_state):
+    state = dict(layout_state or _new_layout_state())
+    state.update({"enabled": bool(state.get("layout_id")), "tx": 0.0, "ty": 0.0, "scale": 1.0, "rotation_deg": 0.0, "preview_alpha": 0.35})
+    info = "版图变换参数已重置。\n" + _layout_state_summary(state)
+    return state, True if state.get("layout_id") else False, 0.0, 0.0, 1.0, 0.0, 0.35, info
+
+
+def _layout_pvs_action_not_ready(layout_state, action):
+    try:
+        _layout_cache_get(layout_state)
+        return f"{action} 将在 Step 5 接入 SAM3 PVS mask_input。当前已准备好版图 mask。\n" + _layout_state_summary(layout_state)
+    except Exception as exc:
+        return f"{action} 失败: {exc}"
+
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
     custom_css = """
@@ -3077,6 +3155,29 @@ def create_demo():
                                             )
                                     pvs_summary = gr.Textbox(label="PVS 实例", lines=6, interactive=False, visible=False)
 
+                                with gr.Group(visible=True) as pvs_layout_panel:
+                                    gr.Markdown("### PVS 版图 mask 提示")
+                                    gr.Markdown("第一版使用数值控件调整版图 mask；不做拖拽、不引入自定义 JS。")
+                                    with gr.Row():
+                                        use_current_layout_btn = gr.Button("使用当前已保存版图 mask", variant="secondary")
+                                        load_layout_binary_btn = gr.Button("载入二值 mask PNG", variant="secondary")
+                                    layout_binary_upload = gr.Image(type="numpy", label="直接上传二值 mask PNG", sources=["upload", "clipboard"])
+                                    layout_enabled = gr.Checkbox(value=False, label="显示/启用版图 overlay")
+                                    with gr.Row():
+                                        layout_tx = gr.Number(value=0.0, label="tx")
+                                        layout_ty = gr.Number(value=0.0, label="ty")
+                                    with gr.Row():
+                                        layout_scale = gr.Slider(minimum=0.1, maximum=5.0, value=1.0, step=0.01, label="scale")
+                                        layout_rotation = gr.Slider(minimum=-180.0, maximum=180.0, value=0.0, step=1.0, label="rotation")
+                                    layout_alpha = gr.Slider(minimum=0.0, maximum=1.0, value=0.35, step=0.05, label="alpha")
+                                    with gr.Row():
+                                        reset_layout_btn = gr.Button("Reset", variant="secondary")
+                                        update_layout_preview_btn = gr.Button("更新预览", variant="primary")
+                                    with gr.Row():
+                                        create_from_layout_btn = gr.Button("用版图创建实例", variant="primary")
+                                        refine_with_layout_btn = gr.Button("用版图精修当前实例", variant="secondary")
+                                    layout_pvs_info = gr.Textbox(label="版图提示状态", lines=5, interactive=False)
+
                                 with gr.Accordion("\u5bfc\u51fa\u4e0e COCO \u91cf\u5316", open=False):
                                     coco_dataset = gr.Dropdown(choices=coco_dataset_choices, value=default_coco_dataset, label="\u6307\u6807\u6570\u636e\u96c6")
                                     coco_image_name = gr.Textbox(label="COCO image file_name\uff08\u53ef\u9009\uff09", lines=1)
@@ -3164,12 +3265,49 @@ def create_demo():
                 concurrency_limit=1,
             )
 
+            use_current_layout_btn.click(
+                fn=_use_current_layout_mask,
+                inputs=[layout_state],
+                outputs=[layout_state, layout_pvs_info],
+                concurrency_limit=1,
+            )
+            load_layout_binary_btn.click(
+                fn=_load_layout_binary_mask_png,
+                inputs=[layout_binary_upload, layout_region_mode],
+                outputs=[layout_state, layout_pvs_info],
+                concurrency_limit=1,
+            )
+            update_layout_preview_btn.click(
+                fn=_update_layout_controls,
+                inputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha],
+                outputs=[layout_state, layout_pvs_info],
+                concurrency_limit=1,
+            )
+            reset_layout_btn.click(
+                fn=_reset_layout_controls,
+                inputs=[layout_state],
+                outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
+                concurrency_limit=1,
+            )
+            create_from_layout_btn.click(
+                fn=lambda state: _layout_pvs_action_not_ready(state, "用版图创建实例"),
+                inputs=[layout_state],
+                outputs=[layout_pvs_info],
+                concurrency_limit=1,
+            )
+            refine_with_layout_btn.click(
+                fn=lambda state: _layout_pvs_action_not_ready(state, "用版图精修当前实例"),
+                inputs=[layout_state],
+                outputs=[layout_pvs_info],
+                concurrency_limit=1,
+            )
+
             common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
             image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file], concurrency_limit=1)
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_layout_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
             delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
