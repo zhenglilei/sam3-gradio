@@ -1523,6 +1523,7 @@ import threading as _sam3_threading
 _PVS_PREDICT_LOCK = _sam3_threading.Lock()
 _FEEDBACK_WRITE_LOCK = _sam3_threading.Lock()
 _WORKSPACE_CACHE = {}
+_LAYOUT_CACHE = {}
 
 
 def _clear_workspace_cache():
@@ -1575,6 +1576,52 @@ def _new_pvs_state():
         "pending_bbox_records": [],
         "next_pending_bbox_id": 1,
     }
+
+
+def _new_layout_state():
+    return {
+        "layout_id": None,
+        "enabled": False,
+        "region_mode": "all",
+        "tx": 0.0,
+        "ty": 0.0,
+        "scale": 1.0,
+        "rotation_deg": 0.0,
+        "preview_alpha": 0.35,
+        "source_width": 0,
+        "source_height": 0,
+    }
+
+
+def _layout_cache_get(layout_state_or_id):
+    layout_id = layout_state_or_id.get("layout_id") if isinstance(layout_state_or_id, dict) else layout_state_or_id
+    if not layout_id:
+        raise ValueError("请先在‘版图截图转掩码’Tab 中生成并保存当前版图 mask")
+    cached = _LAYOUT_CACHE.get(str(layout_id))
+    if cached is None:
+        raise ValueError(f"版图缓存已失效或不存在: {layout_id}。请重新生成版图 mask。")
+    return cached
+
+
+def _layout_cache_put(layout_id, source_image, source_mask, contours, binarize_params, mask_path=None, contour_json_path=None, overlay_path=None):
+    _LAYOUT_CACHE[str(layout_id)] = {
+        "source_image": _pil_image(source_image),
+        "source_mask": np.asarray(source_mask, dtype=bool),
+        "transformed_mask": None,
+        "contours": contours or [],
+        "binarize_params": dict(binarize_params or {}),
+        "mask_path": str(mask_path) if mask_path else None,
+        "contour_json_path": str(contour_json_path) if contour_json_path else None,
+        "overlay_path": str(overlay_path) if overlay_path else None,
+    }
+    return _LAYOUT_CACHE[str(layout_id)]
+
+
+def _clear_layout_cache(layout_state=None):
+    if layout_state and isinstance(layout_state, dict) and layout_state.get("layout_id"):
+        _LAYOUT_CACHE.pop(str(layout_state.get("layout_id")), None)
+    else:
+        _LAYOUT_CACHE.clear()
 
 
 def _workspace(image_state):
@@ -2841,18 +2888,27 @@ def _save_layout_mask_files(source_image, mask, contours, params):
     }
     with contour_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    state = {
-        "layout_id": layout_id,
-        "enabled": True,
-        "source_width": int(image.width),
-        "source_height": int(image.height),
-        "mask_path": str(mask_path),
-        "contour_json_path": str(contour_path),
-        "overlay_path": str(overlay_path),
-        "binarize_params": params,
-    }
+    _layout_cache_put(
+        layout_id,
+        image,
+        mask_bool,
+        contours,
+        params,
+        mask_path=mask_path,
+        contour_json_path=contour_path,
+        overlay_path=overlay_path,
+    )
+    state = _new_layout_state()
+    state.update(
+        {
+            "layout_id": layout_id,
+            "enabled": True,
+            "region_mode": str(params.get("region_mode") or "all"),
+            "source_width": int(image.width),
+            "source_height": int(image.height),
+        }
+    )
     return state, str(mask_path), str(contour_path), overlay
-
 
 def _run_layout_mask_page(input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode):
     try:
@@ -2883,12 +2939,21 @@ def _run_layout_mask_page(input_image, threshold, invert, open_kernel, close_ker
         return {}, None, None, None, None, None, info
 
 
-def _save_current_layout_mask(layout_mask_state):
-    if not layout_mask_state or not layout_mask_state.get("layout_id"):
-        return None, None, "当前没有已生成的版图 mask，请先点击生成。"
-    mask_path = layout_mask_state.get("mask_path")
-    contour_path = layout_mask_state.get("contour_json_path")
-    return mask_path, contour_path, f"当前版图 mask 已保存: {layout_mask_state.get('layout_id')}"
+def _save_current_layout_mask(layout_state):
+    try:
+        cached = _layout_cache_get(layout_state)
+        return (
+            cached.get("mask_path"),
+            cached.get("contour_json_path"),
+            f"当前版图 mask 已保存: {layout_state.get('layout_id')}",
+        )
+    except Exception as exc:
+        return None, None, f"当前版图 mask 保存失败: {exc}"
+
+
+def _clear_current_layout_mask(layout_state):
+    _clear_layout_cache(layout_state)
+    return _new_layout_state(), None, None, None, None, None, "当前版图 mask 已清除"
 
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
@@ -2920,7 +2985,7 @@ def create_demo():
             pcs_state = gr.State(_new_pcs_state())
             pvs_state = gr.State(_new_pvs_state())
             prompt_state = gr.State(_new_prompt_state())
-            layout_mask_state = gr.State({})
+            layout_state = gr.State(_new_layout_state())
             bbox_payload = gr.Textbox(label="bbox payload", elem_id="bbox_payload", elem_classes="hidden-payload")
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
@@ -3066,6 +3131,7 @@ def create_demo():
                             )
                             run_layout_mask_btn = gr.Button("生成并保存当前版图 mask", variant="primary")
                             save_layout_mask_btn = gr.Button("保存为当前版图 mask", variant="secondary")
+                            clear_layout_mask_btn = gr.Button("清除当前版图", variant="secondary")
                             layout_info = gr.Textbox(label="处理信息", lines=8, interactive=False)
                             with gr.Row():
                                 layout_mask_file = gr.File(label="下载 mask PNG", interactive=False)
@@ -3082,13 +3148,19 @@ def create_demo():
             run_layout_mask_btn.click(
                 fn=_run_layout_mask_page,
                 inputs=[layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode],
-                outputs=[layout_mask_state, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
+                outputs=[layout_state, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
             )
             save_layout_mask_btn.click(
                 fn=_save_current_layout_mask,
-                inputs=[layout_mask_state],
+                inputs=[layout_state],
                 outputs=[layout_mask_file, layout_contour_file, layout_info],
+                concurrency_limit=1,
+            )
+            clear_layout_mask_btn.click(
+                fn=_clear_current_layout_mask,
+                inputs=[layout_state],
+                outputs=[layout_state, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
             )
 
