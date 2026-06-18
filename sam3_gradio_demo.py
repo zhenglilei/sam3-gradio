@@ -2535,6 +2535,15 @@ def _pvs_point_prompt(image_state, pcs_state, pvs_state, mode, point_payload, po
 
 def _undo_pvs(image_state, pcs_state, pvs_state, mode):
     try:
+        active_id = pvs_state.get("active_instance_id")
+        active_inst = pvs_state.get("instances", {}).get(int(active_id)) if active_id is not None else None
+        if active_inst is not None:
+            history = active_inst.get("prompt_history", [])
+            if history and history[-1].get("op") == "refine_with_layout_mask" and history[-1].get("before"):
+                _restore(active_inst, history[-1]["before"])
+                history.pop()
+                info = f"已撤销 PVS #{active_id} 的版图精修"
+                return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
         items = _active_instances(pvs_state)
         if not items:
             raise ValueError("没有可撤销的 PVS 实例")
@@ -3044,6 +3053,131 @@ def _update_layout_preview(image_state, pcs_state, pvs_state, mode, layout_state
     except Exception as exc:
         return layout_state or _new_layout_state(), gr.update(), f"版图预览更新失败: {exc}"
 
+
+def _mask_to_lowres_logits(mask):
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError("layout mask must be a 2D binary mask")
+    target_h, target_w = _prompt_mask_size()
+    lowres = cv2.resize(mask.astype(np.uint8), (target_w, target_h), interpolation=cv2.INTER_NEAREST).astype(np.float32)
+    return ((lowres * 2.0 - 1.0) * 10.0).astype(np.float32)
+
+
+def _validate_layout_prompt_mask(mask):
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError("版图 transformed mask 必须是 2D binary mask")
+    foreground = int(mask.sum())
+    total = int(mask.size)
+    if foreground == 0:
+        raise ValueError("版图 transformed mask 为空，不能作为 PVS mask prompt")
+    if foreground < 8:
+        raise ValueError("版图 transformed mask 过小，不能作为 PVS mask prompt")
+    if foreground >= int(total * 0.98):
+        raise ValueError("版图 transformed mask 几乎全前景，请检查 invert 或变换参数")
+    return mask
+
+
+def _layout_transformed_mask_for_image(image_state, layout_state):
+    ws = _workspace(image_state)
+    image = ws["image"]
+    target_shape = (int(image.height), int(image.width))
+    cached = _layout_cache_get(layout_state)
+    transformed = cached.get("transformed_mask")
+    if transformed is None or np.asarray(transformed).shape != target_shape:
+        transformed = _transform_layout_mask(layout_state, image.width, image.height)
+    transformed = np.asarray(transformed, dtype=bool)
+    if transformed.shape != target_shape:
+        raise ValueError(f"版图 transformed mask 尺寸 {transformed.shape} 与主图 {target_shape} 不一致")
+    return _validate_layout_prompt_mask(transformed)
+
+
+def _layout_prompt_metadata(layout_state):
+    cached = _layout_cache_get(layout_state)
+    return {
+        "type": "layout_mask",
+        "layout_id": layout_state.get("layout_id"),
+        "region_mode": layout_state.get("region_mode"),
+        "transform": {
+            "tx": float(layout_state.get("tx") or 0.0),
+            "ty": float(layout_state.get("ty") or 0.0),
+            "scale": float(layout_state.get("scale") or 1.0),
+            "rotation_deg": float(layout_state.get("rotation_deg") or 0.0),
+        },
+        "preview_alpha": float(layout_state.get("preview_alpha") or 0.35),
+        "binarize_params": cached.get("binarize_params", {}),
+    }
+
+
+def _create_pvs_from_layout_mask(image_state, pcs_state, pvs_state, mode, layout_state, progress=gr.Progress(track_tqdm=False)):
+    try:
+        if mode != "PVS Manual":
+            raise ValueError("版图 mask prompt 只支持 PVS Manual")
+        _pvs_progress(progress, 0.05, "准备版图 transformed mask")
+        transformed = _layout_transformed_mask_for_image(image_state, layout_state)
+        lowres_logits = _mask_to_lowres_logits(transformed)
+        _pvs_progress(progress, 0.35, "SAM3 正在用版图 mask_input 创建 PVS 实例", delay=0.08)
+        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=lowres_logits)
+        idx = _best(pred)
+        mask = pred["masks"][idx]
+        inst_id = int(pvs_state.get("next_instance_id", 1))
+        prompt = _layout_prompt_metadata(layout_state)
+        pvs_state.setdefault("instances", {})[inst_id] = _make_inst(
+            inst_id,
+            "manual_pvs_layout_mask",
+            mask,
+            _mask_box(mask),
+            pred["scores"][idx],
+            pvs_logits=pred["lowres_logits"][idx],
+            history=[{"op": "create_from_layout_mask", "prompt": prompt, "candidate_scores": pred["scores"].astype(float).tolist()}],
+        )
+        pvs_state["active_instance_id"] = inst_id
+        pvs_state["next_instance_id"] = inst_id + 1
+        _pvs_progress(progress, 0.96, "渲染 PVS 版图创建结果", delay=0.12)
+        info = f"已用版图 mask prompt 创建 PVS #{inst_id}"
+    except Exception as exc:
+        info = f"用版图创建 PVS 实例失败: {exc}"
+    return pvs_state, info, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _refine_pvs_with_layout_mask(image_state, pcs_state, pvs_state, mode, layout_state, progress=gr.Progress(track_tqdm=False)):
+    try:
+        if mode != "PVS Manual":
+            raise ValueError("版图 mask prompt 只支持 PVS Manual")
+        active_id = pvs_state.get("active_instance_id")
+        if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
+            raise ValueError("请先选择一个 active PVS instance")
+        inst = pvs_state["instances"][int(active_id)]
+        _pvs_progress(progress, 0.05, "准备版图 transformed mask")
+        transformed = _layout_transformed_mask_for_image(image_state, layout_state)
+        layout_logits = _mask_to_lowres_logits(transformed)
+        combined = _combine_logits(inst.get("pvs_lowres_logits"), layout_logits, mode="replace")
+        before = _snapshot(inst)
+        _pvs_progress(progress, 0.42, "SAM3 正在用版图 mask_input 精修当前 PVS 实例", delay=0.08)
+        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
+        idx = _best(pred)
+        mask = pred["masks"][idx]
+        inst["mask_fullres_bool"] = mask
+        inst["box_xyxy_px"] = _mask_box(mask)
+        inst["score"] = float(pred["scores"][idx])
+        inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
+        after = _snapshot(inst)
+        inst.setdefault("prompt_history", []).append(
+            {
+                "op": "refine_with_layout_mask",
+                "mode": "replace",
+                "prompt": _layout_prompt_metadata(layout_state),
+                "before": before,
+                "after": after,
+                "candidate_scores": pred["scores"].astype(float).tolist(),
+            }
+        )
+        _pvs_progress(progress, 0.96, "渲染 PVS 版图精修结果", delay=0.12)
+        info = f"已用版图 mask prompt 精修 PVS #{active_id}"
+    except Exception as exc:
+        info = f"用版图精修当前 PVS 实例失败: {exc}"
+    return pvs_state, info, *_view(image_state, pcs_state, pvs_state, mode, info)
+
 def _layout_state_summary(layout_state):
     if not layout_state or not layout_state.get("layout_id"):
         return "当前未选择版图 mask"
@@ -3352,6 +3486,7 @@ def create_demo():
                 concurrency_limit=1,
             )
 
+            common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
             use_current_layout_btn.click(
                 fn=_use_current_layout_mask,
                 inputs=[layout_state],
@@ -3377,19 +3512,20 @@ def create_demo():
                 concurrency_limit=1,
             )
             create_from_layout_btn.click(
-                fn=lambda state: _layout_pvs_action_not_ready(state, "用版图创建实例"),
-                inputs=[layout_state],
-                outputs=[layout_pvs_info],
+                fn=_create_pvs_from_layout_mask,
+                inputs=[image_state, pcs_state, pvs_state, mode, layout_state],
+                outputs=[pvs_state, layout_pvs_info, *common],
+                show_progress_on=[result_image, analysis_report],
                 concurrency_limit=1,
             )
             refine_with_layout_btn.click(
-                fn=lambda state: _layout_pvs_action_not_ready(state, "用版图精修当前实例"),
-                inputs=[layout_state],
-                outputs=[layout_pvs_info],
+                fn=_refine_pvs_with_layout_mask,
+                inputs=[image_state, pcs_state, pvs_state, mode, layout_state],
+                outputs=[pvs_state, layout_pvs_info, *common],
+                show_progress_on=[result_image, analysis_report],
                 concurrency_limit=1,
             )
 
-            common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
             image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file], concurrency_limit=1)
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
