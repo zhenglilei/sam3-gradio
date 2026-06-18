@@ -1545,7 +1545,16 @@ def _data_url(image):
 
 
 def _new_pcs_state():
-    return {"text_prompt": "", "positive_boxes": [], "negative_boxes": [], "bbox_history": [], "instances": {}, "next_instance_id": 1}
+    return {
+        "text_prompt": "",
+        "positive_boxes": [],
+        "negative_boxes": [],
+        "bbox_history": [],
+        "bbox_records": [],
+        "next_bbox_id": 1,
+        "instances": {},
+        "next_instance_id": 1,
+    }
 
 
 def _new_pvs_state():
@@ -1825,10 +1834,15 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             queue_box((x1, y1, x2, y2), color, 4 if is_active else 3)
             queue_label(f"PVS#{inst['id']}", x1, max(18, y1 - 6), color)
     if mode == "PCS Auto" and not show_instances:
-        for box in pcs_state.get("positive_boxes", []):
-            queue_box(box, (0, 255, 90), 3)
-        for box in pcs_state.get("negative_boxes", []):
-            queue_box(box, (255, 48, 48), 3)
+        for rec in _pcs_bbox_records(pcs_state):
+            color = (255, 48, 48) if rec.get("key") == "negative_boxes" else (0, 255, 90)
+            box = rec.get("box", [])
+            if len(box) != 4:
+                continue
+            queue_box(box, color, 3)
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            role = "N" if rec.get("key") == "negative_boxes" else "P"
+            queue_label(f"{role}-ID{rec.get('id')}", x1, max(18, y1 - 6), color)
     if prompt_state:
         bbox_color = (255, 48, 48) if prompt_state.get("bbox_role") == "negative" else (0, 255, 90)
         if prompt_state.get("last_bbox"):
@@ -1911,12 +1925,54 @@ def _payload_json(value):
     return json.dumps(value, ensure_ascii=False)
 
 
-def _append_pcs_bbox_sample(pcs_state, box, bbox_role):
-    key = "negative_boxes" if bbox_role == "negative" else "positive_boxes"
-    pcs_state.setdefault(key, []).append(box)
-    pcs_state.setdefault("bbox_history", []).append({"key": key, "box": box})
+def _reset_pcs_predictions(pcs_state):
     pcs_state["instances"] = {}
     pcs_state["next_instance_id"] = 1
+
+
+def _pcs_bbox_records(pcs_state):
+    records = pcs_state.setdefault("bbox_records", [])
+    if records:
+        return records
+
+    next_id = int(pcs_state.get("next_bbox_id", 1) or 1)
+    rebuilt = []
+    for key in ("positive_boxes", "negative_boxes"):
+        for box in pcs_state.get(key, []):
+            rebuilt.append({"id": next_id, "key": key, "box": box})
+            next_id += 1
+    if rebuilt:
+        pcs_state["bbox_records"] = rebuilt
+        pcs_state["bbox_history"] = [dict(item) for item in rebuilt]
+        pcs_state["next_bbox_id"] = next_id
+    return pcs_state.setdefault("bbox_records", [])
+
+
+def _sync_pcs_boxes_from_records(pcs_state):
+    records = _pcs_bbox_records(pcs_state)
+    pcs_state["positive_boxes"] = [rec.get("box") for rec in records if rec.get("key") == "positive_boxes"]
+    pcs_state["negative_boxes"] = [rec.get("box") for rec in records if rec.get("key") == "negative_boxes"]
+
+
+def _pcs_bbox_choices(pcs_state):
+    choices = []
+    for rec in _pcs_bbox_records(pcs_state):
+        role = "负样本" if rec.get("key") == "negative_boxes" else "正样本"
+        box = [round(float(v), 1) for v in rec.get("box", [])]
+        choices.append((f"ID {rec.get('id')} {role} {box}", str(rec.get("id"))))
+    return gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+
+def _append_pcs_bbox_sample(pcs_state, box, bbox_role):
+    _pcs_bbox_records(pcs_state)
+    key = "negative_boxes" if bbox_role == "negative" else "positive_boxes"
+    bbox_id = int(pcs_state.get("next_bbox_id", 1) or 1)
+    record = {"id": bbox_id, "key": key, "box": box}
+    pcs_state.setdefault("bbox_records", []).append(record)
+    pcs_state.setdefault("bbox_history", []).append(dict(record))
+    pcs_state["next_bbox_id"] = bbox_id + 1
+    _sync_pcs_boxes_from_records(pcs_state)
+    _reset_pcs_predictions(pcs_state)
     return key
 
 
@@ -1980,7 +2036,7 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
             info = f"\u672a\u77e5\u4ea4\u4e92\u5de5\u5177: {click_tool}"
     except Exception as exc:
         info = f"\u56fe\u50cf\u70b9\u51fb\u5931\u8d25: {exc}"
-    return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+    return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
 
 def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refine", combine_mode="replace", progress=None):
@@ -2064,12 +2120,14 @@ def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
         pcs_state["positive_boxes"] = []
         pcs_state["negative_boxes"] = []
         pcs_state["bbox_history"] = []
+        pcs_state["bbox_records"] = []
+        pcs_state["next_bbox_id"] = 1
         text_prompt_update = ""
         info = "PCS prompt 已清空；已有 PCS 分割结果不会被删除"
     else:
         text_prompt_update = gr.update()
-        info = "\u4e34\u65f6\u63d0\u793a\u5df2\u6e05\u7a7a\uff1b\u5df2\u751f\u6210\u5b9e\u4f8b\u4e0d\u4f1a\u88ab\u5220\u9664"
-    return prompt_state, "", "", "", pcs_state, text_prompt_update, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+        info = "临时提示已清空；已生成实例不会被删除"
+    return prompt_state, "", "", "", pcs_state, _pcs_bbox_choices(pcs_state), text_prompt_update, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
 
 def _pcs_choice_update(pcs_state):
@@ -2093,9 +2151,13 @@ def _pvs_pending_count_text(pvs_state):
 
 
 def _pcs_summary(pcs_state):
-    lines = [f"\u6b63\u6837\u672c bbox: {len(pcs_state.get('positive_boxes', []))}", f"\u8d1f\u6837\u672c bbox: {len(pcs_state.get('negative_boxes', []))}"]
+    _sync_pcs_boxes_from_records(pcs_state)
+    lines = [f"正样本 bbox: {len(pcs_state.get('positive_boxes', []))}", f"负样本 bbox: {len(pcs_state.get('negative_boxes', []))}"]
+    for rec in _pcs_bbox_records(pcs_state)[:40]:
+        role = "负样本" if rec.get("key") == "negative_boxes" else "正样本"
+        lines.append(f"ID {rec.get('id')} {role}: {[round(float(v), 1) for v in rec.get('box', [])]}")
     items = _active_instances(pcs_state)
-    lines.append(f"PCS \u5b9e\u4f8b: {len(items)}")
+    lines.append(f"PCS 实例: {len(items)}")
     for inst in items[:80]:
         lines.append(f"#{inst['id']} score={inst['score']:.3f} box={[round(v,1) for v in inst['box_xyxy_px']]}")
     return "\n".join(lines)
@@ -2145,9 +2207,9 @@ def _init_workspace(input_image, mode):
     prompt_state = _new_prompt_state()
     image_state = {"image_id": None, "width": 0, "height": 0}
     if input_image is None:
-        return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
+        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
     if image_predictor is None:
-        return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
+        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
     image = _pil_image(input_image)
     image_id = uuid.uuid4().hex
     _clear_workspace_cache()
@@ -2156,29 +2218,30 @@ def _init_workspace(input_image, mode):
     except torch.OutOfMemoryError:
         _clear_workspace_cache()
         info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5df2\u6e05\u7406\u5f53\u524d\u5de5\u4f5c\u53f0\u7f13\u5b58\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
-        return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
+        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
     _WORKSPACE_CACHE[image_id] = {"image": image, "base_state": base_state}
     image_state = {"image_id": image_id, "width": image.width, "height": image.height}
-    return image_state, pcs_state, pvs_state, prompt_state, *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
+    return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
 
 
-def _undo_pcs_bbox(image_state, pcs_state, pvs_state, mode):
+def _delete_selected_pcs_bbox(image_state, pcs_state, pvs_state, mode, selected_bbox_id):
     try:
-        history = pcs_state.setdefault("bbox_history", [])
-        if not history:
-            raise ValueError("\u6ca1\u6709\u53ef\u64a4\u9500\u7684 PCS bbox \u6837\u672c")
-        item = history.pop()
-        key = item.get("key")
-        boxes = pcs_state.setdefault(key, [])
-        if boxes:
-            boxes.pop()
-        pcs_state["instances"] = {}
-        pcs_state["next_instance_id"] = 1
-        label = "\u8d1f\u6837\u672c" if key == "negative_boxes" else "\u6b63\u6837\u672c"
-        info = f"\u5df2\u64a4\u9500\u6700\u8fd1\u4e00\u4e2a PCS {label} bbox"
+        records = list(_pcs_bbox_records(pcs_state))
+        if not selected_bbox_id:
+            raise ValueError("请先在 PCS bbox 列表中选择一个 bbox")
+        target_id = int(selected_bbox_id)
+        target = next((rec for rec in records if int(rec.get("id", -1)) == target_id), None)
+        if target is None:
+            raise ValueError("选中的 PCS bbox 已不存在，请重新选择")
+        pcs_state["bbox_records"] = [rec for rec in records if int(rec.get("id", -1)) != target_id]
+        pcs_state["bbox_history"] = [item for item in pcs_state.get("bbox_history", []) if int(item.get("id", -1)) != target_id]
+        _sync_pcs_boxes_from_records(pcs_state)
+        _reset_pcs_predictions(pcs_state)
+        label = "负样本" if target.get("key") == "negative_boxes" else "正样本"
+        info = f"已删除 PCS {label} bbox: {[round(float(v), 1) for v in target.get('box', [])]}；请重新运行 PCS 分割"
     except Exception as exc:
-        info = f"PCS bbox \u64a4\u9500\u5931\u8d25: {exc}"
-    return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+        info = f"删除 PCS bbox 失败: {exc}"
+    return pcs_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
 def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
@@ -2577,6 +2640,7 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         gr.update(visible=is_pvs),
         gr.update(visible=False),
         gr.update(visible=False),
+        _pcs_bbox_choices(pcs_state),
         *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
 
@@ -2653,7 +2717,8 @@ def create_demo():
                                         label="PCS bbox \u6837\u672c\u7c7b\u578b",
                                         elem_classes="mode-radio",
                                     )
-                                    undo_pcs_bbox_btn = gr.Button("\u64a4\u9500\u6700\u8fd1 PCS bbox", size="sm", variant="secondary")
+                                    pcs_bbox_selector = gr.Dropdown(choices=[], label="PCS bbox \u5217\u8868", interactive=True)
+                                    delete_selected_pcs_bbox_btn = gr.Button("\u5220\u9664\u9009\u4e2d PCS bbox", size="sm", variant="secondary")
                                 with gr.Row():
                                     clear_prompt_btn = gr.Button("\u6e05\u7a7a\u63d0\u793a (Clear Prompts)", size="sm", variant="secondary")
                                 interaction_info = gr.Markdown("\u70b9\u51fb\u56fe\u50cf\u5f00\u59cb\u6dfb\u52a0\u63d0\u793a...", elem_id="interaction-info")
@@ -2718,7 +2783,8 @@ def create_demo():
                                     annotation_json_file = gr.File(label="\u4e0a\u4f20 O3/LabelMe-like JSON \u6807\u6ce8\uff08\u4f18\u5148\u4e8e COCO lookup\uff09", file_types=[".json"], type="filepath")
 
                         with gr.Column(scale=1):
-                            result_image = gr.Image(type="numpy", label="\u5206\u5272\u7ed3\u679c")
+                            gr.Markdown("### \u5206\u5272\u7ed3\u679c")
+                            result_image = gr.Image(type="numpy", label="\u5206\u5272\u7ed3\u679c", show_label=False)
                             analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
                             with gr.Group(visible=True) as pvs_action_panel:
                                 gr.Markdown("### PVS 实例操作")
@@ -2747,13 +2813,13 @@ def create_demo():
                     gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
 
             common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
-            image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, *common, export_file], concurrency_limit=1)
-            image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, *common], concurrency_limit=1)
+            image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, *common, export_file], concurrency_limit=1)
+            image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
-            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, text_prompt, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, *common], concurrency_limit=1)
+            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pcs_bbox_selector, text_prompt, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, *common], concurrency_limit=1)
             click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
-            undo_pcs_bbox_btn.click(fn=_undo_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1)
+            delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
             create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             undo_pending_bbox_btn.click(fn=_undo_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
