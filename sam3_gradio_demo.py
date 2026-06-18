@@ -1847,7 +1847,7 @@ def _active_instances(state):
     return [inst for inst in state.get("instances", {}).values() if inst.get("status") != "deleted"]
 
 
-def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True):
+def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True, show_interaction_prompts=True, show_layout_overlay=False, layout_state=None):
     image = np.array(_workspace(image_state)["image"].convert("RGB"))
     overlay = image.copy()
     line = image.copy()
@@ -1874,6 +1874,16 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
         arr = np.array([[int(round(x)), int(round(y))] for x, y in points], dtype=np.int32).reshape((-1, 1, 2))
         polygon_draws.append((arr, color, len(points) >= 3))
 
+    if show_layout_overlay and layout_state and layout_state.get("enabled"):
+        layout_id = layout_state.get("layout_id")
+        cached = _LAYOUT_CACHE.get(str(layout_id)) if layout_id else None
+        if cached is not None and cached.get("transformed_mask") is not None:
+            layout_mask = np.asarray(cached["transformed_mask"], dtype=bool)
+            if layout_mask.shape == overlay.shape[:2]:
+                paint(layout_mask, (0, 255, 130), float(layout_state.get("preview_alpha") or 0.35))
+                ys, xs = np.where(layout_mask)
+                if len(xs):
+                    queue_label(f"LAYOUT {layout_id}", int(xs.min()), max(18, int(ys.min()) - 6), (0, 255, 130))
     if show_instances and mode == "PCS Auto":
         for inst in _active_instances(pcs_state):
             color = (0, 255, 90)
@@ -1909,7 +1919,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             x1, y1, x2, y2 = [int(round(v)) for v in box]
             role = "N" if rec.get("key") == "negative_boxes" else "P"
             queue_label(f"{role}-ID{rec.get('id')}", x1, max(18, y1 - 6), color)
-    if prompt_state:
+    if show_interaction_prompts and prompt_state:
         bbox_color = (255, 48, 48) if prompt_state.get("bbox_role") == "negative" else (0, 255, 90)
         if prompt_state.get("last_bbox"):
             queue_box(prompt_state["last_bbox"], bbox_color, 4)
@@ -1949,10 +1959,20 @@ def _instances_for_mode(pcs_state, pvs_state, mode):
     return _active_instances(pcs_state if mode == "PCS Auto" else pvs_state)
 
 
-def _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None):
+def _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None, layout_state=None):
     if not image_state or not image_state.get("image_id"):
         return None
-    return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state, show_instances=False)
+    return _overlay(
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        prompt_state,
+        show_instances=False,
+        show_interaction_prompts=True,
+        show_layout_overlay=bool(layout_state and layout_state.get("enabled")),
+        layout_state=layout_state,
+    )
 
 
 def _result_placeholder(image_state):
@@ -1968,7 +1988,7 @@ def _result_image(image_state, pcs_state, pvs_state, mode):
         return None
     if not _instances_for_mode(pcs_state, pvs_state, mode):
         return _result_placeholder(image_state)
-    return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True)
+    return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True, show_interaction_prompts=False, show_layout_overlay=False)
 
 def _new_prompt_state():
     return {"bbox_start": None, "last_bbox": None, "last_point": None, "polygon_points": [], "bbox_role": "positive"}
@@ -2957,6 +2977,73 @@ def _clear_current_layout_mask(layout_state):
     return _new_layout_state(), None, None, None, None, None, "当前版图 mask 已清除"
 
 
+
+def _transform_layout_mask(layout_state, target_width, target_height):
+    cached = _layout_cache_get(layout_state)
+    source_mask = np.asarray(cached.get("source_mask"), dtype=bool)
+    if source_mask.ndim != 2:
+        raise ValueError("版图 source_mask 必须是 2D binary mask")
+    target_width = int(target_width)
+    target_height = int(target_height)
+    if target_width <= 0 or target_height <= 0:
+        raise ValueError("主图尺寸无效，无法生成版图预览")
+    src_h, src_w = source_mask.shape[:2]
+    cx, cy = src_w / 2.0, src_h / 2.0
+    scale = float(layout_state.get("scale") or 1.0)
+    rotation_deg = float(layout_state.get("rotation_deg") or 0.0)
+    tx = float(layout_state.get("tx") or 0.0)
+    ty = float(layout_state.get("ty") or 0.0)
+    matrix = cv2.getRotationMatrix2D((cx, cy), rotation_deg, scale)
+    matrix[0, 2] += (target_width / 2.0 - cx) + tx
+    matrix[1, 2] += (target_height / 2.0 - cy) + ty
+    transformed = cv2.warpAffine(
+        source_mask.astype(np.uint8),
+        matrix,
+        (target_width, target_height),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    ).astype(bool)
+    cached["transformed_mask"] = transformed
+    cached["transform"] = {"tx": tx, "ty": ty, "scale": scale, "rotation_deg": rotation_deg}
+    return transformed
+
+
+def _layout_mask_to_overlay(base_image, mask, alpha=0.35):
+    base = np.asarray(_pil_image(base_image).convert("RGB"), dtype=np.uint8).copy()
+    mask = np.asarray(mask, dtype=bool)
+    if mask.shape != base.shape[:2]:
+        raise ValueError("layout mask 与目标图像尺寸不一致，无法预览")
+    fill = base.copy()
+    fill[mask] = (0, 255, 130)
+    return Image.fromarray(cv2.addWeighted(fill, float(alpha), base, 1.0 - float(alpha), 0))
+
+
+def _update_layout_preview(image_state, pcs_state, pvs_state, mode, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha):
+    try:
+        if mode != "PVS Manual":
+            raise ValueError("版图 overlay 只在 PVS Manual 模式下显示")
+        ws = _workspace(image_state)
+        state = dict(layout_state or _new_layout_state())
+        state.update({
+            "enabled": bool(enabled),
+            "tx": float(tx or 0.0),
+            "ty": float(ty or 0.0),
+            "scale": float(scale or 1.0),
+            "rotation_deg": float(rotation_deg or 0.0),
+            "preview_alpha": float(preview_alpha or 0.35),
+        })
+        transformed = _transform_layout_mask(state, int(ws["image"].width), int(ws["image"].height))
+        info = (
+            "版图预览已更新。\n"
+            + _layout_state_summary(state)
+            + f"\ntransformed mask: {transformed.shape[1]}x{transformed.shape[0]}, foreground={int(transformed.sum())}"
+        )
+        workspace = _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None, layout_state=state)
+        return state, workspace, info
+    except Exception as exc:
+        return layout_state or _new_layout_state(), gr.update(), f"版图预览更新失败: {exc}"
+
 def _layout_state_summary(layout_state):
     if not layout_state or not layout_state.get("layout_id"):
         return "当前未选择版图 mask"
@@ -3278,9 +3365,9 @@ def create_demo():
                 concurrency_limit=1,
             )
             update_layout_preview_btn.click(
-                fn=_update_layout_controls,
-                inputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha],
-                outputs=[layout_state, layout_pvs_info],
+                fn=_update_layout_preview,
+                inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha],
+                outputs=[layout_state, image_upload, layout_pvs_info],
                 concurrency_limit=1,
             )
             reset_layout_btn.click(
