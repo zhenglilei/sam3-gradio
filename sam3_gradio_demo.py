@@ -1847,6 +1847,27 @@ def _active_instances(state):
     return [inst for inst in state.get("instances", {}).values() if inst.get("status") != "deleted"]
 
 
+MODE_PCS = "PCS Auto"
+MODE_PVS = "PVS Manual"
+MODE_LAYOUT = "Layout Mask"
+
+
+def _is_pcs_mode(mode):
+    return str(mode or "") == MODE_PCS
+
+
+def _is_pvs_manual_mode(mode):
+    return str(mode or "") == MODE_PVS
+
+
+def _is_layout_mask_mode(mode):
+    return str(mode or "") == MODE_LAYOUT
+
+
+def _is_pvs_pool_mode(mode):
+    return _is_pvs_manual_mode(mode) or _is_layout_mask_mode(mode)
+
+
 def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True, show_interaction_prompts=True, show_layout_overlay=False, layout_state=None):
     image = np.array(_workspace(image_state)["image"].convert("RGB"))
     overlay = image.copy()
@@ -1884,14 +1905,14 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
                 ys, xs = np.where(layout_mask)
                 if len(xs):
                     queue_label(f"LAYOUT {layout_id}", int(xs.min()), max(18, int(ys.min()) - 6), (0, 255, 130))
-    if show_instances and mode == "PCS Auto":
+    if show_instances and _is_pcs_mode(mode):
         for inst in _active_instances(pcs_state):
             color = (0, 255, 90)
             paint(inst["mask_fullres_bool"], color, 0.24)
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             queue_box((x1, y1, x2, y2), color, 3)
             queue_label(f"PCS#{inst['id']}", x1, max(18, y1 - 6), color)
-    if mode == "PVS Manual" and not show_instances:
+    if _is_pvs_manual_mode(mode) and not show_instances:
         for rec in _pvs_pending_bbox_records(pvs_state):
             box = rec.get("box", [])
             if len(box) != 4:
@@ -1900,7 +1921,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             queue_box(box, color, 3)
             x1, y1, x2, y2 = [int(round(v)) for v in box]
             queue_label(f"B-ID{rec.get('id')}", x1, max(18, y1 - 6), color)
-    if show_instances and mode == "PVS Manual":
+    if show_instances and _is_pvs_pool_mode(mode):
         active_id = pvs_state.get("active_instance_id")
         for inst in _active_instances(pvs_state):
             is_active = str(inst["id"]) == str(active_id)
@@ -1909,7 +1930,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             queue_box((x1, y1, x2, y2), color, 4 if is_active else 3)
             queue_label(f"PVS#{inst['id']}", x1, max(18, y1 - 6), color)
-    if mode == "PCS Auto" and not show_instances:
+    if _is_pcs_mode(mode) and not show_instances:
         for rec in _pcs_bbox_records(pcs_state):
             color = (255, 48, 48) if rec.get("key") == "negative_boxes" else (0, 255, 90)
             box = rec.get("box", [])
@@ -1956,7 +1977,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
 
 
 def _instances_for_mode(pcs_state, pvs_state, mode):
-    return _active_instances(pcs_state if mode == "PCS Auto" else pvs_state)
+    return _active_instances(pcs_state if _is_pcs_mode(mode) else pvs_state)
 
 
 def _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None, layout_state=None):
@@ -2109,7 +2130,7 @@ def _clear_pvs_pending_bboxes(pvs_state):
 def _click_tool_key(click_tool):
     text = str(click_tool or "").strip()
     lower = text.lower()
-    if lower in {"point", "bbox", "polygon"}:
+    if lower in {"point", "bbox", "polygon", "layout"}:
         return lower
     if "point" in lower or "\u70b9" in text:
         return "point"
@@ -2129,14 +2150,17 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
         point = _event_point(evt, image_state)
         w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
         tool = _click_tool_key(click_tool)
-        if mode == "PCS Auto" and tool != "bbox":
+        if _is_layout_mask_mode(mode):
+            info = "版图 mask 提示分割不使用左侧点击交互；请在版图面板中加载 mask 并更新预览。"
+            return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+        if _is_pcs_mode(mode) and tool != "bbox":
             tool = "bbox"
         if tool == "point":
             prompt_state["last_point"] = point
             point_payload = _payload_json({"type": "positive_point", "point_xy_px": point, "image_width": w, "image_height": h})
             info = f"\u5df2\u6dfb\u52a0\u6b63\u5411\u70b9: {[round(v, 1) for v in point]}"
         elif tool == "bbox":
-            bbox_role = "negative" if mode == "PCS Auto" and str(pcs_bbox_kind or "").startswith("Negative") else "positive"
+            bbox_role = "negative" if _is_pcs_mode(mode) and str(pcs_bbox_kind or "").startswith("Negative") else "positive"
             prompt_state["bbox_role"] = bbox_role
             if prompt_state.get("bbox_start") is None:
                 prompt_state["bbox_start"] = point
@@ -2148,7 +2172,7 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
                 prompt_state["bbox_start"] = None
                 prompt_state["last_bbox"] = box
                 bbox_payload = _payload_json({"type": "bbox", "box_xyxy_px": box, "image_width": w, "image_height": h})
-                if mode == "PCS Auto":
+                if _is_pcs_mode(mode):
                     key = _append_pcs_bbox_sample(pcs_state, box, bbox_role)
                     prompt_state["last_bbox"] = None
                     label = "\u8d1f\u6837\u672c" if key == "negative_boxes" else "\u6b63\u6837\u672c"
@@ -2229,8 +2253,8 @@ def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode
     w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
     polygon_payload = _payload_json({"type": "positive_polygon", "points": points, "image_width": w, "image_height": h})
 
-    if mode != "PVS Manual":
-        info = "\u591a\u8fb9\u5f62\u5df2\u5b8c\u6210\u3002PCS Auto \u4e0d\u4f7f\u7528 polygon prompt\u3002"
+    if not _is_pvs_manual_mode(mode):
+        info = "多边形已完成。当前模式不使用 polygon prompt。"
         return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
     try:
@@ -2244,7 +2268,7 @@ def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode
 
 def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
     prompt_state = _new_prompt_state()
-    if mode == "PCS Auto":
+    if _is_pcs_mode(mode):
         pcs_state["text_prompt"] = ""
         pcs_state["positive_boxes"] = []
         pcs_state["negative_boxes"] = []
@@ -2252,14 +2276,15 @@ def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
         pcs_state["bbox_records"] = []
         pcs_state["next_bbox_id"] = 1
         text_prompt_update = ""
-        info = "PCS prompt \u5df2\u6e05\u7a7a\uff1b\u5df2\u6709 PCS \u5206\u5272\u7ed3\u679c\u4e0d\u4f1a\u88ab\u5220\u9664"
-    else:
+        info = "PCS prompt 已清空；已有 PCS 分割结果不会被删除"
+    elif _is_pvs_manual_mode(mode):
         cleared = _clear_pvs_pending_bboxes(pvs_state)
         text_prompt_update = gr.update()
-        info = f"\u4e34\u65f6\u63d0\u793a\u5df2\u6e05\u7a7a\uff0c\u5305\u62ec {cleared} \u4e2a\u5f85\u751f\u6210 PVS bbox\uff1b\u5df2\u751f\u6210\u5b9e\u4f8b\u4e0d\u4f1a\u88ab\u5220\u9664"
+        info = f"临时提示已清空，包括 {cleared} 个待生成 PVS bbox；已生成实例不会被删除"
+    else:
+        text_prompt_update = gr.update()
+        info = "版图 mask 提示分割的临时点击提示已清空；已生成实例和待生成 bbox 不会被删除"
     return prompt_state, "", "", "", pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), text_prompt_update, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
-
-
 def _pcs_choice_update(pcs_state):
     choices = [(f"PCS #{i['id']} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pcs_state)]
     return gr.update(choices=choices, value=choices[0][1] if choices else None)
@@ -2313,16 +2338,16 @@ def _pvs_summary(pvs_state):
 
 def _analysis_report(pcs_state, pvs_state, mode, info):
     sections = [str(info or "")]
-    if mode == "PCS Auto":
-        sections.extend(["", "PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272", _pcs_summary(pcs_state)])
+    if _is_pcs_mode(mode):
+        sections.extend(["", "PCS Auto 自动概念分割", _pcs_summary(pcs_state)])
+    elif _is_layout_mask_mode(mode):
+        sections.extend(["", "版图 mask 提示分割", _pvs_summary(pvs_state)])
     else:
-        sections.extend(["", "PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272", _pvs_summary(pvs_state)])
+        sections.extend(["", "PVS Manual 手动实例分割", _pvs_summary(pvs_state)])
     return "\n".join(part for part in sections if part is not None)
-
-
-def _view(image_state, pcs_state, pvs_state, mode, info, prompt_state=None):
+def _view(image_state, pcs_state, pvs_state, mode, info, prompt_state=None, layout_state=None):
     return (
-        _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state),
+        _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state, layout_state),
         _result_image(image_state, pcs_state, pvs_state, mode),
         _analysis_report(pcs_state, pvs_state, mode, info),
         _pcs_summary(pcs_state),
@@ -2631,7 +2656,7 @@ def _write_feedback_layout_artifacts(sample_dir, layout_prompt):
 
 def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_tags, feedback_comment):
     try:
-        if mode == "PVS Manual":
+        if _is_pvs_pool_mode(mode):
             active_id = pvs_state.get("active_instance_id")
             if active_id is None:
                 raise ValueError("请先选择一个 active PVS instance")
@@ -2640,7 +2665,7 @@ def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_t
                 raise ValueError("当前 active PVS instance 不存在或已删除")
             feedback_instances = [inst]
             feedback_target = "active_pvs_instance"
-        elif mode == "PCS Auto":
+        elif _is_pcs_mode(mode):
             feedback_instances = _active_instances(pcs_state)
             if not feedback_instances:
                 raise ValueError("请先运行 PCS 并生成至少一个 PCS instance")
@@ -2796,17 +2821,21 @@ def _export_pvs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_imag
 
 def _switch_mode(mode, image_state, pcs_state, pvs_state):
     prompt_state = _new_prompt_state()
-    is_pcs = mode == "PCS Auto"
-    is_pvs = mode == "PVS Manual"
+    is_pcs = _is_pcs_mode(mode)
+    is_pvs = _is_pvs_manual_mode(mode)
+    is_layout = _is_layout_mask_mode(mode)
     if is_pcs:
         tool_update = gr.update(choices=[("框提示 (Box)", "bbox")], value="bbox")
         finish_update = gr.update(visible=False)
-    else:
+    elif is_pvs:
         tool_update = gr.update(
             choices=[("点提示 (Point)", "point"), ("框提示 (Box)", "bbox"), ("多边形Mask (Polygon)", "polygon")],
             value="bbox",
         )
         finish_update = gr.update(visible=True)
+    else:
+        tool_update = gr.update(choices=[("版图 mask 提示", "layout")], value="layout")
+        finish_update = gr.update(visible=False)
     return (
         prompt_state,
         "",
@@ -2817,8 +2846,10 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         gr.update(visible=is_pcs),
         gr.update(visible=is_pcs),
         gr.update(visible=is_pvs),
-        gr.update(visible=is_pvs),
-        gr.update(visible=is_pvs),
+        gr.update(visible=_is_pvs_pool_mode(mode)),
+        gr.update(visible=not is_layout),
+        gr.update(visible=is_layout),
+        gr.update(visible=is_layout),
         gr.update(visible=is_pvs),
         gr.update(visible=False),
         gr.update(visible=False),
@@ -2826,19 +2857,14 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         _pvs_pending_bbox_choices(pvs_state),
         *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
-
-
 def _switch_click_tool(click_tool, mode):
     tool = _click_tool_key(click_tool)
-    is_pvs = mode == "PVS Manual"
+    is_pvs = _is_pvs_manual_mode(mode)
     return (
         gr.update(visible=is_pvs and tool == "bbox"),
         gr.update(visible=is_pvs and tool == "point"),
         gr.update(visible=is_pvs and tool == "polygon"),
     )
-
-
-
 def _binarize_layout_image(input_image, threshold=12, invert=False, open_kernel=0, close_kernel=0):
     image = _pil_image(input_image)
     if image is None:
@@ -3066,8 +3092,8 @@ def _layout_mask_to_overlay(base_image, mask, alpha=0.35):
 
 def _update_layout_preview(image_state, pcs_state, pvs_state, mode, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha):
     try:
-        if mode != "PVS Manual":
-            raise ValueError("版图 overlay 只在 PVS Manual 模式下显示")
+        if not _is_layout_mask_mode(mode):
+            raise ValueError("版图 overlay 只在版图 mask 提示分割模式下显示")
         ws = _workspace(image_state)
         state = dict(layout_state or _new_layout_state())
         state.update({
@@ -3147,8 +3173,8 @@ def _layout_prompt_metadata(layout_state):
 
 def _create_pvs_from_layout_mask(image_state, pcs_state, pvs_state, mode, layout_state, progress=gr.Progress(track_tqdm=False)):
     try:
-        if mode != "PVS Manual":
-            raise ValueError("版图 mask prompt 只支持 PVS Manual")
+        if not _is_layout_mask_mode(mode):
+            raise ValueError("版图 mask prompt 只支持版图 mask 提示分割模式")
         _pvs_progress(progress, 0.05, "准备版图 transformed mask")
         transformed = _layout_transformed_mask_for_image(image_state, layout_state)
         lowres_logits = _mask_to_lowres_logits(transformed)
@@ -3173,46 +3199,9 @@ def _create_pvs_from_layout_mask(image_state, pcs_state, pvs_state, mode, layout
         info = f"已用版图 mask prompt 创建 PVS #{inst_id}"
     except Exception as exc:
         info = f"用版图创建 PVS 实例失败: {exc}"
-    return pvs_state, info, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return pvs_state, info, *_view(image_state, pcs_state, pvs_state, mode, info, layout_state=layout_state)
 
 
-def _refine_pvs_with_layout_mask(image_state, pcs_state, pvs_state, mode, layout_state, progress=gr.Progress(track_tqdm=False)):
-    try:
-        if mode != "PVS Manual":
-            raise ValueError("版图 mask prompt 只支持 PVS Manual")
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
-            raise ValueError("请先选择一个 active PVS instance")
-        inst = pvs_state["instances"][int(active_id)]
-        _pvs_progress(progress, 0.05, "准备版图 transformed mask")
-        transformed = _layout_transformed_mask_for_image(image_state, layout_state)
-        layout_logits = _mask_to_lowres_logits(transformed)
-        combined = _combine_logits(inst.get("pvs_lowres_logits"), layout_logits, mode="replace")
-        before = _snapshot(inst)
-        _pvs_progress(progress, 0.42, "SAM3 正在用版图 mask_input 精修当前 PVS 实例", delay=0.08)
-        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
-        idx = _best(pred)
-        mask = pred["masks"][idx]
-        inst["mask_fullres_bool"] = mask
-        inst["box_xyxy_px"] = _mask_box(mask)
-        inst["score"] = float(pred["scores"][idx])
-        inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
-        after = _snapshot(inst)
-        inst.setdefault("prompt_history", []).append(
-            {
-                "op": "refine_with_layout_mask",
-                "mode": "replace",
-                "prompt": _layout_prompt_metadata(layout_state),
-                "before": before,
-                "after": after,
-                "candidate_scores": pred["scores"].astype(float).tolist(),
-            }
-        )
-        _pvs_progress(progress, 0.96, "渲染 PVS 版图精修结果", delay=0.12)
-        info = f"已用版图 mask prompt 精修 PVS #{active_id}"
-    except Exception as exc:
-        info = f"用版图精修当前 PVS 实例失败: {exc}"
-    return pvs_state, info, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 def _layout_state_summary(layout_state):
     if not layout_state or not layout_state.get("layout_id"):
@@ -3304,7 +3293,7 @@ def create_demo():
             with gr.Tabs():
                 with gr.TabItem("智能图像分割", id="tab_image"):
                     mode = gr.Radio(
-                        choices=[("PCS Auto 自动概念分割", "PCS Auto"), ("PVS Manual 手动实例分割", "PVS Manual")],
+                        choices=[("PCS Auto 自动概念分割", "PCS Auto"), ("PVS Manual 手动实例分割", "PVS Manual"), ("版图 mask 提示分割", "Layout Mask")],
                         value="PVS Manual",
                         label="功能模式",
                         elem_classes="mode-radio",
@@ -3388,29 +3377,14 @@ def create_demo():
                                             )
                                     pvs_summary = gr.Textbox(label="PVS 实例", lines=6, interactive=False, visible=False)
 
-                                with gr.Group(visible=True) as pvs_layout_panel:
+                                with gr.Group(visible=False) as pvs_layout_panel:
                                     gr.Markdown("### PVS 版图 mask 提示")
                                     gr.Markdown("第一版使用数值控件调整版图 mask；不做拖拽、不引入自定义 JS。")
                                     with gr.Row():
                                         use_current_layout_btn = gr.Button("使用当前已保存版图 mask", variant="secondary")
                                         load_layout_binary_btn = gr.Button("载入二值 mask PNG", variant="secondary")
-                                    layout_binary_upload = gr.Image(type="numpy", label="直接上传二值 mask PNG", sources=["upload", "clipboard"])
-                                    layout_enabled = gr.Checkbox(value=False, label="显示/启用版图 overlay")
-                                    with gr.Row():
-                                        layout_tx = gr.Number(value=0.0, label="tx")
-                                        layout_ty = gr.Number(value=0.0, label="ty")
-                                    with gr.Row():
-                                        layout_scale = gr.Slider(minimum=0.1, maximum=5.0, value=1.0, step=0.01, label="scale")
-                                        layout_rotation = gr.Slider(minimum=-180.0, maximum=180.0, value=0.0, step=1.0, label="rotation")
-                                    layout_alpha = gr.Slider(minimum=0.0, maximum=1.0, value=0.35, step=0.05, label="alpha")
-                                    with gr.Row():
-                                        reset_layout_btn = gr.Button("Reset", variant="secondary")
-                                        update_layout_preview_btn = gr.Button("更新预览", variant="primary")
-                                    with gr.Row():
-                                        create_from_layout_btn = gr.Button("用版图创建实例", variant="primary")
-                                        refine_with_layout_btn = gr.Button("用版图精修当前实例", variant="secondary")
-                                    layout_pvs_info = gr.Textbox(label="版图提示状态", lines=5, interactive=False)
-
+                                    gr.Markdown("#### 直接上传二值 mask PNG")
+                                    layout_binary_upload = gr.Image(type="numpy", label="直接上传二值 mask PNG", show_label=False, sources=["upload", "clipboard"])
                                 with gr.Accordion("\u5bfc\u51fa\u4e0e COCO \u91cf\u5316", open=False):
                                     coco_dataset = gr.Dropdown(choices=coco_dataset_choices, value=default_coco_dataset, label="\u6307\u6807\u6570\u636e\u96c6")
                                     coco_image_name = gr.Textbox(label="COCO image file_name\uff08\u53ef\u9009\uff09", lines=1)
@@ -3421,7 +3395,23 @@ def create_demo():
                         with gr.Column(scale=1):
                             gr.Markdown("### \u5206\u5272\u7ed3\u679c")
                             result_image = gr.Image(type="numpy", label="\u5206\u5272\u7ed3\u679c", show_label=False)
-                            analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
+                            with gr.Group(visible=True) as analysis_report_panel:
+                                analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
+                            with gr.Group(visible=False) as layout_transform_panel:
+                                gr.Markdown("### 修改变形版图")
+                                layout_enabled = gr.Checkbox(value=False, label="显示/启用版图 overlay")
+                                with gr.Row():
+                                    layout_tx = gr.Number(value=0.0, label="tx")
+                                    layout_ty = gr.Number(value=0.0, label="ty")
+                                with gr.Row():
+                                    layout_scale = gr.Slider(minimum=0.1, maximum=20.0, value=1.0, step=0.01, label="scale")
+                                    layout_rotation = gr.Slider(minimum=-180.0, maximum=180.0, value=0.0, step=1.0, label="rotation")
+                                layout_alpha = gr.Slider(minimum=0.0, maximum=1.0, value=0.35, step=0.05, label="alpha")
+                                with gr.Row():
+                                    reset_layout_btn = gr.Button("Reset", variant="secondary")
+                                    update_layout_preview_btn = gr.Button("更新预览", variant="primary")
+                                create_from_layout_btn = gr.Button("用版图创建实例", variant="primary")
+                                layout_pvs_info = gr.Textbox(label="版图提示状态", lines=5, interactive=False)
                             with gr.Group(visible=True) as pvs_action_panel:
                                 gr.Markdown("### PVS 实例操作")
                                 active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
@@ -3450,7 +3440,8 @@ def create_demo():
                     gr.Markdown("binary mask 是唯一权威数据；contour 仅用于预览和导出。")
                     with gr.Row():
                         with gr.Column(scale=1):
-                            layout_input = gr.Image(type="numpy", label="上传版图截图", sources=["upload", "clipboard"])
+                            gr.Markdown("#### 上传版图截图")
+                            layout_input = gr.Image(type="numpy", label="上传版图截图", show_label=False, sources=["upload", "clipboard"])
                             layout_threshold = gr.Slider(minimum=0, maximum=255, value=12, step=1, label="threshold（色彩/饱和度阈值）")
                             layout_invert = gr.Checkbox(value=False, label="invert（反转前景/背景）")
                             with gr.Row():
@@ -3471,11 +3462,11 @@ def create_demo():
                                 layout_mask_file = gr.File(label="下载 mask PNG", interactive=False)
                                 layout_contour_file = gr.File(label="下载 contour JSON", interactive=False)
                         with gr.Column(scale=1):
-                            with gr.Row():
-                                layout_source_preview = gr.Image(type="pil", label="原图预览", show_label=True)
-                                layout_mask_preview = gr.Image(type="pil", label="binary mask 预览", show_label=True)
-                            layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=True)
-
+                            layout_source_preview = gr.Image(type="pil", label="原图预览", show_label=False, visible=False)
+                            gr.Markdown("#### binary mask 预览")
+                            layout_mask_preview = gr.Image(type="pil", label="binary mask 预览", show_label=False)
+                            gr.Markdown("#### contour overlay")
+                            layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=False)
                 with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
                     gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
 
@@ -3527,14 +3518,7 @@ def create_demo():
                 fn=_create_pvs_from_layout_mask,
                 inputs=[image_state, pcs_state, pvs_state, mode, layout_state],
                 outputs=[pvs_state, layout_pvs_info, *common],
-                show_progress_on=[result_image, analysis_report],
-                concurrency_limit=1,
-            )
-            refine_with_layout_btn.click(
-                fn=_refine_pvs_with_layout_mask,
-                inputs=[image_state, pcs_state, pvs_state, mode, layout_state],
-                outputs=[pvs_state, layout_pvs_info, *common],
-                show_progress_on=[result_image, analysis_report],
+                show_progress_on=[result_image],
                 concurrency_limit=1,
             )
 
@@ -3542,7 +3526,7 @@ def create_demo():
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, pvs_layout_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
             delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
