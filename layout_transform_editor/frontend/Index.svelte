@@ -9,6 +9,7 @@
 
 	const props = $props();
 	const MAX_CANVAS_SIDE = 2048;
+	const WHEEL_ZOOM_SPEED = 0.00035;
 	const gradio = new Gradio<LayoutTransformEditorEvents, LayoutTransformEditorProps>(props);
 
 	let canvasEl: HTMLCanvasElement;
@@ -425,7 +426,7 @@
 		evt.preventDefault();
 		const p = eventToTarget(evt);
 		const before = targetToSource(p.x, p.y);
-		const factor = Math.exp(-evt.deltaY * 0.001);
+		const factor = Math.exp(-evt.deltaY * WHEEL_ZOOM_SPEED);
 		const nextScale = clamp(Number(transform.scale || 1) * factor, 0.01, 20);
 		let next = { ...transform, scale: nextScale };
 		const afterTarget = sourceToTarget(before.x, before.y, next);

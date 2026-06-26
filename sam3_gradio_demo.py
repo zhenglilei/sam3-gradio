@@ -3394,13 +3394,39 @@ def _clear_current_layout_mask(image_state, layout_state):
     return state, _layout_editor_empty(image_state, "当前版图 mask 已清除"), None, None, None, None, None, "当前版图 mask 已清除"
 
 
-def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None):
+def _layout_numeric_controls_changed(layout_state, tx, ty, scale, rotation_deg, preview_alpha, tol=1e-6):
+    state = layout_state if isinstance(layout_state, dict) else {}
+
+    def changed(field, value, default):
+        if value is None:
+            return False
+        try:
+            current = float(value)
+            previous = float(state.get(field) if state.get(field) is not None else default)
+        except (TypeError, ValueError):
+            return False
+        return abs(current - previous) > tol
+
+    return any(
+        [
+            changed("tx", tx, 0.0),
+            changed("ty", ty, 0.0),
+            changed("scale", scale, 1.0),
+            changed("rotation_deg", rotation_deg, 0.0),
+            changed("preview_alpha", preview_alpha, 0.35),
+        ]
+    )
+
+
+def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None, prefer_numeric=None):
     ws = _workspace(image_state)
     image = ws["image"]
     target_size = (int(image.width), int(image.height))
     target_hash = image_state.get("target_image_sha256") or ws.get("target_image_sha256") or _layout_tx.image_pixel_sha256(image)
     state = dict(layout_state or _new_layout_state(image_state.get("session_id")))
-    incoming = _layout_editor_transform(transform_payload)
+    if prefer_numeric is None:
+        prefer_numeric = _layout_numeric_controls_changed(state, tx, ty, scale, rotation_deg, preview_alpha)
+    incoming = None if prefer_numeric else _layout_editor_transform(transform_payload)
     if incoming:
         state.update({
             "center_x": incoming.get("center_x", state.get("center_x")),
@@ -3448,9 +3474,17 @@ def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, 
             pivot_xy = pivot
             center_x = target_size[0] / 2.0 + float(tx or 0.0)
             center_y = target_size[1] / 2.0 + float(ty or 0.0)
-        scale_value = float(np.clip(float(state.get("scale") if state.get("scale") is not None else scale or 1.0), 0.01, 20.0))
-        rotation_value = float(state.get("rotation_deg") if state.get("rotation_deg") is not None else rotation_deg or 0.0)
-        alpha_value = float(np.clip(float(state.get("preview_alpha") if state.get("preview_alpha") is not None else preview_alpha or 0.35), 0.0, 1.0))
+        if incoming:
+            scale_source = state.get("scale") if state.get("scale") is not None else scale
+            rotation_source = state.get("rotation_deg") if state.get("rotation_deg") is not None else rotation_deg
+            alpha_source = state.get("preview_alpha") if state.get("preview_alpha") is not None else preview_alpha
+        else:
+            scale_source = scale
+            rotation_source = rotation_deg
+            alpha_source = preview_alpha
+        scale_value = float(np.clip(float(scale_source if scale_source is not None else 1.0), 0.01, 20.0))
+        rotation_value = float(rotation_source if rotation_source is not None else 0.0)
+        alpha_value = float(np.clip(float(alpha_source if alpha_source is not None else 0.35), 0.0, 1.0))
         revision = max(payload_revision, committed) + 1
         transform = _layout_tx.make_layout_transform_v2(
             session_id=str(state.get("session_id") or cached.get("session_id") or image_state.get("session_id") or "default"),
