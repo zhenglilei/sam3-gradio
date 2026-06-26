@@ -71,10 +71,12 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 
 - 使用当前已保存的版图 mask。
 - 载入或直接上传二值 mask PNG。
-- 调整数值变换参数：`tx`、`ty`、`scale`、`rotation`、`alpha`。
+- 在 Canvas 编辑器里直接调整版图 mask：点中 mask 前景后拖动，滚轮缩放，用旋转手柄旋转。
+- 使用 `重置`、`居中`、`适配`、`找回视野` 快速恢复或定位版图。
+- 保留数值变换参数：`tx`、`ty`、`scale`、`rotation`、`alpha`，用于精确输入和回退。
 - `scale` 最大支持到 `20`。
-- `更新预览`：在原图上查看版图 overlay。
-- `用版图创建实例`：调用 `predict_inst(mask_input=...)` 创建 PVS 实例。
+- `更新预览`：后端用 `warpAffine()` 生成权威 overlay，并校正 Canvas 显示。
+- `用版图创建实例`：提交当前 transform，由后端重新计算 matrix，再调用 `predict_inst(mask_input=...)` 创建 PVS 实例。
 
 当前已删除 `用版图精修当前实例` 按钮；版图模式只负责从版图 mask 创建实例。
 
@@ -225,11 +227,12 @@ python sam3_gradio_demo.py
 
 1. `功能模式` 选择 `版图 mask 提示分割`。
 2. 准备版图 mask：先在 `版图截图转掩码` Tab 生成并保存，或直接上传二值 mask PNG。
-3. 在右侧 `修改变形版图` 面板调整 `tx`、`ty`、`scale`、`rotation`、`alpha`。
-4. 勾选 `显示/启用版图 overlay`。
-5. 点击 `更新预览`。
-6. 位置合适后点击 `用版图创建实例`。
-7. 在 PVS 实例区确认或导出。
+3. 在 Canvas 编辑器中调整版图：点中白色 mask 前景后拖动，滚轮缩放，用右上角旋转手柄旋转。
+4. 如果版图移出视野，可以点击 `找回视野`；如果比例不合适，可以用 `适配`；需要重新开始则用 `重置`。
+5. 右侧数值控件会同步 `tx`、`ty`、`scale`、`rotation`、`alpha`，也可以直接输入数值微调。
+6. 勾选 `显示/启用版图 overlay` 后点击 `更新预览`，后端会生成权威 overlay。
+7. 位置合适后点击 `用版图创建实例`。
+8. 在 PVS 实例区确认或导出。
 
 ---
 
@@ -309,7 +312,7 @@ masks/*.png
 ### 版图 mask 创建实例
 
 ```text
-上传图片 -> 版图 mask 提示分割 -> 载入或生成二值版图 mask -> 调整变换 -> 更新预览 -> 用版图创建实例 -> 确认/导出 PVS
+上传图片 -> 版图 mask 提示分割 -> 载入或生成二值版图 mask -> Canvas 拖动/缩放/旋转 -> 更新预览 -> 用版图创建实例 -> 确认/导出 PVS
 ```
 
 ---
@@ -326,8 +329,12 @@ masks/*.png
 
 ```bash
 cd /data/zhengqiyuan/sam3-gradio/.runtime/codex-worktrees/sam3-pvs-workspace
-/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m py_compile sam3_gradio_demo.py
-git diff --check -- sam3_gradio_demo.py README.md
+/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m py_compile sam3_gradio_demo.py layout_transform_utils.py layout_transform_editor/backend/gradio_layout_transform_editor/layouttransformeditor.py
+/data/zhengqiyuan/miniforge3/envs/sam3/bin/python tests/test_layout_transform_utils.py
+cd layout_transform_editor
+/data/zhengqiyuan/miniforge3/envs/sam3/bin/gradio cc build --python-path /data/zhengqiyuan/miniforge3/envs/sam3/bin/python --no-generate-docs
+cd ..
+git diff --check -- sam3_gradio_demo.py README.md DEMO_PROGRESS_LOG.md layout_transform_utils.py layout_transform_editor tests
 git status --short --branch
 ```
 
@@ -337,6 +344,10 @@ git status --short --branch
 sam3_gradio_demo.py
 README.md
 TODO.md
+DEMO_PROGRESS_LOG.md
+layout_transform_utils.py
+layout_transform_editor/
+tests/test_layout_transform_utils.py
 ```
 
 不应修改 SAM3 官方模型源码。

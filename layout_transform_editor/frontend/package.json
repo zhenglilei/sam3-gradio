@@ -1,0 +1,52 @@
+{
+  "name": "gradio_layout_transform_editor",
+  "version": "0.9.10",
+  "description": "Gradio UI packages",
+  "type": "module",
+  "author": "",
+  "license": "ISC",
+  "private": false,
+  "dependencies": {
+    "@gradio/atoms": "0.24.0",
+    "@gradio/client": "2.2.0",
+    "@gradio/icons": "0.15.1",
+    "@gradio/statustracker": "0.14.1",
+    "@gradio/upload": "0.17.9",
+    "@gradio/utils": "0.12.2",
+    "cropperjs": "^2.0.1",
+    "lazy-brush": "^2.0.2",
+    "resize-observer-polyfill": "^1.5.1",
+    "svelte": "^5.48.0"
+  },
+  "devDependencies": {
+    "@gradio/preview": "0.16.2"
+  },
+  "main_changeset": true,
+  "main": "./Index.svelte",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "gradio": "./Index.svelte",
+      "svelte": "./dist/Index.svelte",
+      "types": "./dist/Index.svelte.d.ts"
+    },
+    "./example": {
+      "gradio": "./Example.svelte",
+      "svelte": "./dist/Example.svelte",
+      "types": "./dist/Example.svelte.d.ts"
+    },
+    "./base": {
+      "gradio": "./shared/ImagePreview.svelte",
+      "svelte": "./dist/shared/ImagePreview.svelte",
+      "types": "./dist/shared/ImagePreview.svelte.d.ts"
+    }
+  },
+  "peerDependencies": {
+    "svelte": "^5.48.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gradio-app/gradio.git",
+    "directory": "js/simpleimage"
+  }
+}

@@ -15,6 +15,7 @@ import tempfile
 import json
 import uuid
 import zipfile
+import copy
 
 # 所有运行时文件固定在 /data/zhengqiyuan，避免 Gradio 默认写入 /tmp/gradio。
 current_dir = Path(__file__).resolve().parent
@@ -72,12 +73,24 @@ os.environ["HF_HOME"] = str(qiyuan_cache_dir / "huggingface")
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(qiyuan_cache_dir / "huggingface" / "hub")
 os.environ["MODELSCOPE_CACHE"] = str(qiyuan_cache_dir / "modelscope")
 sys.path.insert(0, str(current_dir))
+component_backend_dir = current_dir / 'layout_transform_editor' / 'backend'
+if component_backend_dir.exists():
+    sys.path.insert(0, str(component_backend_dir))
 
 import numpy as np
 import torch
 import gradio as gr
 from PIL import Image
 import cv2
+import layout_transform_utils as _layout_tx
+
+try:
+    from gradio_layout_transform_editor import LayoutTransformEditor
+except Exception as exc:
+    LayoutTransformEditor = None
+    _layout_editor_import_error = exc
+else:
+    _layout_editor_import_error = None
 
 try:
     from scripts.layout_image_to_mask import extract_layout_mask as _layout_extract_mask
@@ -1524,6 +1537,7 @@ _PVS_PREDICT_LOCK = _sam3_threading.Lock()
 _FEEDBACK_WRITE_LOCK = _sam3_threading.Lock()
 _WORKSPACE_CACHE = {}
 _LAYOUT_CACHE = {}
+_LAYOUT_CACHE_LOCK = _sam3_threading.RLock()
 
 
 def _clear_workspace_cache():
@@ -1578,11 +1592,30 @@ def _new_pvs_state():
     }
 
 
-def _new_layout_state():
+
+def _new_session_state():
+    return {"session_id": uuid.uuid4().hex}
+
+
+def _session_id_from_state(session_state=None):
+    if isinstance(session_state, dict) and session_state.get("session_id"):
+        return str(session_state["session_id"])
+    return uuid.uuid4().hex
+
+
+def _new_layout_state(session_id=None):
     return {
+        "transform_version": 2,
+        "session_id": str(session_id or uuid.uuid4().hex),
         "layout_id": None,
+        "image_id": None,
         "enabled": False,
         "region_mode": "all",
+        "revision": 0,
+        "center_x": None,
+        "center_y": None,
+        "pivot_x": None,
+        "pivot_y": None,
         "tx": 0.0,
         "ty": 0.0,
         "scale": 1.0,
@@ -1590,39 +1623,160 @@ def _new_layout_state():
         "preview_alpha": 0.35,
         "source_width": 0,
         "source_height": 0,
+        "source_mask_pixel_sha256": None,
+        "source_mask_file_sha256": None,
+        "target_image_sha256": None,
+        "matrix_2x3": None,
     }
 
 
-def _layout_cache_get(layout_state_or_id):
-    layout_id = layout_state_or_id.get("layout_id") if isinstance(layout_state_or_id, dict) else layout_state_or_id
+def _layout_cache_key(session_id, layout_id):
     if not layout_id:
         raise ValueError("请先在‘版图截图转掩码’Tab 中生成并保存当前版图 mask")
-    cached = _LAYOUT_CACHE.get(str(layout_id))
-    if cached is None:
-        raise ValueError(f"版图缓存已失效或不存在: {layout_id}。请重新生成版图 mask。")
-    return cached
+    sid = _layout_tx.safe_id(session_id, "default")
+    lid = _layout_tx.safe_id(layout_id, "layout")
+    return f"{sid}:{lid}"
 
 
-def _layout_cache_put(layout_id, source_image, source_mask, contours, binarize_params, mask_path=None, contour_json_path=None, overlay_path=None):
-    _LAYOUT_CACHE[str(layout_id)] = {
-        "source_image": _pil_image(source_image),
-        "source_mask": np.asarray(source_mask, dtype=bool),
+def _layout_disk_dir(session_id, layout_id):
+    return runtime_layout_dir / _layout_tx.safe_id(session_id, "default") / _layout_tx.safe_id(layout_id, "layout")
+
+
+def _layout_cache_get(layout_state_or_id, session_id=None):
+    if isinstance(layout_state_or_id, dict):
+        layout_id = layout_state_or_id.get("layout_id")
+        session_id = session_id or layout_state_or_id.get("session_id")
+    else:
+        layout_id = layout_state_or_id
+    if not layout_id:
+        raise ValueError("请先在‘版图截图转掩码’Tab 中生成并保存当前版图 mask")
+    session_id = session_id or "default"
+    key = _layout_cache_key(session_id, layout_id)
+    with _LAYOUT_CACHE_LOCK:
+        cached = _LAYOUT_CACHE.get(key)
+        if cached is not None:
+            return cached
+        cached = _restore_layout_cache_from_disk(session_id, layout_id)
+        if cached is not None:
+            _LAYOUT_CACHE[key] = cached
+            return cached
+    raise ValueError(f"版图缓存已失效或不存在: {layout_id}。请重新生成版图 mask。")
+
+
+def _restore_layout_cache_from_disk(session_id, layout_id):
+    out_dir = _layout_disk_dir(session_id, layout_id)
+    meta_path = out_dir / "layout_meta.json"
+    mask_path = out_dir / "source_mask.png"
+    if not meta_path.exists() or not mask_path.exists():
+        return None
+    with meta_path.open("r", encoding="utf-8") as f:
+        meta = json.load(f)
+    file_hash = _layout_tx.file_sha256(mask_path)
+    if meta.get("source_mask_file_sha256") and meta.get("source_mask_file_sha256") != file_hash:
+        raise ValueError("版图 source_mask.png 文件 hash 不匹配，拒绝恢复缓存")
+    gray = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if gray is None:
+        raise ValueError("版图 source_mask.png 无法读取")
+    source_mask = gray >= 128
+    pixel_hash = _layout_tx.mask_pixel_sha256(source_mask.astype(np.uint8))
+    if meta.get("source_mask_pixel_sha256") and meta.get("source_mask_pixel_sha256") != pixel_hash:
+        raise ValueError("版图 source mask 像素 hash 不匹配，拒绝恢复缓存")
+    image_path = out_dir / "source_image.png"
+    source_image = Image.open(image_path).convert("RGB") if image_path.exists() else _layout_mask_to_preview(source_mask)
+    return {
+        "session_id": str(session_id),
+        "layout_id": str(layout_id),
+        "source_image": source_image,
+        "source_mask": source_mask,
+        "source_mask_path": str(mask_path),
+        "source_mask_pixel_sha256": pixel_hash,
+        "source_mask_file_sha256": file_hash,
+        "target_image_sha256": meta.get("target_image_sha256"),
+        "layout_meta_path": str(meta_path),
+        "foreground_bbox_xyxy": meta.get("foreground_bbox_xyxy") or _layout_tx.foreground_bbox_xyxy(source_mask),
+        "pivot_xy": meta.get("pivot_xy") or _layout_tx.pivot_from_bbox_xyxy(_layout_tx.foreground_bbox_xyxy(source_mask)),
+        "source_width": int(source_mask.shape[1]),
+        "source_height": int(source_mask.shape[0]),
         "transformed_mask": None,
+        "committed_revision": int(meta.get("committed_revision") or 0),
+        "backend_transform": meta.get("backend_transform"),
+        "matrix_2x3": meta.get("matrix_2x3"),
+        "contours": meta.get("contours") or [],
+        "binarize_params": meta.get("binarize_params") or {},
+        "mask_path": str(mask_path),
+        "contour_json_path": str(out_dir / "contours.json") if (out_dir / "contours.json").exists() else None,
+        "overlay_path": str(out_dir / "contour_overlay.png") if (out_dir / "contour_overlay.png").exists() else None,
+    }
+
+
+def _write_layout_meta(cached):
+    meta_path = Path(cached["layout_meta_path"])
+    payload = {
+        "session_id": cached.get("session_id"),
+        "layout_id": cached.get("layout_id"),
+        "source_mask_path": cached.get("source_mask_path"),
+        "source_mask_pixel_sha256": cached.get("source_mask_pixel_sha256"),
+        "source_mask_file_sha256": cached.get("source_mask_file_sha256"),
+        "target_image_sha256": cached.get("target_image_sha256"),
+        "foreground_bbox_xyxy": cached.get("foreground_bbox_xyxy"),
+        "pivot_xy": cached.get("pivot_xy"),
+        "source_width": cached.get("source_width"),
+        "source_height": cached.get("source_height"),
+        "committed_revision": cached.get("committed_revision"),
+        "backend_transform": cached.get("backend_transform"),
+        "matrix_2x3": cached.get("matrix_2x3"),
+        "binarize_params": cached.get("binarize_params") or {},
+        "contours": cached.get("contours") or [],
+    }
+    with meta_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _layout_cache_put(session_id, layout_id, source_image, source_mask, contours, binarize_params, mask_path=None, contour_json_path=None, overlay_path=None, layout_meta_path=None):
+    source_mask = np.asarray(source_mask, dtype=bool)
+    bbox = _layout_tx.foreground_bbox_xyxy(source_mask)
+    pivot = _layout_tx.pivot_from_bbox_xyxy(bbox)
+    mask_path = str(mask_path) if mask_path else None
+    file_hash = _layout_tx.file_sha256(mask_path) if mask_path else None
+    pixel_hash = _layout_tx.mask_pixel_sha256(source_mask.astype(np.uint8))
+    cached = {
+        "session_id": str(session_id),
+        "layout_id": str(layout_id),
+        "source_image": _pil_image(source_image),
+        "source_mask": source_mask,
+        "source_mask_path": mask_path,
+        "layout_meta_path": str(layout_meta_path) if layout_meta_path else None,
+        "source_mask_pixel_sha256": pixel_hash,
+        "source_mask_file_sha256": file_hash,
+        "target_image_sha256": None,
+        "foreground_bbox_xyxy": bbox,
+        "pivot_xy": pivot,
+        "source_width": int(source_mask.shape[1]),
+        "source_height": int(source_mask.shape[0]),
+        "transformed_mask": None,
+        "committed_revision": 0,
+        "backend_transform": None,
+        "matrix_2x3": None,
         "contours": contours or [],
         "binarize_params": dict(binarize_params or {}),
-        "mask_path": str(mask_path) if mask_path else None,
+        "mask_path": mask_path,
         "contour_json_path": str(contour_json_path) if contour_json_path else None,
         "overlay_path": str(overlay_path) if overlay_path else None,
     }
-    return _LAYOUT_CACHE[str(layout_id)]
+    key = _layout_cache_key(session_id, layout_id)
+    with _LAYOUT_CACHE_LOCK:
+        _LAYOUT_CACHE[key] = cached
+        if cached.get("layout_meta_path"):
+            _write_layout_meta(cached)
+    return cached
 
 
 def _clear_layout_cache(layout_state=None):
-    if layout_state and isinstance(layout_state, dict) and layout_state.get("layout_id"):
-        _LAYOUT_CACHE.pop(str(layout_state.get("layout_id")), None)
-    else:
-        _LAYOUT_CACHE.clear()
-
+    with _LAYOUT_CACHE_LOCK:
+        if layout_state and isinstance(layout_state, dict) and layout_state.get("layout_id"):
+            _LAYOUT_CACHE.pop(_layout_cache_key(layout_state.get("session_id") or "default", layout_state.get("layout_id")), None)
+        else:
+            _LAYOUT_CACHE.clear()
 
 def _workspace(image_state):
     if not image_state or not image_state.get("image_id"):
@@ -1897,7 +2051,10 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
 
     if show_layout_overlay and layout_state and layout_state.get("enabled"):
         layout_id = layout_state.get("layout_id")
-        cached = _LAYOUT_CACHE.get(str(layout_id)) if layout_id else None
+        try:
+            cached = _layout_cache_get(layout_state)
+        except Exception:
+            cached = None
         if cached is not None and cached.get("transformed_mask") is not None:
             layout_mask = np.asarray(cached["transformed_mask"], dtype=bool)
             if layout_mask.shape == overlay.shape[:2]:
@@ -2358,16 +2515,18 @@ def _view(image_state, pcs_state, pvs_state, mode, info, prompt_state=None, layo
     )
 
 
-def _init_workspace(input_image, mode):
+def _init_workspace(input_image, mode, session_state=None):
     pcs_state, pvs_state = _new_pcs_state(), _new_pvs_state()
     prompt_state = _new_prompt_state()
-    image_state = {"image_id": None, "width": 0, "height": 0}
+    session_id = _session_id_from_state(session_state)
+    image_state = {"image_id": None, "width": 0, "height": 0, "session_id": session_id, "target_image_sha256": None}
     if input_image is None:
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
     if image_predictor is None:
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
     image = _pil_image(input_image)
     image_id = uuid.uuid4().hex
+    target_hash = _layout_tx.image_pixel_sha256(image)
     _clear_workspace_cache()
     try:
         base_state = image_predictor.set_image(image)
@@ -2375,9 +2534,19 @@ def _init_workspace(input_image, mode):
         _clear_workspace_cache()
         info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5df2\u6e05\u7406\u5f53\u524d\u5de5\u4f5c\u53f0\u7f13\u5b58\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
-    _WORKSPACE_CACHE[image_id] = {"image": image, "base_state": base_state}
-    image_state = {"image_id": image_id, "width": image.width, "height": image.height}
+    _WORKSPACE_CACHE[image_id] = {"image": image, "base_state": base_state, "target_image_sha256": target_hash}
+    image_state = {"image_id": image_id, "width": image.width, "height": image.height, "session_id": session_id, "target_image_sha256": target_hash}
     return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
+
+
+def _init_workspace_with_layout_editor(input_image, mode, session_state=None, layout_state=None):
+    result = _init_workspace(input_image, mode, session_state)
+    image_state = result[0]
+    if isinstance(layout_state, dict) and layout_state.get("layout_id"):
+        editor = _layout_editor_payload(image_state, layout_state, "目标图像已更新，版图编辑器 payload 已刷新。")
+    else:
+        editor = _layout_editor_empty(image_state, "Image loaded; load or generate a layout mask next.")
+    return (*result, editor)
 
 
 def _delete_selected_pcs_bbox(image_state, pcs_state, pvs_state, mode, selected_bbox_id):
@@ -2636,7 +2805,12 @@ def _write_feedback_layout_artifacts(sample_dir, layout_prompt):
         return {}
     transform_path = sample_dir / "layout_transform.json"
     layout_id = layout_prompt.get("layout_id")
-    cached = _LAYOUT_CACHE.get(str(layout_id)) if layout_id else None
+    cached = None
+    if layout_id:
+        try:
+            cached = _layout_cache_get({"layout_id": layout_id, "session_id": layout_prompt.get("session_id")})
+        except Exception:
+            cached = None
     transformed_mask_path = None
     if cached is not None and cached.get("transformed_mask") is not None:
         transformed_mask_path = sample_dir / "layout_transformed_mask.png"
@@ -2857,6 +3031,15 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         _pvs_pending_bbox_choices(pvs_state),
         *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
+def _switch_mode_with_layout_editor(mode, image_state, pcs_state, pvs_state, layout_state):
+    result = _switch_mode(mode, image_state, pcs_state, pvs_state)
+    if _is_layout_mask_mode(mode):
+        editor = _layout_editor_payload(image_state, layout_state, "已切换到版图 mask 提示分割，Canvas payload 已刷新。")
+    else:
+        editor = gr.update()
+    return (*result, editor)
+
+
 def _switch_click_tool(click_tool, mode):
     tool = _click_tool_key(click_tool)
     is_pvs = _is_pvs_manual_mode(mode)
@@ -2955,22 +3138,25 @@ def _layout_contour_overlay(image, mask, contours):
     return Image.fromarray(vis)
 
 
-def _save_layout_mask_files(source_image, mask, contours, params):
+def _save_layout_mask_files(session_state, source_image, mask, contours, params):
+    session_id = _session_id_from_state(session_state)
     layout_id = f"layout_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-    out_dir = runtime_layout_dir / layout_id
+    out_dir = _layout_disk_dir(session_id, layout_id)
     out_dir.mkdir(parents=True, exist_ok=False)
     image = _pil_image(source_image)
     mask_bool = np.asarray(mask, dtype=bool)
-    image_path = out_dir / "source.png"
-    mask_path = out_dir / "mask.png"
+    image_path = out_dir / "source_image.png"
+    mask_path = out_dir / "source_mask.png"
     contour_path = out_dir / "contours.json"
     overlay_path = out_dir / "contour_overlay.png"
+    meta_path = out_dir / "layout_meta.json"
     image.save(image_path)
     cv2.imwrite(str(mask_path), mask_bool.astype(np.uint8) * 255)
     overlay = _layout_contour_overlay(image, mask_bool, contours)
     overlay.save(overlay_path)
     payload = {
         "layout_id": layout_id,
+        "session_id": session_id,
         "image_size": [int(image.width), int(image.height)],
         "mask_semantics": {"foreground": 1, "background": 0},
         "foreground_pixels": int(mask_bool.sum()),
@@ -2980,7 +3166,8 @@ def _save_layout_mask_files(source_image, mask, contours, params):
     }
     with contour_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    _layout_cache_put(
+    cached = _layout_cache_put(
+        session_id,
         layout_id,
         image,
         mask_bool,
@@ -2989,8 +3176,9 @@ def _save_layout_mask_files(source_image, mask, contours, params):
         mask_path=mask_path,
         contour_json_path=contour_path,
         overlay_path=overlay_path,
+        layout_meta_path=meta_path,
     )
-    state = _new_layout_state()
+    state = _new_layout_state(session_id)
     state.update(
         {
             "layout_id": layout_id,
@@ -2998,16 +3186,168 @@ def _save_layout_mask_files(source_image, mask, contours, params):
             "region_mode": str(params.get("region_mode") or "all"),
             "source_width": int(image.width),
             "source_height": int(image.height),
+            "pivot_x": float(cached["pivot_xy"][0]),
+            "pivot_y": float(cached["pivot_xy"][1]),
+            "source_mask_pixel_sha256": cached.get("source_mask_pixel_sha256"),
+            "source_mask_file_sha256": cached.get("source_mask_file_sha256"),
         }
     )
     return state, str(mask_path), str(contour_path), overlay
 
-def _run_layout_mask_page(input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode):
+
+
+
+def _layout_mask_to_editor_image(mask):
+    mask = np.asarray(mask, dtype=bool)
+    preview = np.where(mask, 255, 0).astype(np.uint8)
+    return Image.fromarray(preview, mode="L").convert("RGB")
+
+
+def _layout_editor_empty(image_state=None, status="请先加载或生成版图 mask"):
+    base_url = ""
+    target_width = 0
+    target_height = 0
+    if isinstance(image_state, dict) and image_state.get("image_id"):
+        try:
+            image = _workspace(image_state)["image"]
+            base_url = _data_url(image)
+            target_width, target_height = int(image.width), int(image.height)
+        except Exception:
+            pass
+    return {
+        "enabled": False,
+        "base_image": base_url,
+        "mask_image": "",
+        "transform": None,
+        "target_width": target_width,
+        "target_height": target_height,
+        "source_width": 0,
+        "source_height": 0,
+        "foreground_bbox_xyxy": None,
+        "status": status,
+    }
+
+
+def _layout_editor_payload(image_state, layout_state, status=None):
+    if not layout_state or not layout_state.get("layout_id"):
+        return _layout_editor_empty(image_state, status or "请先加载或生成版图 mask")
+    try:
+        cached = _layout_cache_get(layout_state)
+        source_mask = np.asarray(cached.get("source_mask"), dtype=bool)
+        if source_mask.ndim != 2:
+            raise ValueError("source_mask is not 2D")
+        base_url = ""
+        target_width = int(cached.get("source_width") or source_mask.shape[1])
+        target_height = int(cached.get("source_height") or source_mask.shape[0])
+        image_id = layout_state.get("image_id")
+        target_hash = cached.get("target_image_sha256")
+        if isinstance(image_state, dict) and image_state.get("image_id"):
+            image = _workspace(image_state)["image"]
+            base_url = _data_url(image)
+            target_width, target_height = int(image.width), int(image.height)
+            image_id = image_state.get("image_id")
+            target_hash = image_state.get("target_image_sha256") or _layout_tx.image_pixel_sha256(image)
+        pivot = cached.get("pivot_xy") or _layout_tx.pivot_from_bbox_xyxy(cached.get("foreground_bbox_xyxy"))
+        state = dict(layout_state or {})
+        if all(k in state and state.get(k) is not None for k in ("center_x", "center_y", "pivot_x", "pivot_y")):
+            center_x = float(state.get("center_x"))
+            center_y = float(state.get("center_y"))
+            pivot_xy = [float(state.get("pivot_x")), float(state.get("pivot_y"))]
+        else:
+            center_x = float(target_width) / 2.0 + float(state.get("tx") or 0.0)
+            center_y = float(target_height) / 2.0 + float(state.get("ty") or 0.0)
+            pivot_xy = pivot
+        transform = _layout_tx.make_layout_transform_v2(
+            session_id=str(state.get("session_id") or cached.get("session_id") or "default"),
+            layout_id=str(state.get("layout_id")),
+            image_id=str(image_id or ""),
+            target_size=(target_width, target_height),
+            source_mask=source_mask,
+            center_x=center_x,
+            center_y=center_y,
+            pivot_xy=pivot_xy,
+            scale=float(state.get("scale") or 1.0),
+            rotation_deg=float(state.get("rotation_deg") or 0.0),
+            preview_alpha=float(state.get("preview_alpha") or 0.35),
+            revision=int(state.get("revision") or cached.get("committed_revision") or 0),
+            source_mask_pixel_sha256=cached.get("source_mask_pixel_sha256"),
+            target_image_sha256=target_hash,
+        )
+        transform = _layout_tx.transform_with_derived_fields(transform, (target_width, target_height))
+        return {
+            "enabled": bool(state.get("enabled", True)),
+            "base_image": base_url,
+            "mask_image": _data_url(_layout_mask_to_editor_image(source_mask)),
+            "transform": copy.deepcopy(transform),
+            "target_width": target_width,
+            "target_height": target_height,
+            "source_width": int(cached.get("source_width") or source_mask.shape[1]),
+            "source_height": int(cached.get("source_height") or source_mask.shape[0]),
+            "foreground_bbox_xyxy": copy.deepcopy(cached.get("foreground_bbox_xyxy")),
+            "status": status or "版图编辑器已加载：拖动 mask 平移，滚轮缩放，拖动圆形手柄旋转。",
+        }
+    except Exception as exc:
+        return _layout_editor_empty(image_state, status or f"版图编辑器不可用：{exc}")
+
+
+def _layout_editor_transform(editor_payload):
+    if not isinstance(editor_payload, dict):
+        return None
+    transform = editor_payload.get("transform")
+    return transform if isinstance(transform, dict) else None
+
+
+def _sync_layout_controls_from_editor(layout_state, editor_payload):
+    state = dict(layout_state or {})
+    transform = _layout_editor_transform(editor_payload)
+    if not transform:
+        return state, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "版图编辑器还没有 transform payload"
+    try:
+        if state.get("layout_id") and transform.get("layout_id") and str(state.get("layout_id")) != str(transform.get("layout_id")):
+            raise ValueError("canvas transform belongs to a different layout mask")
+        if state.get("session_id") and transform.get("session_id") and str(state.get("session_id")) != str(transform.get("session_id")):
+            raise ValueError("canvas transform belongs to a different session")
+
+        payload = editor_payload if isinstance(editor_payload, dict) else {}
+        target_w = int(payload.get("target_width") or 0)
+        target_h = int(payload.get("target_height") or 0)
+        center_x = float(transform.get("center_x", state.get("center_x") or 0.0))
+        center_y = float(transform.get("center_y", state.get("center_y") or 0.0))
+        if target_w > 0 and target_h > 0:
+            tx, ty = _layout_tx.derive_legacy_tx_ty({"center_x": center_x, "center_y": center_y}, (target_w, target_h))
+        else:
+            tx = float(transform.get("tx", state.get("tx") or 0.0))
+            ty = float(transform.get("ty", state.get("ty") or 0.0))
+
+        state.update({
+            "enabled": bool(payload.get("enabled", True)),
+            "transform_version": 2,
+            "image_id": transform.get("image_id") or state.get("image_id"),
+            "center_x": center_x,
+            "center_y": center_y,
+            "pivot_x": float(transform.get("pivot_x", state.get("pivot_x") or 0.0)),
+            "pivot_y": float(transform.get("pivot_y", state.get("pivot_y") or 0.0)),
+            "scale": float(np.clip(float(transform.get("scale", state.get("scale") or 1.0)), 0.01, 20.0)),
+            "rotation_deg": float(_layout_tx.normalize_rotation_deg(float(transform.get("rotation_deg", state.get("rotation_deg") or 0.0)))),
+            "preview_alpha": float(np.clip(float(transform.get("preview_alpha", state.get("preview_alpha") or 0.35)), 0.0, 1.0)),
+            "revision": int(float(transform.get("revision", state.get("revision") or 0))),
+            "source_mask_pixel_sha256": transform.get("source_mask_pixel_sha256") or state.get("source_mask_pixel_sha256"),
+            "target_image_sha256": transform.get("target_image_sha256") or state.get("target_image_sha256"),
+            "tx": float(tx),
+            "ty": float(ty),
+        })
+        info = f"Canvas 变换已同步到数值控件：tx={tx:.1f}, ty={ty:.1f}, 缩放={state['scale']:.3f}, 旋转={state['rotation_deg']:.1f}"
+        return state, bool(state.get("enabled", True)), float(tx), float(ty), float(state.get("scale") or 1.0), float(state.get("rotation_deg") or 0.0), float(state.get("preview_alpha") or 0.35), info
+    except Exception as exc:
+        return state, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"Canvas 变换同步失败：{exc}"
+
+
+def _run_layout_mask_page(session_state, image_state, input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode):
     try:
         image, mask = _binarize_layout_image(input_image, threshold, invert, open_kernel, close_kernel)
         mask = _filter_layout_components(mask, min_component_area, region_mode)
         if not mask.any():
-            raise ValueError("二值 mask 为空，请调低 threshold 或检查 invert 设置")
+            raise ValueError("Binary mask is empty; lower threshold or check invert")
         contours = _layout_mask_contours(mask)
         params = {
             "threshold": int(threshold),
@@ -3017,18 +3357,22 @@ def _run_layout_mask_page(input_image, threshold, invert, open_kernel, close_ker
             "min_component_area": int(min_component_area or 0),
             "region_mode": str(region_mode or "all"),
         }
-        state, mask_path, contour_path, overlay = _save_layout_mask_files(image, mask, contours, params)
+        state, mask_path, contour_path, overlay = _save_layout_mask_files(session_state, image, mask, contours, params)
         info = (
-            f"已生成当前版图 mask: {state['layout_id']}\n"
-            f"尺寸: {image.width}x{image.height}\n"
-            f"前景像素: {int(mask.sum())} ({mask.mean():.4f})\n"
+            f"版图 mask 已生成：{state['layout_id']}\n"
+            f"session: {state.get('session_id')}\n"
+            f"size: {image.width}x{image.height}\n"
+            f"foreground pixels: {int(mask.sum())} ({mask.mean():.4f})\n"
             f"contours: {len(contours)}\n"
+            f"source_mask_pixel_sha256: {state.get('source_mask_pixel_sha256')}\n"
             f"mask: {mask_path}\ncontours: {contour_path}"
         )
-        return state, image, _layout_mask_to_preview(mask), overlay, mask_path, contour_path, info
+        editor_payload = _layout_editor_payload(image_state, state, "版图 mask 已生成；切换到版图 mask 提示分割后可拖动、缩放和旋转。")
+        return state, editor_payload, image, _layout_mask_to_preview(mask), overlay, mask_path, contour_path, info
     except Exception as exc:
-        info = f"版图截图转 mask 失败: {exc}"
-        return {}, None, None, None, None, None, info
+        info = f"版图 mask 生成失败：{exc}"
+        state = _new_layout_state(_session_id_from_state(session_state))
+        return state, _layout_editor_empty(image_state, info), None, None, None, None, None, info
 
 
 def _save_current_layout_mask(layout_state):
@@ -3037,83 +3381,142 @@ def _save_current_layout_mask(layout_state):
         return (
             cached.get("mask_path"),
             cached.get("contour_json_path"),
-            f"当前版图 mask 已保存: {layout_state.get('layout_id')}",
+            f"Saved current layout mask: {layout_state.get('layout_id')}",
         )
     except Exception as exc:
-        return None, None, f"当前版图 mask 保存失败: {exc}"
+        return None, None, f"保存当前版图 mask 失败：{exc}"
 
 
-def _clear_current_layout_mask(layout_state):
+def _clear_current_layout_mask(image_state, layout_state):
+    session_id = layout_state.get("session_id") if isinstance(layout_state, dict) else None
     _clear_layout_cache(layout_state)
-    return _new_layout_state(), None, None, None, None, None, "当前版图 mask 已清除"
+    state = _new_layout_state(session_id)
+    return state, _layout_editor_empty(image_state, "当前版图 mask 已清除"), None, None, None, None, None, "当前版图 mask 已清除"
 
+
+def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None):
+    ws = _workspace(image_state)
+    image = ws["image"]
+    target_size = (int(image.width), int(image.height))
+    target_hash = image_state.get("target_image_sha256") or ws.get("target_image_sha256") or _layout_tx.image_pixel_sha256(image)
+    state = dict(layout_state or _new_layout_state(image_state.get("session_id")))
+    incoming = _layout_editor_transform(transform_payload)
+    if incoming:
+        state.update({
+            "center_x": incoming.get("center_x", state.get("center_x")),
+            "center_y": incoming.get("center_y", state.get("center_y")),
+            "pivot_x": incoming.get("pivot_x", state.get("pivot_x")),
+            "pivot_y": incoming.get("pivot_y", state.get("pivot_y")),
+            "scale": incoming.get("scale", state.get("scale")),
+            "rotation_deg": incoming.get("rotation_deg", state.get("rotation_deg")),
+            "preview_alpha": incoming.get("preview_alpha", state.get("preview_alpha")),
+            "revision": incoming.get("revision", state.get("revision")),
+        })
+    if not state.get("layout_id"):
+        raise ValueError("请先加载或生成版图 mask")
+    if state.get("session_id") and image_state.get("session_id") and str(state.get("session_id")) != str(image_state.get("session_id")):
+        raise ValueError("版图 mask 属于另一个浏览器会话")
+    cached = _layout_cache_get(state)
+    source_mask = np.asarray(cached.get("source_mask"), dtype=bool)
+    if source_mask.ndim != 2:
+        raise ValueError("layout source_mask must be a 2D binary mask")
+    source_hash = _layout_tx.mask_pixel_sha256(source_mask.astype(np.uint8))
+    if cached.get("source_mask_pixel_sha256") and cached.get("source_mask_pixel_sha256") != source_hash:
+        raise ValueError("source mask pixel hash mismatch; refusing transform")
+    if incoming:
+        if incoming.get("session_id") and str(incoming.get("session_id")) != str(state.get("session_id")):
+            raise ValueError("frontend transform session_id mismatch")
+        if incoming.get("layout_id") and str(incoming.get("layout_id")) != str(state.get("layout_id")):
+            raise ValueError("frontend transform layout_id mismatch")
+        if incoming.get("image_id") and image_state.get("image_id") and str(incoming.get("image_id")) != str(image_state.get("image_id")):
+            raise ValueError("frontend transform image_id mismatch")
+        if incoming.get("source_mask_pixel_sha256") and incoming.get("source_mask_pixel_sha256") != source_hash:
+            raise ValueError("frontend transform source mask hash mismatch")
+        if incoming.get("target_image_sha256") and incoming.get("target_image_sha256") != target_hash:
+            raise ValueError("frontend transform target image hash mismatch")
+    payload_revision = int(float(state.get("revision") or 0))
+    with _LAYOUT_CACHE_LOCK:
+        committed = int(cached.get("committed_revision") or 0)
+        if payload_revision < committed and cached.get("target_image_sha256") == target_hash:
+            raise ValueError(f"layout transform revision is stale: payload={payload_revision}, committed={committed}")
+        pivot = cached.get("pivot_xy") or _layout_tx.pivot_from_bbox_xyxy(cached.get("foreground_bbox_xyxy"))
+        if incoming:
+            pivot_xy = [float(state.get("pivot_x") if state.get("pivot_x") is not None else pivot[0]), float(state.get("pivot_y") if state.get("pivot_y") is not None else pivot[1])]
+            center_x = float(state.get("center_x") if state.get("center_x") is not None else target_size[0] / 2.0)
+            center_y = float(state.get("center_y") if state.get("center_y") is not None else target_size[1] / 2.0)
+        else:
+            pivot_xy = pivot
+            center_x = target_size[0] / 2.0 + float(tx or 0.0)
+            center_y = target_size[1] / 2.0 + float(ty or 0.0)
+        scale_value = float(np.clip(float(state.get("scale") if state.get("scale") is not None else scale or 1.0), 0.01, 20.0))
+        rotation_value = float(state.get("rotation_deg") if state.get("rotation_deg") is not None else rotation_deg or 0.0)
+        alpha_value = float(np.clip(float(state.get("preview_alpha") if state.get("preview_alpha") is not None else preview_alpha or 0.35), 0.0, 1.0))
+        revision = max(payload_revision, committed) + 1
+        transform = _layout_tx.make_layout_transform_v2(
+            session_id=str(state.get("session_id") or cached.get("session_id") or image_state.get("session_id") or "default"),
+            layout_id=str(state.get("layout_id")),
+            image_id=str(image_state.get("image_id")),
+            target_size=target_size,
+            source_mask=source_mask,
+            center_x=center_x,
+            center_y=center_y,
+            pivot_xy=pivot_xy,
+            scale=scale_value,
+            rotation_deg=rotation_value,
+            preview_alpha=alpha_value,
+            revision=revision,
+            source_mask_pixel_sha256=source_hash,
+            target_image_sha256=target_hash,
+        )
+        transform = _layout_tx.transform_with_derived_fields(transform, target_size)
+        transformed = _layout_tx.warp_layout_mask(source_mask, transform["matrix_2x3"], target_size)
+        cached["target_image_sha256"] = target_hash
+        cached["committed_revision"] = revision
+        cached["backend_transform"] = copy.deepcopy(transform)
+        cached["matrix_2x3"] = copy.deepcopy(transform["matrix_2x3"])
+        cached["transformed_mask"] = transformed
+        _write_layout_meta(cached)
+    state.update(copy.deepcopy(transform))
+    state.update({
+        "enabled": bool(enabled),
+        "region_mode": state.get("region_mode") or cached.get("binarize_params", {}).get("region_mode") or "all",
+        "source_width": int(cached.get("source_width") or source_mask.shape[1]),
+        "source_height": int(cached.get("source_height") or source_mask.shape[0]),
+        "source_mask_file_sha256": cached.get("source_mask_file_sha256"),
+    })
+    return state, transformed, copy.deepcopy(transform)
 
 
 def _transform_layout_mask(layout_state, target_width, target_height):
-    cached = _layout_cache_get(layout_state)
-    source_mask = np.asarray(cached.get("source_mask"), dtype=bool)
-    if source_mask.ndim != 2:
-        raise ValueError("版图 source_mask 必须是 2D binary mask")
-    target_width = int(target_width)
-    target_height = int(target_height)
-    if target_width <= 0 or target_height <= 0:
-        raise ValueError("主图尺寸无效，无法生成版图预览")
-    src_h, src_w = source_mask.shape[:2]
-    cx, cy = src_w / 2.0, src_h / 2.0
-    scale = float(layout_state.get("scale") or 1.0)
-    rotation_deg = float(layout_state.get("rotation_deg") or 0.0)
-    tx = float(layout_state.get("tx") or 0.0)
-    ty = float(layout_state.get("ty") or 0.0)
-    matrix = cv2.getRotationMatrix2D((cx, cy), rotation_deg, scale)
-    matrix[0, 2] += (target_width / 2.0 - cx) + tx
-    matrix[1, 2] += (target_height / 2.0 - cy) + ty
-    transformed = cv2.warpAffine(
-        source_mask.astype(np.uint8),
-        matrix,
-        (target_width, target_height),
-        flags=cv2.INTER_NEAREST,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    ).astype(bool)
-    cached["transformed_mask"] = transformed
-    cached["transform"] = {"tx": tx, "ty": ty, "scale": scale, "rotation_deg": rotation_deg}
-    return transformed
+    raise RuntimeError("_transform_layout_mask is deprecated; use _commit_layout_transform(image_state, ...) so target image hash and revision are validated")
 
 
 def _layout_mask_to_overlay(base_image, mask, alpha=0.35):
     base = np.asarray(_pil_image(base_image).convert("RGB"), dtype=np.uint8).copy()
     mask = np.asarray(mask, dtype=bool)
     if mask.shape != base.shape[:2]:
-        raise ValueError("layout mask 与目标图像尺寸不一致，无法预览")
+        raise ValueError("layout mask and target image sizes do not match")
     fill = base.copy()
     fill[mask] = (0, 255, 130)
     return Image.fromarray(cv2.addWeighted(fill, float(alpha), base, 1.0 - float(alpha), 0))
 
 
-def _update_layout_preview(image_state, pcs_state, pvs_state, mode, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha):
+def _update_layout_preview(image_state, pcs_state, pvs_state, mode, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, editor_payload):
     try:
         if not _is_layout_mask_mode(mode):
-            raise ValueError("版图 overlay 只在版图 mask 提示分割模式下显示")
-        ws = _workspace(image_state)
-        state = dict(layout_state or _new_layout_state())
-        state.update({
-            "enabled": bool(enabled),
-            "tx": float(tx or 0.0),
-            "ty": float(ty or 0.0),
-            "scale": float(scale or 1.0),
-            "rotation_deg": float(rotation_deg or 0.0),
-            "preview_alpha": float(preview_alpha or 0.35),
-        })
-        transformed = _transform_layout_mask(state, int(ws["image"].width), int(ws["image"].height))
+            raise ValueError("版图 overlay 只在版图 mask 提示分割模式可用")
+        state, transformed, _ = _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=editor_payload)
         info = (
-            "版图预览已更新。\n"
+            "后端 warpAffine 已更新版图预览。\n"
             + _layout_state_summary(state)
             + f"\ntransformed mask: {transformed.shape[1]}x{transformed.shape[0]}, foreground={int(transformed.sum())}"
         )
         workspace = _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None, layout_state=state)
-        return state, workspace, info
+        editor = _layout_editor_payload(image_state, state, "后端权威 overlay 已返回，Canvas 变换已校正。")
+        return state, workspace, editor, bool(state.get("enabled")), float(state.get("tx") or 0.0), float(state.get("ty") or 0.0), float(state.get("scale") or 1.0), float(state.get("rotation_deg") or 0.0), float(state.get("preview_alpha") or 0.35), info
     except Exception as exc:
-        return layout_state or _new_layout_state(), gr.update(), f"版图预览更新失败: {exc}"
+        state = layout_state or _new_layout_state(image_state.get("session_id") if isinstance(image_state, dict) else None)
+        return state, gr.update(), _layout_editor_payload(image_state, state, f"版图预览更新失败：{exc}"), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"版图预览更新失败：{exc}"
 
 
 def _mask_to_lowres_logits(mask):
@@ -3128,15 +3531,15 @@ def _mask_to_lowres_logits(mask):
 def _validate_layout_prompt_mask(mask):
     mask = np.asarray(mask, dtype=bool)
     if mask.ndim != 2:
-        raise ValueError("版图 transformed mask 必须是 2D binary mask")
+        raise ValueError("layout transformed mask must be 2D")
     foreground = int(mask.sum())
     total = int(mask.size)
     if foreground == 0:
-        raise ValueError("版图 transformed mask 为空，不能作为 PVS mask prompt")
+        raise ValueError("layout transformed mask is empty")
     if foreground < 8:
-        raise ValueError("版图 transformed mask 过小，不能作为 PVS mask prompt")
+        raise ValueError("layout transformed mask is too small")
     if foreground >= int(total * 0.98):
-        raise ValueError("版图 transformed mask 几乎全前景，请检查 invert 或变换参数")
+        raise ValueError("layout transformed mask is almost all foreground; check invert or transform")
     return mask
 
 
@@ -3147,43 +3550,60 @@ def _layout_transformed_mask_for_image(image_state, layout_state):
     cached = _layout_cache_get(layout_state)
     transformed = cached.get("transformed_mask")
     if transformed is None or np.asarray(transformed).shape != target_shape:
-        transformed = _transform_layout_mask(layout_state, image.width, image.height)
+        state, transformed, _ = _commit_layout_transform(
+            image_state,
+            layout_state,
+            layout_state.get("enabled", True),
+            layout_state.get("tx", 0.0),
+            layout_state.get("ty", 0.0),
+            layout_state.get("scale", 1.0),
+            layout_state.get("rotation_deg", 0.0),
+            layout_state.get("preview_alpha", 0.35),
+        )
+        layout_state.update(state)
     transformed = np.asarray(transformed, dtype=bool)
     if transformed.shape != target_shape:
-        raise ValueError(f"版图 transformed mask 尺寸 {transformed.shape} 与主图 {target_shape} 不一致")
+        raise ValueError(f"layout transformed mask shape {transformed.shape} does not match target {target_shape}")
     return _validate_layout_prompt_mask(transformed)
 
 
-def _layout_prompt_metadata(layout_state):
+def _layout_prompt_metadata(image_state, layout_state):
     cached = _layout_cache_get(layout_state)
+    transform = copy.deepcopy(cached.get("backend_transform") or layout_state)
     return {
         "type": "layout_mask",
+        "session_id": layout_state.get("session_id"),
         "layout_id": layout_state.get("layout_id"),
         "region_mode": layout_state.get("region_mode"),
-        "transform": {
-            "tx": float(layout_state.get("tx") or 0.0),
-            "ty": float(layout_state.get("ty") or 0.0),
-            "scale": float(layout_state.get("scale") or 1.0),
-            "rotation_deg": float(layout_state.get("rotation_deg") or 0.0),
-        },
+        "source_mask_pixel_sha256": cached.get("source_mask_pixel_sha256"),
+        "source_mask_file_sha256": cached.get("source_mask_file_sha256"),
+        "target_image_sha256": image_state.get("target_image_sha256") if isinstance(image_state, dict) else cached.get("target_image_sha256"),
+        "source_width": int(cached.get("source_width") or 0),
+        "source_height": int(cached.get("source_height") or 0),
+        "target_width": int(image_state.get("width") or 0) if isinstance(image_state, dict) else None,
+        "target_height": int(image_state.get("height") or 0) if isinstance(image_state, dict) else None,
+        "transform": transform,
+        "matrix_2x3": copy.deepcopy(cached.get("matrix_2x3")),
+        "revision": int(cached.get("committed_revision") or transform.get("revision") or 0),
         "preview_alpha": float(layout_state.get("preview_alpha") or 0.35),
-        "binarize_params": cached.get("binarize_params", {}),
+        "binarize_params": copy.deepcopy(cached.get("binarize_params", {})),
     }
 
 
-def _create_pvs_from_layout_mask(image_state, pcs_state, pvs_state, mode, layout_state, progress=gr.Progress(track_tqdm=False)):
+def _create_pvs_from_layout_mask(image_state, pcs_state, pvs_state, mode, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, editor_payload, progress=gr.Progress(track_tqdm=False)):
     try:
         if not _is_layout_mask_mode(mode):
-            raise ValueError("版图 mask prompt 只支持版图 mask 提示分割模式")
-        _pvs_progress(progress, 0.05, "准备版图 transformed mask")
-        transformed = _layout_transformed_mask_for_image(image_state, layout_state)
+            raise ValueError("版图 mask prompt 只支持在版图 mask 提示分割模式使用")
+        _pvs_progress(progress, 0.05, "Commit and validate layout transform")
+        state, transformed, _ = _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=editor_payload)
+        transformed = _validate_layout_prompt_mask(transformed)
         lowres_logits = _mask_to_lowres_logits(transformed)
-        _pvs_progress(progress, 0.35, "SAM3 正在用版图 mask_input 创建 PVS 实例", delay=0.08)
+        _pvs_progress(progress, 0.35, "SAM3 is creating PVS instance from layout mask_input", delay=0.08)
         pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=lowres_logits)
         idx = _best(pred)
         mask = pred["masks"][idx]
         inst_id = int(pvs_state.get("next_instance_id", 1))
-        prompt = _layout_prompt_metadata(layout_state)
+        prompt = _layout_prompt_metadata(image_state, state)
         pvs_state.setdefault("instances", {})[inst_id] = _make_inst(
             inst_id,
             "manual_pvs_layout_mask",
@@ -3191,69 +3611,77 @@ def _create_pvs_from_layout_mask(image_state, pcs_state, pvs_state, mode, layout
             _mask_box(mask),
             pred["scores"][idx],
             pvs_logits=pred["lowres_logits"][idx],
-            history=[{"op": "create_from_layout_mask", "prompt": prompt, "candidate_scores": pred["scores"].astype(float).tolist()}],
+            history=[{"op": "create_from_layout_mask", "prompt": copy.deepcopy(prompt), "candidate_scores": pred["scores"].astype(float).tolist()}],
         )
         pvs_state["active_instance_id"] = inst_id
         pvs_state["next_instance_id"] = inst_id + 1
-        _pvs_progress(progress, 0.96, "渲染 PVS 版图创建结果", delay=0.12)
+        _pvs_progress(progress, 0.96, "Render PVS layout result", delay=0.12)
         info = f"已用版图 mask prompt 创建 PVS #{inst_id}"
     except Exception as exc:
-        info = f"用版图创建 PVS 实例失败: {exc}"
-    return pvs_state, info, *_view(image_state, pcs_state, pvs_state, mode, info, layout_state=layout_state)
-
+        state = layout_state or _new_layout_state(image_state.get("session_id") if isinstance(image_state, dict) else None)
+        info = f"用版图 mask 创建 PVS 实例失败：{exc}"
+    editor = _layout_editor_payload(image_state, state, info)
+    return pvs_state, state, editor, info, *_view(image_state, pcs_state, pvs_state, mode, info, layout_state=state)
 
 
 def _layout_state_summary(layout_state):
     if not layout_state or not layout_state.get("layout_id"):
-        return "当前未选择版图 mask"
+        return "No layout mask selected"
     return (
-        f"当前版图: {layout_state.get('layout_id')}\n"
+        f"layout: {layout_state.get('layout_id')}\n"
+        f"session: {layout_state.get('session_id')}\n"
         f"enabled: {bool(layout_state.get('enabled'))}\n"
         f"source: {int(layout_state.get('source_width') or 0)}x{int(layout_state.get('source_height') or 0)}\n"
-        f"tx={float(layout_state.get('tx') or 0):.1f}, ty={float(layout_state.get('ty') or 0):.1f}, "
+        f"revision={int(layout_state.get('revision') or 0)}, tx={float(layout_state.get('tx') or 0):.1f}, ty={float(layout_state.get('ty') or 0):.1f}, "
         f"scale={float(layout_state.get('scale') or 1):.3f}, rotation={float(layout_state.get('rotation_deg') or 0):.1f}, "
-        f"alpha={float(layout_state.get('preview_alpha') or 0.35):.2f}"
+        f"alpha={float(layout_state.get('preview_alpha') or 0.35):.2f}\n"
+        f"source_mask_pixel_sha256: {layout_state.get('source_mask_pixel_sha256') or ''}\n"
+        f"target_image_sha256: {layout_state.get('target_image_sha256') or ''}"
     )
 
 
-def _load_layout_binary_mask_png(input_image, region_mode="all"):
+def _load_layout_binary_mask_png(session_state, image_state, input_image, region_mode="all"):
     try:
         image = _pil_image(input_image)
         if image is None:
-            raise ValueError("请先上传二值 mask PNG")
+            raise ValueError("Upload a binary mask PNG first")
         gray = cv2.cvtColor(np.asarray(image.convert("RGB"), dtype=np.uint8), cv2.COLOR_RGB2GRAY)
         white_fg = gray >= 128
         black_fg = gray < 128
         candidates = [mask for mask in (white_fg, black_fg) if mask.any()]
         if not candidates:
-            raise ValueError("上传的二值 mask 没有前景像素")
+            raise ValueError("Uploaded binary mask has no foreground pixels")
         mask = min(candidates, key=lambda arr: float(arr.mean()))
         mask = _filter_layout_components(mask, 0, region_mode)
         if not mask.any():
-            raise ValueError("二值 mask 过滤后为空")
+            raise ValueError("Binary mask is empty after filtering")
         contours = _layout_mask_contours(mask)
         params = {"source": "uploaded_binary_mask_png", "region_mode": str(region_mode or "all"), "foreground_rule": "auto_smaller_nonzero"}
-        state, mask_path, contour_path, _ = _save_layout_mask_files(image, mask, contours, params)
-        info = f"已载入二值 mask PNG。\n{_layout_state_summary(state)}\nmask: {mask_path}\ncontours: {contour_path}"
-        return state, info
+        state, mask_path, contour_path, _ = _save_layout_mask_files(session_state, image, mask, contours, params)
+        info = f"二值 mask PNG 已载入。\n{_layout_state_summary(state)}\nmask: {mask_path}\ncontours: {contour_path}"
+        return state, _layout_editor_payload(image_state, state, "二值 mask PNG 已载入版图编辑器。"), info
     except Exception as exc:
-        return _new_layout_state(), f"载入二值 mask PNG 失败: {exc}"
+        state = _new_layout_state(_session_id_from_state(session_state))
+        return state, _layout_editor_empty(image_state, f"载入二值 mask PNG 失败：{exc}"), f"载入二值 mask PNG 失败：{exc}"
 
 
-def _use_current_layout_mask(layout_state):
+def _use_current_layout_mask(image_state, layout_state):
     try:
         _layout_cache_get(layout_state)
-        return layout_state, "已使用当前保存的版图 mask。\n" + _layout_state_summary(layout_state)
+        info = "Using current saved layout mask.\n" + _layout_state_summary(layout_state)
+        return layout_state, _layout_editor_payload(image_state, layout_state, "当前已保存版图 mask 已载入 Canvas。"), info
     except Exception as exc:
-        return layout_state or _new_layout_state(), f"当前版图 mask 不可用: {exc}"
+        return layout_state or _new_layout_state(), _layout_editor_empty(image_state, f"当前版图 mask 不可用：{exc}"), f"当前版图 mask 不可用：{exc}"
 
 
-def _reset_layout_controls(layout_state):
+def _reset_layout_controls(image_state, layout_state):
     state = dict(layout_state or _new_layout_state())
     state.update({"enabled": bool(state.get("layout_id")), "tx": 0.0, "ty": 0.0, "scale": 1.0, "rotation_deg": 0.0, "preview_alpha": 0.35})
-    info = "版图变换参数已重置。\n" + _layout_state_summary(state)
-    return state, True if state.get("layout_id") else False, 0.0, 0.0, 1.0, 0.0, 0.35, info
-
+    if isinstance(image_state, dict) and image_state.get("width") and image_state.get("height"):
+        state["center_x"] = float(image_state.get("width")) / 2.0
+        state["center_y"] = float(image_state.get("height")) / 2.0
+    info = "版图变换控件已重置。\n" + _layout_state_summary(state)
+    return state, True if state.get("layout_id") else False, 0.0, 0.0, 1.0, 0.0, 0.35, _layout_editor_payload(image_state, state, "Canvas 变换已重置。"), info
 
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
@@ -3281,6 +3709,7 @@ def create_demo():
         with gr.Column(elem_classes="container"):
             gr.Markdown("# SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0")
             gr.Markdown("\u57fa\u4e8e SAM3 \u7684 PCS \u81ea\u52a8\u6982\u5ff5\u5206\u5272\u4e0e PVS \u624b\u52a8\u5b9e\u4f8b\u5206\u5272\u5de5\u4f5c\u53f0", elem_classes="description")
+            session_state = gr.State(_new_session_state())
             image_state = gr.State({"image_id": None, "width": 0, "height": 0})
             pcs_state = gr.State(_new_pcs_state())
             pvs_state = gr.State(_new_pvs_state())
@@ -3379,7 +3808,7 @@ def create_demo():
 
                                 with gr.Group(visible=False) as pvs_layout_panel:
                                     gr.Markdown("### PVS 版图 mask 提示")
-                                    gr.Markdown("第一版使用数值控件调整版图 mask；不做拖拽、不引入自定义 JS。")
+                                    gr.Markdown("上传或选择二值版图 mask；右侧编辑器支持拖动、滚轮缩放、旋转手柄，并由后端生成最终权威 mask。")
                                     with gr.Row():
                                         use_current_layout_btn = gr.Button("使用当前已保存版图 mask", variant="secondary")
                                         load_layout_binary_btn = gr.Button("载入二值 mask PNG", variant="secondary")
@@ -3399,16 +3828,21 @@ def create_demo():
                                 analysis_report = gr.Textbox(label="分析报告", interactive=False, lines=18)
                             with gr.Group(visible=False) as layout_transform_panel:
                                 gr.Markdown("### 修改变形版图")
+                                if LayoutTransformEditor is not None:
+                                    layout_editor = LayoutTransformEditor(value=_layout_editor_empty(), label="\u7248\u56fe\u4ea4\u4e92\u7f16\u8f91\u5668", show_label=False, height=520, elem_id="layout_transform_editor")
+                                else:
+                                    gr.Markdown(f"版图 Canvas 编辑器组件不可用；仍可使用数值控件。错误：{_layout_editor_import_error}")
+                                    layout_editor = gr.JSON(value=_layout_editor_empty(), label="layout transform payload", visible=False)
                                 layout_enabled = gr.Checkbox(value=False, label="显示/启用版图 overlay")
                                 with gr.Row():
-                                    layout_tx = gr.Number(value=0.0, label="tx")
-                                    layout_ty = gr.Number(value=0.0, label="ty")
+                                    layout_tx = gr.Number(value=0.0, label="水平偏移 tx")
+                                    layout_ty = gr.Number(value=0.0, label="垂直偏移 ty")
                                 with gr.Row():
-                                    layout_scale = gr.Slider(minimum=0.1, maximum=20.0, value=1.0, step=0.01, label="scale")
-                                    layout_rotation = gr.Slider(minimum=-180.0, maximum=180.0, value=0.0, step=1.0, label="rotation")
-                                layout_alpha = gr.Slider(minimum=0.0, maximum=1.0, value=0.35, step=0.05, label="alpha")
+                                    layout_scale = gr.Slider(minimum=0.1, maximum=20.0, value=1.0, step=0.01, label="缩放 scale")
+                                    layout_rotation = gr.Slider(minimum=-180.0, maximum=180.0, value=0.0, step=1.0, label="旋转 rotation")
+                                layout_alpha = gr.Slider(minimum=0.0, maximum=1.0, value=0.35, step=0.05, label="透明度 alpha")
                                 with gr.Row():
-                                    reset_layout_btn = gr.Button("Reset", variant="secondary")
+                                    reset_layout_btn = gr.Button("重置", variant="secondary")
                                     update_layout_preview_btn = gr.Button("更新预览", variant="primary")
                                 create_from_layout_btn = gr.Button("用版图创建实例", variant="primary")
                                 layout_pvs_info = gr.Textbox(label="版图提示状态", lines=5, interactive=False)
@@ -3472,8 +3906,8 @@ def create_demo():
 
             run_layout_mask_btn.click(
                 fn=_run_layout_mask_page,
-                inputs=[layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode],
-                outputs=[layout_state, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
+                inputs=[session_state, image_state, layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode],
+                outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
             )
             save_layout_mask_btn.click(
@@ -3484,49 +3918,55 @@ def create_demo():
             )
             clear_layout_mask_btn.click(
                 fn=_clear_current_layout_mask,
-                inputs=[layout_state],
-                outputs=[layout_state, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
             )
 
             common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
             use_current_layout_btn.click(
                 fn=_use_current_layout_mask,
-                inputs=[layout_state],
-                outputs=[layout_state, layout_pvs_info],
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_pvs_info],
                 concurrency_limit=1,
             )
             load_layout_binary_btn.click(
                 fn=_load_layout_binary_mask_png,
-                inputs=[layout_binary_upload, layout_region_mode],
-                outputs=[layout_state, layout_pvs_info],
+                inputs=[session_state, image_state, layout_binary_upload, layout_region_mode],
+                outputs=[layout_state, layout_editor, layout_pvs_info],
                 concurrency_limit=1,
             )
             update_layout_preview_btn.click(
                 fn=_update_layout_preview,
-                inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha],
-                outputs=[layout_state, image_upload, layout_pvs_info],
+                inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor],
+                outputs=[layout_state, image_upload, layout_editor, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
+                concurrency_limit=1,
+            )
+            layout_editor.change(
+                fn=_sync_layout_controls_from_editor,
+                inputs=[layout_state, layout_editor],
+                outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
                 concurrency_limit=1,
             )
             reset_layout_btn.click(
                 fn=_reset_layout_controls,
-                inputs=[layout_state],
-                outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_pvs_info],
                 concurrency_limit=1,
             )
             create_from_layout_btn.click(
                 fn=_create_pvs_from_layout_mask,
-                inputs=[image_state, pcs_state, pvs_state, mode, layout_state],
-                outputs=[pvs_state, layout_pvs_info, *common],
+                inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor],
+                outputs=[pvs_state, layout_state, layout_editor, layout_pvs_info, *common],
                 show_progress_on=[result_image],
                 concurrency_limit=1,
             )
 
-            image_upload.upload(fn=_init_workspace, inputs=[image_upload, mode], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file], concurrency_limit=1)
+            image_upload.upload(fn=_init_workspace_with_layout_editor, inputs=[image_upload, mode, session_state, layout_state], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file, layout_editor], concurrency_limit=1)
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode, inputs=[mode, image_state, pcs_state, pvs_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
+            mode.change(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, *common, layout_editor], concurrency_limit=1)
             click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
             delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
