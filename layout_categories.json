@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "categories": [
+    "metal",
+    "via",
+    "contact",
+    "poly",
+    "diffusion",
+    "other"
+  ]
+}
