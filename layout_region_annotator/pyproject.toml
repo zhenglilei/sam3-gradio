@@ -1,0 +1,27 @@
+[build-system]
+requires = [
+  "hatchling",
+  "hatch-requirements-txt",
+  "hatch-fancy-pypi-readme>=22.5.0",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "gradio_layout_region_annotator"
+version = "0.0.1"
+description = "Gradio freehand Region annotator for source layout masks"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.8"
+authors = [{ name = "Zhengqiyuan SAM3 Demo" }]
+keywords = ["gradio-custom-component", "layout-mask", "lasso", "region-annotation"]
+dependencies = ["gradio>=6.14,<7"]
+
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
+[tool.hatch.build]
+artifacts = ["/backend/gradio_layout_region_annotator/templates", "*.pyi"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["/backend/gradio_layout_region_annotator"]
