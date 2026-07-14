@@ -26,6 +26,7 @@ runtime_video_dir = runtime_dir / "videos"
 runtime_export_dir = runtime_dir / "exports"
 runtime_feedback_dir = runtime_dir / "feedback"
 runtime_layout_dir = runtime_dir / "layout_masks"
+runtime_layout_region_dir = runtime_dir / "layout_regions"
 runtime_log_dir = runtime_dir / "logs"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
 ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
@@ -55,6 +56,7 @@ for path in (
     runtime_feedback_dir,
     runtime_feedback_dir / "samples",
     runtime_layout_dir,
+    runtime_layout_region_dir,
     runtime_log_dir,
     current_dir / ".gradio",
     qiyuan_cache_dir,
@@ -76,6 +78,9 @@ sys.path.insert(0, str(current_dir))
 component_backend_dir = current_dir / 'layout_transform_editor' / 'backend'
 if component_backend_dir.exists():
     sys.path.insert(0, str(component_backend_dir))
+region_component_backend_dir = current_dir / "layout_region_annotator" / "backend"
+if region_component_backend_dir.exists():
+    sys.path.insert(0, str(region_component_backend_dir))
 
 import numpy as np
 import torch
@@ -83,6 +88,7 @@ import gradio as gr
 from PIL import Image
 import cv2
 import layout_transform_utils as _layout_tx
+import layout_region_utils as _layout_regions
 
 try:
     from gradio_layout_transform_editor import LayoutTransformEditor
@@ -91,6 +97,14 @@ except Exception as exc:
     _layout_editor_import_error = exc
 else:
     _layout_editor_import_error = None
+
+try:
+    from gradio_layout_region_annotator import LayoutRegionAnnotator
+except Exception as exc:
+    LayoutRegionAnnotator = None
+    _layout_region_annotator_import_error = exc
+else:
+    _layout_region_annotator_import_error = None
 
 try:
     from scripts.layout_image_to_mask import extract_layout_mask as _layout_extract_mask
@@ -1538,6 +1552,11 @@ _FEEDBACK_WRITE_LOCK = _sam3_threading.Lock()
 _WORKSPACE_CACHE = {}
 _LAYOUT_CACHE = {}
 _LAYOUT_CACHE_LOCK = _sam3_threading.RLock()
+_LAYOUT_REGION_STORE = _layout_regions.LayoutRegionStore(
+    layout_masks_root=runtime_layout_dir,
+    layout_regions_root=runtime_layout_region_dir,
+    categories_path=current_dir / "layout_categories.json",
+)
 
 
 def _clear_workspace_cache():
@@ -3203,6 +3222,479 @@ def _layout_mask_to_editor_image(mask):
     return Image.fromarray(preview, mode="L").convert("RGB")
 
 
+def _layout_region_png_data_url(image):
+    if image is None:
+        return ""
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return "data:image/png;base64," + _sam3_base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _new_layout_region_state():
+    return {
+        "session_id": None,
+        "layout_id": None,
+        "source_mask_hash": None,
+        "regions_revision": 0,
+        "next_region_id": 1,
+        "selected_region_id": None,
+    }
+
+
+def _layout_region_state_from_document(document, selected_region_id=None):
+    active_ids = {int(region["region_id"]) for region in _layout_regions.active_regions(document)}
+    selected = int(selected_region_id) if selected_region_id not in (None, "") else None
+    if selected not in active_ids:
+        selected = None
+    return {
+        "session_id": document.get("session_id"),
+        "layout_id": document.get("layout_id"),
+        "source_mask_hash": document.get("source_mask_hash"),
+        "regions_revision": int(document.get("regions_revision") or 0),
+        "next_region_id": int(document.get("next_region_id") or 1),
+        "selected_region_id": selected,
+    }
+
+
+def _layout_region_editor_empty(status="请先生成版图 binary mask"):
+    return {
+        "server_view": {
+            "enabled": False,
+            "source_image": "",
+            "source_mask_image": "",
+            "saved_region_overlay_image": "",
+            "draft_region_overlay_image": "",
+            "natural_width": 0,
+            "natural_height": 0,
+            "regions_revision": 0,
+            "selected_region_id": None,
+            "regions": [],
+            "status": status,
+        },
+        "client_intent": {
+            "tool_mode": "browse",
+            "lasso_polygon": [],
+            "expected_regions_revision": 0,
+            "session_id": "",
+            "layout_id": "",
+            "source_mask_hash": "",
+        },
+    }
+
+
+def _layout_region_identity(layout_state):
+    if not isinstance(layout_state, dict):
+        raise _layout_regions.RegionValidationError("layout state is missing")
+    session_id = _layout_regions.safe_path_component(layout_state.get("session_id"), "session_id")
+    layout_id = _layout_regions.safe_path_component(layout_state.get("layout_id"), "layout_id")
+    source_mask_hash = str(layout_state.get("source_mask_pixel_sha256") or "")
+    if not source_mask_hash:
+        raise _layout_regions.RegionValidationError("layout state source mask hash is missing")
+    return session_id, layout_id, source_mask_hash
+
+
+def _layout_region_client_intent(payload):
+    raw = payload if isinstance(payload, dict) else {}
+    intent = raw.get("client_intent") if isinstance(raw.get("client_intent"), dict) else raw
+    tool_mode = intent.get("tool_mode") if intent.get("tool_mode") in {"browse", "lasso"} else "browse"
+    polygon = intent.get("lasso_polygon") if isinstance(intent.get("lasso_polygon"), list) else []
+    revision = intent.get("expected_regions_revision")
+    if isinstance(revision, bool) or not isinstance(revision, int):
+        revision = None
+    return {
+        "tool_mode": tool_mode,
+        "lasso_polygon": polygon,
+        "expected_regions_revision": revision,
+        "session_id": str(intent.get("session_id") or ""),
+        "layout_id": str(intent.get("layout_id") or ""),
+        "source_mask_hash": str(intent.get("source_mask_hash") or ""),
+    }
+
+
+def _validate_layout_region_intent(layout_state, intent, *, require_lasso=False):
+    session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+    for field, value in {
+        "session_id": session_id,
+        "layout_id": layout_id,
+        "source_mask_hash": source_mask_hash,
+    }.items():
+        if intent.get(field) != value:
+            raise _layout_regions.RegionValidationError(f"Region request {field} does not match current layout")
+    if intent.get("expected_regions_revision") is None:
+        raise _layout_regions.RegionValidationError("Region request revision is missing")
+    if require_lasso and intent.get("tool_mode") != "lasso":
+        raise _layout_regions.RegionValidationError("请切换到套索选择工具")
+    return session_id, layout_id, source_mask_hash
+
+
+def _layout_region_source_image(session_id, layout_id, source_mask):
+    source_path = runtime_layout_dir / session_id / layout_id / "source_image.png"
+    if source_path.exists():
+        with Image.open(source_path) as image:
+            return image.convert("RGB").copy()
+    return _layout_mask_to_preview(source_mask)
+
+
+def _layout_region_summaries(document):
+    return [
+        {
+            "region_id": int(region["region_id"]),
+            "class_label": str(region.get("class_label") or ""),
+            "name": str(region.get("name") or ""),
+            "area": int(region.get("area") or 0),
+        }
+        for region in _layout_regions.active_regions(document)
+    ]
+
+
+def _layout_region_choice_update(document, selected_region_id=None):
+    choices = []
+    active_ids = set()
+    for region in _layout_regions.active_regions(document):
+        region_id = int(region["region_id"])
+        active_ids.add(region_id)
+        label = f"R{region_id} {region.get('class_label') or ''}"
+        if region.get("name"):
+            label += f" | {region['name']}"
+        label += f" | area={int(region.get('area') or 0)}"
+        choices.append((label, region_id))
+    selected = int(selected_region_id) if selected_region_id not in (None, "") else None
+    if selected not in active_ids:
+        selected = None
+    return gr.update(choices=choices, value=selected)
+
+
+def _layout_region_category_update(value=None):
+    categories = _layout_regions.load_layout_categories(current_dir / "layout_categories.json")
+    return gr.update(choices=categories, value=value if value in categories else categories[0])
+
+
+def _layout_region_editor_payload(
+    layout_state,
+    document,
+    source_mask,
+    *,
+    status,
+    selected_region_id=None,
+    lasso_polygon=None,
+    draft_region_mask=None,
+):
+    session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+    source_image = _layout_region_source_image(session_id, layout_id, source_mask)
+    saved_overlay = _layout_regions.render_saved_region_overlay(
+        document.get("regions") or [], source_mask.shape, selected_region_id=selected_region_id
+    )
+    draft_overlay = (
+        _layout_regions.render_draft_region_overlay(draft_region_mask)
+        if draft_region_mask is not None
+        else None
+    )
+    return {
+        "server_view": {
+            "enabled": True,
+            "source_image": _data_url(source_image),
+            "source_mask_image": _data_url(_layout_mask_to_editor_image(source_mask)),
+            "saved_region_overlay_image": _layout_region_png_data_url(saved_overlay),
+            "draft_region_overlay_image": _layout_region_png_data_url(draft_overlay),
+            "natural_width": int(source_mask.shape[1]),
+            "natural_height": int(source_mask.shape[0]),
+            "regions_revision": int(document.get("regions_revision") or 0),
+            "selected_region_id": selected_region_id,
+            "regions": _layout_region_summaries(document),
+            "status": status,
+        },
+        "client_intent": {
+            "tool_mode": "lasso",
+            "lasso_polygon": copy.deepcopy(lasso_polygon or []),
+            "expected_regions_revision": int(document.get("regions_revision") or 0),
+            "session_id": session_id,
+            "layout_id": layout_id,
+            "source_mask_hash": source_mask_hash,
+        },
+    }
+
+
+def _load_layout_region_context(layout_state):
+    try:
+        session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+        document, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
+        active = _layout_regions.active_regions(document)
+        selected = int(active[0]["region_id"]) if active else None
+        status = f"Region 标注器已加载：active={len(active)}, revision={document['regions_revision']}"
+        return (
+            _layout_region_state_from_document(document, selected),
+            _layout_region_editor_payload(
+                layout_state, document, source_mask, status=status, selected_region_id=selected
+            ),
+            _layout_region_category_update(),
+            "",
+            _layout_region_choice_update(document, selected),
+            gr.update(interactive=False),
+            gr.update(interactive=selected is not None),
+            status,
+        )
+    except Exception as exc:
+        status = f"Region 标注器加载失败：{exc}"
+        try:
+            category_update = _layout_region_category_update()
+        except Exception:
+            category_update = gr.update(choices=[], value=None)
+        return (
+            _new_layout_region_state(),
+            _layout_region_editor_empty(status),
+            category_update,
+            "",
+            gr.update(choices=[], value=None),
+            gr.update(interactive=False),
+            gr.update(interactive=False),
+            status,
+        )
+
+
+def _clear_layout_region_context(_layout_state):
+    status = "当前版图 Region UI 已清空；磁盘 regions.json 未删除"
+    try:
+        category_update = _layout_region_category_update()
+    except Exception:
+        category_update = gr.update(choices=[], value=None)
+    return (
+        _new_layout_region_state(),
+        _layout_region_editor_empty(status),
+        category_update,
+        "",
+        gr.update(choices=[], value=None),
+        gr.update(interactive=False),
+        gr.update(interactive=False),
+        status,
+    )
+
+
+def _preview_layout_region(layout_state, region_state, editor_payload):
+    intent = _layout_region_client_intent(editor_payload)
+    selected = (region_state or {}).get("selected_region_id") if isinstance(region_state, dict) else None
+    try:
+        session_id, layout_id, source_mask_hash = _validate_layout_region_intent(
+            layout_state, intent, require_lasso=True
+        )
+        region_mask, document = _LAYOUT_REGION_STORE.preview_region(
+            session_id=session_id,
+            layout_id=layout_id,
+            source_mask_hash=source_mask_hash,
+            expected_revision=int(intent["expected_regions_revision"]),
+            lasso_polygon=intent["lasso_polygon"],
+        )
+        _, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
+        status = f"Draft 预览完成：area={int(region_mask.sum())}；选择类别后点击保存区域"
+        return (
+            _layout_region_state_from_document(document, selected),
+            _layout_region_editor_payload(
+                layout_state,
+                document,
+                source_mask,
+                status=status,
+                selected_region_id=selected,
+                lasso_polygon=intent["lasso_polygon"],
+                draft_region_mask=region_mask,
+            ),
+            gr.update(interactive=True),
+            status,
+        )
+    except Exception as exc:
+        status = f"Draft 预览失败：{exc}"
+        try:
+            session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+            document, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
+            state = _layout_region_state_from_document(document, selected)
+            editor = _layout_region_editor_payload(
+                layout_state,
+                document,
+                source_mask,
+                status=status,
+                selected_region_id=state.get("selected_region_id"),
+            )
+        except Exception:
+            state = _new_layout_region_state()
+            editor = _layout_region_editor_empty(status)
+        return state, editor, gr.update(interactive=False), status
+
+
+def _select_layout_region(layout_state, region_state, selected_region_id):
+    try:
+        session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+        document, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
+        selected = int(selected_region_id) if selected_region_id not in (None, "") else None
+        state = _layout_region_state_from_document(document, selected)
+        selected = state.get("selected_region_id")
+        status = f"已选择 R{selected}" if selected is not None else "未选择活动 Region"
+        return (
+            state,
+            _layout_region_editor_payload(
+                layout_state, document, source_mask, status=status, selected_region_id=selected
+            ),
+            gr.update(interactive=False),
+            gr.update(interactive=selected is not None),
+            status,
+        )
+    except Exception as exc:
+        status = f"选择 Region 失败：{exc}"
+        return (
+            region_state or _new_layout_region_state(),
+            _layout_region_editor_empty(status),
+            gr.update(interactive=False),
+            gr.update(interactive=False),
+            status,
+        )
+
+
+def _layout_region_latest_values(layout_state, selected, status, intent=None, keep_draft=False):
+    session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+    document, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
+    state = _layout_region_state_from_document(document, selected)
+    draft_mask = None
+    polygon = None
+    if (
+        keep_draft
+        and isinstance(intent, dict)
+        and intent.get("expected_regions_revision") == document.get("regions_revision")
+        and intent.get("lasso_polygon")
+    ):
+        draft_mask = _layout_regions.rasterize_region_mask(source_mask, intent["lasso_polygon"])
+        _layout_regions.mask_metadata(draft_mask)
+        polygon = intent["lasso_polygon"]
+    editor = _layout_region_editor_payload(
+        layout_state,
+        document,
+        source_mask,
+        status=status,
+        selected_region_id=state.get("selected_region_id"),
+        lasso_polygon=polygon,
+        draft_region_mask=draft_mask,
+    )
+    return (
+        state,
+        editor,
+        _layout_region_choice_update(document, state.get("selected_region_id")),
+        gr.update(interactive=draft_mask is not None),
+        gr.update(interactive=state.get("selected_region_id") is not None),
+    )
+
+
+def _save_layout_region(layout_state, region_state, editor_payload, class_label, name):
+    intent = _layout_region_client_intent(editor_payload)
+    previous_selected = (region_state or {}).get("selected_region_id") if isinstance(region_state, dict) else None
+    try:
+        session_id, layout_id, source_mask_hash = _validate_layout_region_intent(
+            layout_state, intent, require_lasso=True
+        )
+        document, record = _LAYOUT_REGION_STORE.save_region(
+            session_id=session_id,
+            layout_id=layout_id,
+            source_mask_hash=source_mask_hash,
+            expected_revision=int(intent["expected_regions_revision"]),
+            lasso_polygon=intent["lasso_polygon"],
+            class_label=class_label,
+            name=name,
+        )
+        _, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
+        selected = int(record["region_id"])
+        status = f"已保存 R{selected} {record['class_label']}"
+        if record.get("name"):
+            status += f" | {record['name']}"
+        status += f" | area={record['area']}"
+        return (
+            _layout_region_state_from_document(document, selected),
+            _layout_region_editor_payload(
+                layout_state, document, source_mask, status=status, selected_region_id=selected
+            ),
+            _layout_region_category_update(record["class_label"]),
+            "",
+            _layout_region_choice_update(document, selected),
+            gr.update(interactive=False),
+            gr.update(interactive=True),
+            status,
+        )
+    except Exception as exc:
+        status = f"保存 Region 失败：{exc}"
+        try:
+            state, editor, choices, save_update, delete_update = _layout_region_latest_values(
+                layout_state, previous_selected, status, intent=intent, keep_draft=True
+            )
+        except Exception:
+            state = _new_layout_region_state()
+            editor = _layout_region_editor_empty(status)
+            choices = gr.update(choices=[], value=None)
+            save_update = gr.update(interactive=False)
+            delete_update = gr.update(interactive=False)
+        try:
+            category_update = _layout_region_category_update(class_label)
+        except Exception:
+            category_update = gr.update(choices=[], value=None)
+        return (
+            state,
+            editor,
+            category_update,
+            gr.update(),
+            choices,
+            save_update,
+            delete_update,
+            status,
+        )
+
+
+def _delete_layout_region(layout_state, region_state, editor_payload, selected_region_id):
+    intent = _layout_region_client_intent(editor_payload)
+    previous_selected = (region_state or {}).get("selected_region_id") if isinstance(region_state, dict) else None
+    try:
+        session_id, layout_id, source_mask_hash = _validate_layout_region_intent(layout_state, intent)
+        if selected_region_id in (None, ""):
+            raise _layout_regions.RegionValidationError("请先选择活动 Region")
+        document, deleted = _LAYOUT_REGION_STORE.delete_region(
+            session_id=session_id,
+            layout_id=layout_id,
+            source_mask_hash=source_mask_hash,
+            expected_revision=int(intent["expected_regions_revision"]),
+            region_id=int(selected_region_id),
+        )
+        _, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
+        active = _layout_regions.active_regions(document)
+        selected = int(active[0]["region_id"]) if active else None
+        status = f"已软删除 R{deleted['region_id']}；binary mask 与 Region RLE 历史均保留"
+        return (
+            _layout_region_state_from_document(document, selected),
+            _layout_region_editor_payload(
+                layout_state, document, source_mask, status=status, selected_region_id=selected
+            ),
+            gr.update(),
+            gr.update(),
+            _layout_region_choice_update(document, selected),
+            gr.update(interactive=False),
+            gr.update(interactive=selected is not None),
+            status,
+        )
+    except Exception as exc:
+        status = f"软删除 Region 失败：{exc}"
+        try:
+            state, editor, choices, save_update, delete_update = _layout_region_latest_values(
+                layout_state, previous_selected, status
+            )
+        except Exception:
+            state = _new_layout_region_state()
+            editor = _layout_region_editor_empty(status)
+            choices = gr.update(choices=[], value=None)
+            save_update = gr.update(interactive=False)
+            delete_update = gr.update(interactive=False)
+        return (
+            state,
+            editor,
+            gr.update(),
+            gr.update(),
+            choices,
+            save_update,
+            delete_update,
+            status,
+        )
+
+
 def _layout_editor_empty(image_state=None, status="请先加载或生成版图 mask"):
     base_url = ""
     target_width = 0
@@ -3749,6 +4241,7 @@ def create_demo():
             pvs_state = gr.State(_new_pvs_state())
             prompt_state = gr.State(_new_prompt_state())
             layout_state = gr.State(_new_layout_state())
+            layout_region_state = gr.State(_new_layout_region_state())
             bbox_payload = gr.Textbox(label="bbox payload", elem_id="bbox_payload", elem_classes="hidden-payload")
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
@@ -3935,13 +4428,58 @@ def create_demo():
                             layout_mask_preview = gr.Image(type="pil", label="binary mask 预览", show_label=False)
                             gr.Markdown("#### contour overlay")
                             layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=False)
+                            gr.Markdown("### Region Annotation Layer")
+                            gr.Markdown("黄色表示未保存 Draft；绿色表示已保存 Region。Region 标注不会进入 PCS/PVS prompt。")
+                            if LayoutRegionAnnotator is not None:
+                                layout_region_annotator = LayoutRegionAnnotator(
+                                    value=_layout_region_editor_empty(),
+                                    label="版图 Region 套索标注器",
+                                    show_label=False,
+                                    height=520,
+                                    elem_id="layout_region_annotator",
+                                )
+                            else:
+                                gr.Markdown(f"Region 套索组件不可用。错误：{_layout_region_annotator_import_error}")
+                                layout_region_annotator = gr.JSON(
+                                    value=_layout_region_editor_empty(),
+                                    label="layout Region payload",
+                                    visible=False,
+                                )
+                            with gr.Row():
+                                layout_region_category = gr.Dropdown(
+                                    choices=_layout_regions.load_layout_categories(current_dir / "layout_categories.json"),
+                                    value=_layout_regions.load_layout_categories(current_dir / "layout_categories.json")[0],
+                                    label="类别（必填）",
+                                    allow_custom_value=False,
+                                    interactive=True,
+                                )
+                                layout_region_name = gr.Textbox(
+                                    label="区域/模块名称（可选）",
+                                    placeholder="例如：M1_power",
+                                    max_lines=1,
+                                )
+                            save_layout_region_btn = gr.Button("保存当前 Draft Region", variant="primary", interactive=False)
+                            layout_region_selector = gr.Dropdown(
+                                choices=[],
+                                value=None,
+                                label="活动 Region",
+                                interactive=True,
+                            )
+                            delete_layout_region_btn = gr.Button("软删除选中 Region", variant="secondary", interactive=False)
+                            layout_region_status = gr.Textbox(label="Region 状态", lines=4, interactive=False)
                 with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
                     gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
 
-            run_layout_mask_btn.click(
+            run_layout_mask_event = run_layout_mask_btn.click(
                 fn=_run_layout_mask_page,
                 inputs=[session_state, image_state, layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode],
                 outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
+                concurrency_limit=1,
+            )
+            run_layout_mask_event.then(
+                fn=_load_layout_region_context,
+                inputs=[layout_state],
+                outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
                 concurrency_limit=1,
             )
             save_layout_mask_btn.click(
@@ -3950,10 +4488,40 @@ def create_demo():
                 outputs=[layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
             )
-            clear_layout_mask_btn.click(
+            clear_layout_mask_event = clear_layout_mask_btn.click(
                 fn=_clear_current_layout_mask,
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
+                concurrency_limit=1,
+            )
+            clear_layout_mask_event.then(
+                fn=_clear_layout_region_context,
+                inputs=[layout_state],
+                outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+            layout_region_annotator.input(
+                fn=_preview_layout_region,
+                inputs=[layout_state, layout_region_state, layout_region_annotator],
+                outputs=[layout_region_state, layout_region_annotator, save_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+            save_layout_region_btn.click(
+                fn=_save_layout_region,
+                inputs=[layout_state, layout_region_state, layout_region_annotator, layout_region_category, layout_region_name],
+                outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+            layout_region_selector.input(
+                fn=_select_layout_region,
+                inputs=[layout_state, layout_region_state, layout_region_selector],
+                outputs=[layout_region_state, layout_region_annotator, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+            delete_layout_region_btn.click(
+                fn=_delete_layout_region,
+                inputs=[layout_state, layout_region_state, layout_region_annotator, layout_region_selector],
+                outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
                 concurrency_limit=1,
             )
 

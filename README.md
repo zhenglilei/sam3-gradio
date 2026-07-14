@@ -9,7 +9,6 @@
 [功能概览](#功能概览--features) | [安装启动](#安装启动--setup) | [UI 使用说明](#ui-使用说明--ui-guide) | [导出与反馈](#导出与反馈--export-and-feedback)
 
 </div>
-
 ---
 
 ## 项目简介 / Overview
@@ -93,7 +92,16 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 - `min component area`：过滤小连通域。
 - `区域模式`：选择保留区域策略。
 
-右侧只显示 `binary mask 预览` 和 `contour overlay`。图片内部不再画说明文字，说明用 Markdown 标题显示。
+右侧先显示 `binary mask 预览` 和 `contour overlay`，其下方是独立的 `Region Annotation Layer`：
+
+1. 切换到 `套索选择`，按住鼠标左键描出区域，松开后生成黄色 `Draft` 预览。
+2. 选择必填类别；`区域/模块名称` 可留空。
+3. 点击 `保存当前 Draft Region` 后，服务端会从原始套索和 source binary mask 重新计算交集，Draft 变为绿色 Saved Region。
+4. 活动 Region 可在下拉列表中选择并软删除；软删除保留历史 RLE 和 metadata，但不再显示在列表或 overlay。
+
+类别来自版本化配置 `layout_categories.json`。配置只约束新建 Region；已经保存的历史类别即使不再位于当前配置中，仍可恢复、显示和软删除。Region 的压缩 COCO RLE 是唯一权威几何，持久化到 `.runtime/layout_regions/<session>/<layout_id>/regions.json`。
+
+Region 标注层只属于 `版图截图转掩码` Tab，当前不会显示在 PCS/PVS 页面，也不会作为 SAM3 或 PVS prompt。
 
 ---
 
@@ -329,12 +337,16 @@ masks/*.png
 
 ```bash
 cd /data/zhengqiyuan/sam3-gradio/.runtime/codex-worktrees/sam3-pvs-workspace
-/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m py_compile sam3_gradio_demo.py layout_transform_utils.py layout_transform_editor/backend/gradio_layout_transform_editor/layouttransformeditor.py
+/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m py_compile sam3_gradio_demo.py layout_transform_utils.py layout_region_utils.py layout_transform_editor/backend/gradio_layout_transform_editor/layouttransformeditor.py layout_region_annotator/backend/gradio_layout_region_annotator/layoutregionannotator.py
 /data/zhengqiyuan/miniforge3/envs/sam3/bin/python tests/test_layout_transform_utils.py
+/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m unittest tests.test_layout_region_utils tests.test_layout_region_annotator_component tests.test_layout_region_callbacks -v
 cd layout_transform_editor
 /data/zhengqiyuan/miniforge3/envs/sam3/bin/gradio cc build --python-path /data/zhengqiyuan/miniforge3/envs/sam3/bin/python --no-generate-docs
 cd ..
-git diff --check -- sam3_gradio_demo.py README.md DEMO_PROGRESS_LOG.md layout_transform_utils.py layout_transform_editor tests
+cd layout_region_annotator
+/data/zhengqiyuan/miniforge3/envs/sam3/bin/gradio cc build --python-path /data/zhengqiyuan/miniforge3/envs/sam3/bin/python --no-generate-docs
+cd ..
+git diff --check -- sam3_gradio_demo.py README.md layout_region_utils.py layout_region_annotator tests
 git status --short --branch
 ```
 
@@ -348,6 +360,12 @@ DEMO_PROGRESS_LOG.md
 layout_transform_utils.py
 layout_transform_editor/
 tests/test_layout_transform_utils.py
+layout_region_utils.py
+layout_categories.json
+layout_region_annotator/
+tests/test_layout_region_utils.py
+tests/test_layout_region_annotator_component.py
+tests/test_layout_region_callbacks.py
 ```
 
 不应修改 SAM3 官方模型源码。
@@ -357,6 +375,7 @@ tests/test_layout_transform_utils.py
 ## 当前限制 / Known Limits
 
 - 版图 mask 模式当前只保留“用版图创建实例”，不提供“用版图精修当前实例”。
+- 版图 Region 当前只用于结构标注与持久化，尚未接入 PVS prompt 或模型推理。
 - Feedback 用于 RL / 偏好数据收集，不等同于正式质检系统。
 - Gradio State 暂存实例和 mask，长时间多用户并发需要迁移到 server-side cache。
 - 高分辨率图像和大量实例会增加显存与内存压力。

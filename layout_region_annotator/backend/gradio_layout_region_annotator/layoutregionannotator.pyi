@@ -10,7 +10,7 @@ from gradio.i18n import I18nData
 class LayoutRegionAnnotator(Component):
     """Canvas annotator whose browser input is restricted to client intent fields."""
 
-    EVENTS = [Events.change]
+    EVENTS = [Events.input]
     data_model = None
 
     def __init__(
@@ -115,7 +115,7 @@ class LayoutRegionAnnotator(Component):
         from gradio.components.base import Component
 
 
-    def change(self,
+    def input(self,
         fn: Callable[..., Any] | None = None,
         inputs: Block | Sequence[Block] | set[Block] | None = None,
         outputs: Block | Sequence[Block] | None = None,

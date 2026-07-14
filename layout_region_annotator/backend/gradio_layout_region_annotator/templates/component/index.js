@@ -6140,7 +6140,7 @@ function ul(e, t) {
         })
       }),
       !0
-    ), n.props.value = h(E), b = JSON.stringify(h(E)), x && n.dispatch("change");
+    ), n.props.value = h(E), b = JSON.stringify(h(E)), x && n.dispatch("input");
   }
   function Ve(x) {
     h(T) && ee("绘制已取消"), w(m, x, !0), w(y, x === "lasso" ? "按住鼠标左键拖动套索" : "浏览模式：Canvas 只读", !0), Ee(!1), ae();
