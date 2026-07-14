@@ -308,6 +308,20 @@ def active_regions(document: dict[str, Any]) -> list[dict[str, Any]]:
     return [region for region in document.get("regions", []) if region.get("deleted_at") is None]
 
 
+def rasterize_uncovered_region_mask(
+    source_mask: Any,
+    points: Any,
+    document: dict[str, Any],
+) -> np.ndarray:
+    region_mask = rasterize_region_mask(source_mask, points)
+    for record in active_regions(document):
+        region_mask = np.logical_and(
+            region_mask,
+            np.logical_not(decode_binary_mask(record.get("mask_rle"), region_mask.shape)),
+        )
+    return region_mask
+
+
 def append_region(
     document: dict[str, Any],
     *,
@@ -516,7 +530,7 @@ class LayoutRegionStore:
         with self._lock:
             document, source_mask = self.load_document(session_id, layout_id, source_mask_hash)
             self._check_revision(document, expected_revision)
-            region_mask = rasterize_region_mask(source_mask, lasso_polygon)
+            region_mask = rasterize_uncovered_region_mask(source_mask, lasso_polygon, document)
             mask_metadata(region_mask)
             return region_mask, document
 
@@ -534,7 +548,7 @@ class LayoutRegionStore:
         with self._lock:
             document, source_mask = self.load_document(session_id, layout_id, source_mask_hash)
             self._check_revision(document, expected_revision)
-            region_mask = rasterize_region_mask(source_mask, lasso_polygon)
+            region_mask = rasterize_uncovered_region_mask(source_mask, lasso_polygon, document)
             categories = load_layout_categories(self.categories_path)
             updated, record = append_region(
                 document,

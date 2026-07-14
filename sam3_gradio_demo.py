@@ -3558,7 +3558,11 @@ def _layout_region_latest_values(layout_state, selected, status, intent=None, ke
         and intent.get("expected_regions_revision") == document.get("regions_revision")
         and intent.get("lasso_polygon")
     ):
-        draft_mask = _layout_regions.rasterize_region_mask(source_mask, intent["lasso_polygon"])
+        draft_mask = _layout_regions.rasterize_uncovered_region_mask(
+            source_mask,
+            intent["lasso_polygon"],
+            document,
+        )
         _layout_regions.mask_metadata(draft_mask)
         polygon = intent["lasso_polygon"]
     editor = _layout_region_editor_payload(

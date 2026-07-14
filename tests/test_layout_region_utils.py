@@ -91,9 +91,25 @@ class LayoutRegionUtilsTest(unittest.TestCase):
         self.assertEqual(document["regions_revision"], 0)
 
     def test_soft_delete_preserves_record_and_ids_are_monotonic(self):
-        document, first = self._save(0, name="R1")
-        document, second = self._save(1, name="R2")
-        document, third = self._save(2, name="R3")
+        polygons = [
+            [[0, 0], [9, 0], [9, 18], [0, 18]],
+            [[10, 0], [24, 0], [24, 18], [10, 18]],
+            [[20, 18], [39, 18], [39, 31], [20, 31]],
+        ]
+        records = []
+        document = None
+        for revision, polygon in enumerate(polygons):
+            document, record = self.store.save_region(
+                session_id=self.session_id,
+                layout_id=self.layout_id,
+                source_mask_hash=self.source_hash,
+                expected_revision=revision,
+                lasso_polygon=polygon,
+                class_label="metal",
+                name=f"R{revision + 1}",
+            )
+            records.append(record)
+        first, second, third = records
         document, deleted = self.store.delete_region(
             session_id=self.session_id,
             layout_id=self.layout_id,
@@ -117,9 +133,16 @@ class LayoutRegionUtilsTest(unittest.TestCase):
         self.assertEqual(restored["regions"][0]["class_label"], "metal")
         with self.assertRaises(regions.RegionValidationError):
             self._save(1, category="metal")
-        updated, via = self._save(1, category="via")
+        self.store.delete_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=1,
+            region_id=record["region_id"],
+        )
+        updated, via = self._save(2, category="via")
         self.assertEqual(via["class_label"], "via")
-        self.assertEqual(updated["regions_revision"], 2)
+        self.assertEqual(updated["regions_revision"], 3)
 
     def test_stale_revision_and_hash_mismatch_are_rejected(self):
         self._save(0)
@@ -167,6 +190,65 @@ class LayoutRegionUtilsTest(unittest.TestCase):
             regions.render_saved_region_overlay(document["regions"], self.source_mask.shape)
         )
         self.assertEqual(int(deleted_overlay[..., 3].sum()), 0)
+
+    def test_new_regions_only_use_pixels_not_covered_by_active_regions(self):
+        left_polygon = [[0, 0], [22, 0], [22, 18], [0, 18]]
+        document, first = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=0,
+            lasso_polygon=left_polygon,
+            class_label="metal",
+            name="left",
+        )
+        first_mask = regions.decode_binary_mask(first["mask_rle"], self.source_mask.shape)
+
+        second_mask, _ = self.store.preview_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=1,
+            lasso_polygon=self._polygon(),
+        )
+        self.assertFalse(np.logical_and(first_mask, second_mask).any())
+        self.assertTrue(np.array_equal(np.logical_or(first_mask, second_mask), self.source_mask.astype(bool)))
+
+        document, second = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=1,
+            lasso_polygon=self._polygon(),
+            class_label="via",
+            name="remaining",
+        )
+        decoded_second = regions.decode_binary_mask(second["mask_rle"], self.source_mask.shape)
+        self.assertTrue(np.array_equal(decoded_second, second_mask))
+        with self.assertRaises(regions.RegionValidationError):
+            self.store.preview_region(
+                session_id=self.session_id,
+                layout_id=self.layout_id,
+                source_mask_hash=self.source_hash,
+                expected_revision=2,
+                lasso_polygon=self._polygon(),
+            )
+
+        document, _ = self.store.delete_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=2,
+            region_id=first["region_id"],
+        )
+        reclaimed_mask, _ = self.store.preview_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=3,
+            lasso_polygon=left_polygon,
+        )
+        self.assertTrue(np.array_equal(reclaimed_mask, first_mask))
 
 
 if __name__ == "__main__":

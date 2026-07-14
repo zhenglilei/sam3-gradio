@@ -99,6 +99,8 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 3. 点击 `保存当前 Draft Region` 后，服务端会从原始套索和 source binary mask 重新计算交集，Draft 变为绿色 Saved Region。
 4. 活动 Region 可在下拉列表中选择并软删除；软删除保留历史 RLE 和 metadata，但不再显示在列表或 overlay。
 
+新套索只保存尚未被活动 Region 覆盖的 source-mask 像素，已经标注的重叠部分会自动忽略。软删除后的 Region 不再占用这些像素，因此其区域可被后续新套索重新标注。
+
 类别来自版本化配置 `layout_categories.json`。配置只约束新建 Region；已经保存的历史类别即使不再位于当前配置中，仍可恢复、显示和软删除。Region 的压缩 COCO RLE 是唯一权威几何，持久化到 `.runtime/layout_regions/<session>/<layout_id>/regions.json`。
 
 Region 标注层只属于 `版图截图转掩码` Tab，当前不会显示在 PCS/PVS 页面，也不会作为 SAM3 或 PVS prompt。
