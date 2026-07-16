@@ -269,6 +269,7 @@ def validate_regions_document(
     source = np.asarray(source_mask, dtype=bool)
     normalized_regions: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
+    active_coverage = np.zeros(source.shape, dtype=bool)
     for raw in regions:
         if not isinstance(raw, dict):
             raise RegionValidationError("region record must be an object")
@@ -288,6 +289,12 @@ def validate_regions_document(
         decoded = decode_binary_mask(raw.get("mask_rle"), source.shape)
         if np.any(np.logical_and(decoded, np.logical_not(source))):
             raise RegionValidationError(f"R{region_id} is not a subset of the source mask")
+        if raw.get("deleted_at") is None:
+            if np.logical_and(decoded, active_coverage).any():
+                raise RegionValidationError(
+                    f"R{region_id} overlaps another active Region"
+                )
+            active_coverage = np.logical_or(active_coverage, decoded)
         metadata = mask_metadata(decoded)
         if not _metadata_matches(raw, metadata):
             raise RegionValidationError(f"R{region_id} derived metadata does not match its RLE")

@@ -160,6 +160,52 @@ class LayoutRegionUtilsTest(unittest.TestCase):
         with self.assertRaises(regions.RegionValidationError):
             self.store.load_document(self.session_id, self.layout_id, self.source_hash)
 
+    def test_restore_rejects_overlapping_active_regions(self):
+        document, first = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=0,
+            lasso_polygon=[[0, 0], [12, 0], [12, 18], [0, 18]],
+            class_label="metal",
+            name="first",
+        )
+        first_mask = regions.decode_binary_mask(
+            first["mask_rle"],
+            self.source_mask.shape,
+        )
+        overlapping = regions.region_record_from_mask(
+            2,
+            "via",
+            "overlap",
+            first_mask,
+        )
+        corrupted = copy.deepcopy(document)
+        corrupted["regions"].append(overlapping)
+        corrupted["regions_revision"] = 2
+        corrupted["next_region_id"] = 3
+        path = self.store.regions_path(self.session_id, self.layout_id)
+        path.write_text(json.dumps(corrupted), encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            regions.RegionValidationError,
+            "R2 overlaps another active Region",
+        ):
+            self.store.load_document(
+                self.session_id,
+                self.layout_id,
+                self.source_hash,
+            )
+
+        corrupted["regions"][0]["deleted_at"] = regions.utc_now_iso()
+        path.write_text(json.dumps(corrupted), encoding="utf-8")
+        restored, _ = self.store.load_document(
+            self.session_id,
+            self.layout_id,
+            self.source_hash,
+        )
+        self.assertEqual(len(regions.active_regions(restored)), 1)
+
     def test_atomic_replace_failure_preserves_existing_document(self):
         target = self.root / "regions.json"
         original = {"revision": 1}
