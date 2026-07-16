@@ -452,7 +452,6 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         protected = [
             "_finish_native_polygon",
             "_run_pcs",
-            "_pvs_point_prompt",
             "_sync_layout_controls_from_editor",
             "_run_layout_mask_page",
             "_clear_current_layout_mask",

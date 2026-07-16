@@ -1611,6 +1611,8 @@ _PVS_PREDICT_LOCK = _sam3_threading.Lock()
 _FEEDBACK_WRITE_LOCK = _sam3_threading.Lock()
 _WORKSPACE_CACHE = {}
 _WORKSPACE_CACHE_LOCK = _sam3_threading.RLock()
+_WORKSPACE_CACHE_MAX_ENTRIES = 4
+_WORKSPACE_CACHE_TTL_SECONDS = 3600.0
 _LAYOUT_CACHE = {}
 _LAYOUT_CACHE_LOCK = _sam3_threading.RLock()
 _LAYOUT_REGION_STORE = _layout_regions.LayoutRegionStore(
@@ -1618,6 +1620,44 @@ _LAYOUT_REGION_STORE = _layout_regions.LayoutRegionStore(
     layout_regions_root=runtime_layout_region_dir,
     categories_path=current_dir / "layout_categories.json",
 )
+
+
+def _release_workspace_memory():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _prune_workspace_cache(now=None, protected_image_id=None):
+    now = time.monotonic() if now is None else float(now)
+    protected = str(protected_image_id) if protected_image_id else None
+    removed = 0
+    expired = [
+        image_id
+        for image_id, workspace in _WORKSPACE_CACHE.items()
+        if now - float(workspace.get("last_accessed_at", now))
+        > _WORKSPACE_CACHE_TTL_SECONDS
+    ]
+    for image_id in expired:
+        removed += _WORKSPACE_CACHE.pop(image_id, None) is not None
+
+    while len(_WORKSPACE_CACHE) > _WORKSPACE_CACHE_MAX_ENTRIES:
+        candidates = [
+            (image_id, workspace)
+            for image_id, workspace in _WORKSPACE_CACHE.items()
+            if image_id != protected
+        ]
+        if not candidates:
+            break
+        oldest_id, _ = min(
+            candidates,
+            key=lambda item: (
+                float(item[1].get("last_accessed_at", now)),
+                item[0],
+            ),
+        )
+        removed += _WORKSPACE_CACHE.pop(oldest_id, None) is not None
+    return removed
 
 
 def _clear_workspace_cache(session_id=None):
@@ -1637,9 +1677,7 @@ def _clear_workspace_cache(session_id=None):
                 _WORKSPACE_CACHE.pop(image_id, None)
     if not removed:
         return
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    _release_workspace_memory()
 
 
 def _pil_image(image):
@@ -1880,8 +1918,14 @@ def _workspace(image_state):
     session_id = str(image_state.get("session_id") or "")
     if not session_id:
         raise ValueError("Image state session is missing; reload the image")
+    now = time.monotonic()
     with _WORKSPACE_CACHE_LOCK:
+        removed = _prune_workspace_cache(now, protected_image_id=image_id)
         ws = _WORKSPACE_CACHE.get(image_id)
+        if ws is not None:
+            ws["last_accessed_at"] = now
+    if removed:
+        _release_workspace_memory()
     if ws is None:
         raise ValueError("Image state expired; reload the image")
     if ws.get("session_id") != session_id:
@@ -2078,7 +2122,7 @@ def _make_inst(inst_id, source, mask, box, score, pvs_logits=None, pcs_prob=None
         "box_xyxy_px": [float(v) for v in box],
         "score": float(score),
         "pvs_lowres_logits": None if pvs_logits is None else np.asarray(pvs_logits, dtype=np.float32),
-        "pcs_fullres_prob": None if pcs_prob is None else np.asarray(pcs_prob, dtype=np.float32),
+        "pcs_fullres_prob": None if pcs_prob is None else np.asarray(pcs_prob, dtype=np.float16),
         "status": "draft",
         "prompt_history": history or [],
     }
@@ -2100,6 +2144,27 @@ def _restore(inst, snap):
     inst["box_xyxy_px"] = list(snap.get("box_xyxy_px") or [])
     inst["score"] = float(snap.get("score", 0.0))
     inst["status"] = snap.get("status", inst.get("status", "draft"))
+
+
+_MAX_PROMPT_HISTORY_ENTRIES = 64
+
+
+def _history_snapshot(inst):
+    return {
+        "box_xyxy_px": list(inst.get("box_xyxy_px") or []),
+        "score": float(inst.get("score", 0.0)),
+        "status": inst.get("status", "draft"),
+    }
+
+
+def _append_prompt_history(inst, event):
+    history = inst.setdefault("prompt_history", [])
+    history.append(event)
+    if len(history) > _MAX_PROMPT_HISTORY_ENTRIES:
+        history[:] = [
+            history[0],
+            *history[-(_MAX_PROMPT_HISTORY_ENTRIES - 1) :],
+        ]
 
 
 def _active_instances(state):
@@ -2488,7 +2553,7 @@ def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refin
     inst = pvs_state["instances"][int(active_id)]
     _pvs_progress(progress, 0.34, f"融合当前实例 logits: {combine}")
     combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode=combine)
-    before = _snapshot(inst)
+    before = _history_snapshot(inst)
     _pvs_progress(progress, 0.52, "SAM3 正在精修当前 PVS 实例", delay=0.12)
     pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
     _pvs_progress(progress, 0.84, "更新实例 mask 与 logits")
@@ -2498,8 +2563,8 @@ def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refin
     inst["box_xyxy_px"] = _mask_box(mask)
     inst["score"] = float(pred["scores"][idx])
     inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
-    after = _snapshot(inst)
-    inst.setdefault("prompt_history", []).append({"op":"positive_polygon_refine","mode":combine,"prompt":{"type":"positive_polygon","points":polygon},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
+    after = _history_snapshot(inst)
+    _append_prompt_history(inst, {"op":"positive_polygon_refine","mode":combine,"prompt":{"type":"positive_polygon","points":polygon},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
     return f"\u5df2\u7528\u591a\u8fb9\u5f62\u7cbe\u4fee PVS #{active_id}\uff0c\u878d\u5408\u65b9\u5f0f: {combine}"
 
 
@@ -2626,8 +2691,10 @@ def _init_workspace(input_image, mode, session_state=None):
     session_id = _session_id_from_state(session_state)
     image_state = {"image_id": None, "width": 0, "height": 0, "session_id": session_id, "target_image_sha256": None}
     if input_image is None:
+        _clear_workspace_cache(session_id)
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
     if image_predictor is None:
+        _clear_workspace_cache(session_id)
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
     image = _pil_image(input_image)
     image_id = uuid.uuid4().hex
@@ -2639,13 +2706,19 @@ def _init_workspace(input_image, mode, session_state=None):
         _clear_workspace_cache(session_id)
         info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5df2\u6e05\u7406\u5f53\u524d\u5de5\u4f5c\u53f0\u7f13\u5b58\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
+    now = time.monotonic()
     with _WORKSPACE_CACHE_LOCK:
         _WORKSPACE_CACHE[image_id] = {
             "image": image,
             "base_state": base_state,
             "session_id": session_id,
             "target_image_sha256": target_hash,
+            "created_at": now,
+            "last_accessed_at": now,
         }
+        removed = _prune_workspace_cache(now, protected_image_id=image_id)
+    if removed:
+        _release_workspace_memory()
     image_state = {"image_id": image_id, "width": image.width, "height": image.height, "session_id": session_id, "target_image_sha256": target_hash}
     return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
 
@@ -2833,15 +2906,15 @@ def _pvs_point_prompt(image_state, pcs_state, pvs_state, mode, point_payload, po
             pvs_state["next_instance_id"] = inst_id + 1
             info = f"Created PVS instance #{inst_id} from positive point"
         else:
-            before = _snapshot(active_inst)
+            before = _history_snapshot(active_inst)
             active_inst["mask_fullres_bool"] = mask
             active_inst["box_xyxy_px"] = _mask_box(mask)
             active_inst["score"] = float(pred["scores"][idx])
             active_inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
-            after = _snapshot(active_inst)
+            after = _history_snapshot(active_inst)
             op = "negative_point_refine" if is_negative else "positive_point_refine"
             prompt_type = "negative_point" if is_negative else "positive_point"
-            active_inst.setdefault("prompt_history", []).append({"op":op,"prompt":{"type":prompt_type,"point_xy_px":point},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
+            _append_prompt_history(active_inst, {"op":op,"prompt":{"type":prompt_type,"point_xy_px":point},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
             info = f"PVS #{active_id} refined with {prompt_type}"
         _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
     except Exception as exc:
@@ -2863,7 +2936,7 @@ def _undo_pvs(image_state, pcs_state, pvs_state, mode):
         if not items:
             raise ValueError("没有可撤销的 PVS 实例")
         inst = max(items, key=lambda item: int(item["id"]))
-        inst["status"] = "deleted"
+        pvs_state["instances"].pop(int(inst["id"]), None)
         if str(pvs_state.get("active_instance_id")) == str(inst["id"]):
             remaining = _active_instances(pvs_state)
             pvs_state["active_instance_id"] = max(remaining, key=lambda item: int(item["id"]))["id"] if remaining else None
@@ -2878,8 +2951,7 @@ def _delete_pvs(image_state, pcs_state, pvs_state, mode):
         items = _active_instances(pvs_state)
         if not items:
             raise ValueError("没有可清空的 PVS 实例")
-        for inst in items:
-            pvs_state["instances"][int(inst["id"])]["status"] = "deleted"
+        pvs_state["instances"] = {}
         pvs_state["active_instance_id"] = None
         info = f"已清空 {len(items)} 个 PVS 实例；待生成 bbox 不受影响"
     except Exception as exc:

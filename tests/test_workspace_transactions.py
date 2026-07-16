@@ -35,11 +35,14 @@ class WorkspaceTransactionsTest(unittest.TestCase):
             "session_id": session_id,
             "target_image_sha256": target_hash,
         }
+        now = demo_module.time.monotonic()
         workspace = {
             "image": image,
             "base_state": {"owner": session_id},
             "session_id": session_id,
             "target_image_sha256": target_hash,
+            "created_at": now,
+            "last_accessed_at": now,
         }
         return image_state, workspace
 
@@ -163,6 +166,122 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         self.assertEqual(pvs_state["active_instance_id"], 9)
         self.assertEqual(pvs_state["pending_bbox_records"], [])
         self.assertEqual(pvs_state["pending_boxes"], [])
+
+    def test_workspace_cache_has_lru_and_ttl_bounds(self):
+        now = demo_module.time.monotonic()
+        states = []
+        with demo_module._WORKSPACE_CACHE_LOCK:
+            for index in range(demo_module._WORKSPACE_CACHE_MAX_ENTRIES + 2):
+                state, workspace = self._workspace_entry(
+                    f"image-{index}",
+                    f"session-{index}",
+                    (index, index, index),
+                )
+                workspace["last_accessed_at"] = now - index
+                demo_module._WORKSPACE_CACHE[state["image_id"]] = workspace
+                states.append(state)
+
+        with mock.patch.object(demo_module, "_release_workspace_memory"):
+            demo_module._workspace(states[0])
+
+        with demo_module._WORKSPACE_CACHE_LOCK:
+            cache_ids = set(demo_module._WORKSPACE_CACHE)
+        self.assertEqual(
+            len(cache_ids),
+            demo_module._WORKSPACE_CACHE_MAX_ENTRIES,
+        )
+        self.assertIn("image-0", cache_ids)
+        self.assertNotIn("image-4", cache_ids)
+        self.assertNotIn("image-5", cache_ids)
+
+        expired_state, expired_workspace = self._workspace_entry(
+            "expired",
+            "expired-session",
+            (99, 99, 99),
+        )
+        expired_workspace["last_accessed_at"] = (
+            now - demo_module._WORKSPACE_CACHE_TTL_SECONDS - 1
+        )
+        with demo_module._WORKSPACE_CACHE_LOCK:
+            demo_module._WORKSPACE_CACHE["expired"] = expired_workspace
+        with mock.patch.object(demo_module, "_release_workspace_memory"):
+            demo_module._workspace(states[0])
+        with demo_module._WORKSPACE_CACHE_LOCK:
+            self.assertNotIn(expired_state["image_id"], demo_module._WORKSPACE_CACHE)
+
+    def test_prompt_history_and_pcs_probability_memory_are_bounded(self):
+        mask = np.ones((16, 16), dtype=bool)
+        instance = demo_module._make_inst(
+            1,
+            "pcs",
+            mask,
+            [0, 0, 16, 16],
+            0.9,
+            pcs_prob=np.ones((16, 16), dtype=np.float32),
+            history=[{"op": "create"}],
+        )
+        self.assertEqual(instance["pcs_fullres_prob"].dtype, np.float16)
+
+        snapshot = demo_module._history_snapshot(instance)
+        self.assertEqual(
+            set(snapshot),
+            {"box_xyxy_px", "score", "status"},
+        )
+        for index in range(100):
+            demo_module._append_prompt_history(
+                instance,
+                {
+                    "op": f"refine-{index}",
+                    "before": snapshot,
+                    "after": snapshot,
+                },
+            )
+        history = instance["prompt_history"]
+        self.assertEqual(
+            len(history),
+            demo_module._MAX_PROMPT_HISTORY_ENTRIES,
+        )
+        self.assertEqual(history[0]["op"], "create")
+        self.assertEqual(history[-1]["op"], "refine-99")
+
+    def test_undo_and_clear_release_pvs_instances(self):
+        mask = np.ones((8, 8), dtype=bool)
+        pvs_state = demo_module._new_pvs_state()
+        pvs_state["instances"] = {
+            instance_id: demo_module._make_inst(
+                instance_id,
+                "manual",
+                mask,
+                [0, 0, 8, 8],
+                0.9,
+                pvs_logits=np.ones((4, 4), dtype=np.float32),
+            )
+            for instance_id in (1, 2)
+        }
+        pvs_state["active_instance_id"] = 2
+        pvs_state["next_instance_id"] = 3
+
+        with mock.patch.object(demo_module, "_view", return_value=(None,) * 8):
+            demo_module._undo_pvs(
+                {},
+                demo_module._new_pcs_state(),
+                pvs_state,
+                demo_module.MODE_PVS,
+            )
+        self.assertEqual(list(pvs_state["instances"]), [1])
+        self.assertEqual(pvs_state["active_instance_id"], 1)
+        self.assertEqual(pvs_state["next_instance_id"], 3)
+
+        with mock.patch.object(demo_module, "_view", return_value=(None,) * 8):
+            demo_module._delete_pvs(
+                {},
+                demo_module._new_pcs_state(),
+                pvs_state,
+                demo_module.MODE_PVS,
+            )
+        self.assertEqual(pvs_state["instances"], {})
+        self.assertIsNone(pvs_state["active_instance_id"])
+        self.assertEqual(pvs_state["next_instance_id"], 3)
 
 
 if __name__ == "__main__":
