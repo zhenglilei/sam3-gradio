@@ -1610,6 +1610,7 @@ import threading as _sam3_threading
 _PVS_PREDICT_LOCK = _sam3_threading.Lock()
 _FEEDBACK_WRITE_LOCK = _sam3_threading.Lock()
 _WORKSPACE_CACHE = {}
+_WORKSPACE_CACHE_LOCK = _sam3_threading.RLock()
 _LAYOUT_CACHE = {}
 _LAYOUT_CACHE_LOCK = _sam3_threading.RLock()
 _LAYOUT_REGION_STORE = _layout_regions.LayoutRegionStore(
@@ -1619,8 +1620,23 @@ _LAYOUT_REGION_STORE = _layout_regions.LayoutRegionStore(
 )
 
 
-def _clear_workspace_cache():
-    _WORKSPACE_CACHE.clear()
+def _clear_workspace_cache(session_id=None):
+    with _WORKSPACE_CACHE_LOCK:
+        if session_id is None:
+            removed = bool(_WORKSPACE_CACHE)
+            _WORKSPACE_CACHE.clear()
+        else:
+            session_id = str(session_id)
+            keys = [
+                image_id
+                for image_id, workspace in _WORKSPACE_CACHE.items()
+                if workspace.get("session_id") == session_id
+            ]
+            removed = bool(keys)
+            for image_id in keys:
+                _WORKSPACE_CACHE.pop(image_id, None)
+    if not removed:
+        return
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -1860,9 +1876,19 @@ def _clear_layout_cache(layout_state=None):
 def _workspace(image_state):
     if not image_state or not image_state.get("image_id"):
         raise ValueError("Load an image first")
-    ws = _WORKSPACE_CACHE.get(image_state["image_id"])
+    image_id = str(image_state["image_id"])
+    session_id = str(image_state.get("session_id") or "")
+    if not session_id:
+        raise ValueError("Image state session is missing; reload the image")
+    with _WORKSPACE_CACHE_LOCK:
+        ws = _WORKSPACE_CACHE.get(image_id)
     if ws is None:
         raise ValueError("Image state expired; reload the image")
+    if ws.get("session_id") != session_id:
+        raise ValueError("Image state does not belong to the current session")
+    expected_hash = str(image_state.get("target_image_sha256") or "")
+    if not expected_hash or ws.get("target_image_sha256") != expected_hash:
+        raise ValueError("Image state hash does not match the cached image")
     return ws
 
 
@@ -2606,14 +2632,20 @@ def _init_workspace(input_image, mode, session_state=None):
     image = _pil_image(input_image)
     image_id = uuid.uuid4().hex
     target_hash = _layout_tx.image_pixel_sha256(image)
-    _clear_workspace_cache()
+    _clear_workspace_cache(session_id)
     try:
         base_state = image_predictor.set_image(image)
     except torch.OutOfMemoryError:
-        _clear_workspace_cache()
+        _clear_workspace_cache(session_id)
         info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5df2\u6e05\u7406\u5f53\u524d\u5de5\u4f5c\u53f0\u7f13\u5b58\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
-    _WORKSPACE_CACHE[image_id] = {"image": image, "base_state": base_state, "target_image_sha256": target_hash}
+    with _WORKSPACE_CACHE_LOCK:
+        _WORKSPACE_CACHE[image_id] = {
+            "image": image,
+            "base_state": base_state,
+            "session_id": session_id,
+            "target_image_sha256": target_hash,
+        }
     image_state = {"image_id": image_id, "width": image.width, "height": image.height, "session_id": session_id, "target_image_sha256": target_hash}
     return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
 
@@ -2696,12 +2728,18 @@ def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
 def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode, progress=gr.Progress(track_tqdm=False)):
     try:
         _pvs_progress(progress, 0.03, "\u51c6\u5907\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b")
-        _sync_pvs_pending_boxes_from_records(pvs_state)
-        boxes = list(pvs_state.get("pending_boxes", []))
+        records = pvs_state.get("pending_bbox_records") or []
+        boxes = (
+            [record.get("box") for record in records]
+            if records
+            else list(pvs_state.get("pending_boxes", []))
+        )
         if not boxes:
             raise ValueError("\u6ca1\u6709\u5f85\u751f\u6210\u7684 PVS bbox\uff0c\u8bf7\u5148\u5728\u56fe\u50cf\u4e0a\u6846\u9009\u4e00\u4e2a\u6216\u591a\u4e2a\u76ee\u6807")
 
         created_ids = []
+        staged_instances = {}
+        next_instance_id = int(pvs_state.get("next_instance_id", 1))
         _pvs_progress(progress, 0.12, f"\u8bfb\u53d6\u56fe\u50cf\u7f13\u5b58\uff0c\u5171 {len(boxes)} \u4e2a bbox")
         base_state = _fresh_state(image_state)
         for box_idx, box in enumerate(boxes, start=1):
@@ -2710,8 +2748,8 @@ def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode, prog
             pred = _predict_inst(base_state, box_xyxy_px=box)
             idx = _best(pred)
             mask = pred["masks"][idx]
-            inst_id = int(pvs_state.get("next_instance_id", 1))
-            pvs_state.setdefault("instances", {})[inst_id] = _make_inst(
+            inst_id = next_instance_id + len(staged_instances)
+            staged_instances[inst_id] = _make_inst(
                 inst_id,
                 "manual_pvs_bbox_batch",
                 mask,
@@ -2720,14 +2758,18 @@ def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode, prog
                 pvs_logits=pred["lowres_logits"][idx],
                 history=[{"op":"create_from_pending_bbox","box_xyxy_px":box,"candidate_scores":pred["scores"].astype(float).tolist()}],
             )
-            pvs_state["next_instance_id"] = inst_id + 1
             created_ids.append(inst_id)
 
         _pvs_progress(progress, 0.86, "\u66f4\u65b0 PVS \u5b9e\u4f8b\u6c60")
-        pvs_state["active_instance_id"] = created_ids[-1]
-        _clear_pvs_pending_bboxes(pvs_state)
-        info = f"\u5df2\u4ece {len(created_ids)} \u4e2a\u5f85\u751f\u6210 bbox \u521b\u5efa PVS \u5b9e\u4f8b: {created_ids}"
         _pvs_progress(progress, 0.96, "\u6e32\u67d3 PVS \u5206\u5272\u7ed3\u679c", delay=0.16)
+        committed_instances = dict(pvs_state.get("instances") or {})
+        committed_instances.update(staged_instances)
+        pvs_state["instances"] = committed_instances
+        pvs_state["next_instance_id"] = next_instance_id + len(staged_instances)
+        pvs_state["active_instance_id"] = created_ids[-1]
+        pvs_state["pending_bbox_records"] = []
+        pvs_state["pending_boxes"] = []
+        info = f"\u5df2\u4ece {len(created_ids)} \u4e2a\u5f85\u751f\u6210 bbox \u521b\u5efa PVS \u5b9e\u4f8b: {created_ids}"
     except Exception as exc:
         info = f"PVS \u6279\u91cf bbox \u751f\u6210\u5931\u8d25: {exc}"
     return pvs_state, _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info)

@@ -351,11 +351,15 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
 
     def test_pcs_export_pool_returns_public_zip(self):
         image_id = "export-image"
+        session_id = "export-session"
         image = Image.new("RGB", (12, 10), (20, 30, 40))
+        target_hash = demo_module._layout_tx.image_pixel_sha256(image)
         image_state = {
             "image_id": image_id,
             "width": image.width,
             "height": image.height,
+            "session_id": session_id,
+            "target_image_sha256": target_hash,
         }
         pcs_state = demo_module._new_pcs_state()
         pvs_state = demo_module._new_pvs_state()
@@ -368,7 +372,11 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             [3, 2, 9, 8],
             0.9,
         )
-        demo_module._WORKSPACE_CACHE[image_id] = {"image": image}
+        demo_module._WORKSPACE_CACHE[image_id] = {
+            "image": image,
+            "session_id": session_id,
+            "target_image_sha256": target_hash,
+        }
         try:
             with mock.patch.object(
                 demo_module,
@@ -444,7 +452,6 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         protected = [
             "_finish_native_polygon",
             "_run_pcs",
-            "_create_pvs_from_pending_boxes",
             "_pvs_point_prompt",
             "_sync_layout_controls_from_editor",
             "_run_layout_mask_page",
