@@ -161,4 +161,5 @@ output/
 
 # Local SAM3 Gradio runtime files
 .runtime/
+public_downloads/
 demo_run.pid

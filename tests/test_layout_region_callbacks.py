@@ -5,7 +5,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -77,8 +79,13 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         )
         self.old_store = demo_module._LAYOUT_REGION_STORE
         self.old_runtime_layout_dir = demo_module.runtime_layout_dir
+        self.old_runtime_export_dir = demo_module.runtime_export_dir
+        self.old_public_download_dir = demo_module.public_download_dir
         demo_module._LAYOUT_REGION_STORE = self.store
         demo_module.runtime_layout_dir = self.layout_masks
+        demo_module.runtime_export_dir = self.root / "internal_exports"
+        demo_module.runtime_export_dir.mkdir()
+        demo_module.public_download_dir = self.root / "public_downloads"
         self.layout_state = {
             "session_id": self.session_id,
             "layout_id": self.layout_id,
@@ -88,6 +95,8 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
     def tearDown(self):
         demo_module._LAYOUT_REGION_STORE = self.old_store
         demo_module.runtime_layout_dir = self.old_runtime_layout_dir
+        demo_module.runtime_export_dir = self.old_runtime_export_dir
+        demo_module.public_download_dir = self.old_public_download_dir
         self.temporary.cleanup()
 
     def test_preview_save_and_soft_delete_round_trip(self):
@@ -120,6 +129,36 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertEqual(editor["server_view"]["regions"][0]["name"], "M1_power")
         self.assertTrue(editor["server_view"]["saved_region_overlay_image"].startswith("data:image/png;base64,"))
 
+        archive_path, export_status = demo_module._export_layout_regions(
+            self.layout_state,
+            region_state,
+        )
+        self.assertIn("Region", export_status)
+        archive_path = Path(archive_path).resolve()
+        self.assertIn(
+            (self.root / "public_downloads" / "region_annotation_exports").resolve(),
+            archive_path.parents,
+        )
+        with zipfile.ZipFile(archive_path) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {"manifest.json", "regions.json", "source_mask.png"},
+            )
+            exported_document = json.loads(archive.read("regions.json"))
+            exported_manifest = json.loads(archive.read("manifest.json"))
+        self.assertEqual(exported_document["regions"][0]["name"], "M1_power")
+        self.assertEqual(exported_manifest["active_region_count"], 1)
+        self.assertEqual(exported_manifest["regions_revision"], 1)
+
+        stale_state = copy.deepcopy(region_state)
+        stale_state["regions_revision"] = 0
+        stale_path, stale_status = demo_module._export_layout_regions(
+            self.layout_state,
+            stale_state,
+        )
+        self.assertIsNone(stale_path)
+        self.assertIn("stale regions revision", stale_status)
+
         deleted = demo_module._delete_layout_region(
             self.layout_state,
             region_state,
@@ -131,6 +170,145 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         document, _ = self.store.load_document(self.session_id, self.layout_id, self.source_hash)
         self.assertIsNotNone(document["regions"][0]["deleted_at"])
         self.assertIn("mask_rle", document["regions"][0])
+
+    def test_layout_download_wrapper_publishes_copies_only_for_file_outputs(self):
+        internal_dir = self.root / "internal_layout"
+        internal_dir.mkdir()
+        internal_mask = internal_dir / "source_mask.png"
+        internal_contours = internal_dir / "contours.json"
+        internal_mask.write_bytes(b"mask")
+        internal_contours.write_text('{"contours": []}', encoding="utf-8")
+        original_result = (
+            {"layout_id": self.layout_id},
+            None,
+            None,
+            None,
+            None,
+            str(internal_mask),
+            str(internal_contours),
+            f"mask: {internal_mask}\ncontours: {internal_contours}",
+        )
+
+        with mock.patch.object(
+            demo_module,
+            "_run_layout_mask_page",
+            return_value=original_result,
+        ):
+            result = demo_module._run_layout_mask_page_with_downloads(*([None] * 9))
+
+        public_mask = Path(result[5]).resolve()
+        public_contours = Path(result[6]).resolve()
+        public_category = (
+            self.root / "public_downloads" / "layout_mask_exports"
+        ).resolve()
+        self.assertIn(public_category, public_mask.parents)
+        self.assertEqual(public_mask.parent, public_contours.parent)
+        self.assertEqual(public_mask.read_bytes(), b"mask")
+        self.assertEqual(
+            public_contours.read_text(encoding="utf-8"),
+            '{"contours": []}',
+        )
+        self.assertNotIn(str(internal_dir), result[7])
+
+    def test_gradio_file_access_boundary_blocks_internal_paths(self):
+        repository = self.root / "repository"
+        runtime = repository / ".runtime"
+        public = repository / "public_downloads"
+        gradio_runtime = runtime / "gradio"
+        video_runtime = runtime / "videos"
+        for directory in (
+            repository / "models",
+            repository / ".gradio",
+            repository / "layout_region_annotator",
+            runtime / "layout_masks",
+            runtime / "layout_regions",
+            runtime / "feedback",
+            runtime / "exports",
+            gradio_runtime,
+            video_runtime,
+            public,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+        source_file = repository / "sam3_gradio_demo.py"
+        source_file.write_text("secret", encoding="utf-8")
+
+        with mock.patch.multiple(
+            demo_module,
+            current_dir=repository,
+            runtime_dir=runtime,
+            runtime_gradio_dir=gradio_runtime,
+            runtime_video_dir=video_runtime,
+            public_download_dir=public,
+        ):
+            allowed = demo_module._gradio_allowed_paths()
+            blocked = set(demo_module._gradio_blocked_paths())
+
+        self.assertEqual(allowed, [str(public.resolve())])
+        self.assertIn(str(source_file.resolve()), blocked)
+        self.assertIn(str((repository / "models").resolve()), blocked)
+        self.assertIn(str((runtime / "layout_masks").resolve()), blocked)
+        self.assertIn(str((runtime / "layout_regions").resolve()), blocked)
+        self.assertIn(str((runtime / "feedback").resolve()), blocked)
+        self.assertIn(str((runtime / "exports").resolve()), blocked)
+        self.assertNotIn(str(public.resolve()), blocked)
+        self.assertNotIn(str((repository / ".gradio").resolve()), blocked)
+        self.assertNotIn(str(gradio_runtime.resolve()), blocked)
+        self.assertNotIn(str(video_runtime.resolve()), blocked)
+
+    def test_pcs_export_pool_returns_public_zip(self):
+        image_id = "export-image"
+        image = Image.new("RGB", (12, 10), (20, 30, 40))
+        image_state = {
+            "image_id": image_id,
+            "width": image.width,
+            "height": image.height,
+        }
+        pcs_state = demo_module._new_pcs_state()
+        pvs_state = demo_module._new_pvs_state()
+        mask = np.zeros((image.height, image.width), dtype=bool)
+        mask[2:8, 3:9] = True
+        pcs_state["instances"][1] = demo_module._make_inst(
+            1,
+            "pcs",
+            mask,
+            [3, 2, 9, 8],
+            0.9,
+        )
+        demo_module._WORKSPACE_CACHE[image_id] = {"image": image}
+        try:
+            with mock.patch.object(
+                demo_module,
+                "compare_with_coco",
+                return_value={"summary_lines": []},
+            ):
+                archive_path, info = demo_module._export_pool(
+                    image_state,
+                    pcs_state,
+                    pvs_state,
+                    demo_module.MODE_PCS,
+                    "pcs",
+                    "GE1_coco",
+                    "",
+                    "auto",
+                    demo_module.coco_eval_scope_overlap,
+                    None,
+                )
+        finally:
+            demo_module._WORKSPACE_CACHE.pop(image_id, None)
+
+        archive_path = Path(archive_path).resolve()
+        public_category = (
+            self.root / "public_downloads" / "pcs_pvs_exports"
+        ).resolve()
+        self.assertIn(public_category, archive_path.parents)
+        self.assertIn("Exported 1 PCS", info)
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+        self.assertIn("overlay.png", names)
+        self.assertIn("prediction.json", names)
+        self.assertIn("metrics.json", names)
+        self.assertIn("coco_masks.json", names)
+        self.assertIn("masks/pcs_001.png", names)
 
     def test_create_demo_keeps_region_controls_in_layout_tab(self):
         app = demo_module.create_demo()
@@ -156,6 +334,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         dependencies = {item.get("api_name"): item for item in config["dependencies"]}
         run_dependency = dependencies["_run_layout_mask_page"]
         clear_dependency = dependencies["_clear_current_layout_mask"]
+        self.assertIn("_export_layout_regions", dependencies)
         self.assertEqual((len(run_dependency["inputs"]), len(run_dependency["outputs"])), (9, 8))
         self.assertEqual((len(clear_dependency["inputs"]), len(clear_dependency["outputs"])), (2, 8))
 

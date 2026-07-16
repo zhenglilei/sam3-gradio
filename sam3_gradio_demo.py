@@ -14,7 +14,6 @@ from pathlib import Path
 import tempfile
 import json
 import uuid
-import zipfile
 import copy
 
 # 所有运行时文件固定在 /data/zhengqiyuan，避免 Gradio 默认写入 /tmp/gradio。
@@ -28,6 +27,7 @@ runtime_feedback_dir = runtime_dir / "feedback"
 runtime_layout_dir = runtime_dir / "layout_masks"
 runtime_layout_region_dir = runtime_dir / "layout_regions"
 runtime_log_dir = runtime_dir / "logs"
+public_download_dir = current_dir / "public_downloads"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
 ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
 o3_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/O3_coco")
@@ -58,6 +58,7 @@ for path in (
     runtime_layout_dir,
     runtime_layout_region_dir,
     runtime_log_dir,
+    public_download_dir,
     current_dir / ".gradio",
     qiyuan_cache_dir,
     qiyuan_cache_dir / "huggingface",
@@ -89,6 +90,7 @@ from PIL import Image
 import cv2
 import layout_transform_utils as _layout_tx
 import layout_region_utils as _layout_regions
+import public_download_utils as _public_downloads
 
 try:
     from gradio_layout_transform_editor import LayoutTransformEditor
@@ -118,6 +120,67 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("sam3_gradio_demo")
+
+_PUBLIC_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60
+
+
+def _gradio_allowed_paths():
+    return [str(public_download_dir.resolve())]
+
+
+def _gradio_blocked_paths():
+    exempt_top_level = {
+        public_download_dir.name,
+        runtime_dir.name,
+        ".gradio",
+    }
+    blocked = [
+        str(path.resolve())
+        for path in current_dir.iterdir()
+        if path.name not in exempt_top_level
+    ]
+    exempt_runtime = {runtime_gradio_dir.resolve(), runtime_video_dir.resolve()}
+    blocked.extend(
+        str(path.resolve())
+        for path in runtime_dir.iterdir()
+        if path.resolve() not in exempt_runtime
+    )
+    return sorted(set(blocked))
+
+
+def _prune_public_downloads():
+    try:
+        return _public_downloads.prune_public_downloads(
+            public_download_dir,
+            max_age_seconds=_PUBLIC_DOWNLOAD_TTL_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning("Cannot prune public downloads: %s", exc)
+        return []
+
+
+def _publish_layout_downloads(mask_path, contour_path):
+    _prune_public_downloads()
+    export_dir = _public_downloads.publish_files(
+        public_download_dir,
+        "layout_mask_exports",
+        {
+            "source_mask.png": mask_path,
+            "contours.json": contour_path,
+        },
+    )
+    return str(export_dir / "source_mask.png"), str(export_dir / "contours.json")
+
+
+def _publish_segmentation_zip(export_dir, zip_name):
+    _prune_public_downloads()
+    return _public_downloads.publish_zip(
+        public_download_dir,
+        "pcs_pvs_exports",
+        export_dir,
+        zip_name,
+    )
+
 
 # 导入SAM3相关模块
 try:
@@ -1330,10 +1393,7 @@ def create_segmentation_export(
 
     annotation_json_path = resolve_uploaded_json_path(annotation_json_file)
     zip_stem = coco_image_name or (annotation_json_path.stem if annotation_json_path else "")
-    zip_path = runtime_export_dir / f"{safe_stem(zip_stem)}_{export_id}.zip"
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file_path in export_dir.rglob("*"):
-            zf.write(file_path, arcname=file_path.relative_to(export_dir))
+    zip_path = _publish_segmentation_zip(export_dir, f"{safe_stem(zip_stem)}_{export_id}.zip")
     return str(zip_path), metrics
 
 
@@ -2990,10 +3050,7 @@ def _export_pool(image_state, pcs_state, pvs_state, mode, pool_name, coco_datase
         )
         with (export_dir / "coco_masks.json").open("w", encoding="utf-8") as f:
             json.dump(coco_payload, f, ensure_ascii=False, indent=2)
-        zip_path = runtime_export_dir / f"{export_id}.zip"
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for file_path in export_dir.rglob("*"):
-                zf.write(file_path, arcname=file_path.relative_to(export_dir))
+        zip_path = _publish_segmentation_zip(export_dir, f"{export_id}.zip")
         info = f"Exported {len(instances)} {pool_name.upper()} instances: {zip_path}"
         if metrics.get("summary_lines"):
             info += "\n" + "\n".join(metrics["summary_lines"])
@@ -3699,6 +3756,84 @@ def _delete_layout_region(layout_state, region_state, editor_payload, selected_r
         )
 
 
+def _export_layout_regions(layout_state, region_state):
+    try:
+        session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+        state = region_state if isinstance(region_state, dict) else {}
+        expected_identity = {
+            "session_id": session_id,
+            "layout_id": layout_id,
+            "source_mask_hash": source_mask_hash,
+        }
+        for field, expected in expected_identity.items():
+            if state.get(field) != expected:
+                raise _layout_regions.RegionValidationError(
+                    f"Region export {field} does not match current layout"
+                )
+        revision = state.get("regions_revision")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise _layout_regions.RegionValidationError("Region export revision is missing")
+
+        document, source_mask = _LAYOUT_REGION_STORE.load_document(
+            session_id,
+            layout_id,
+            source_mask_hash,
+        )
+        current_revision = document.get("regions_revision")
+        if revision != current_revision:
+            raise _layout_regions.StaleRegionsRevisionError(
+                f"stale regions revision: expected {revision}, current {current_revision}"
+            )
+
+        records = document.get("regions") or []
+        active_count = len(_layout_regions.active_regions(document))
+        manifest = {
+            "schema_version": 1,
+            "export_type": "layout_region_annotations",
+            "session_id": session_id,
+            "layout_id": layout_id,
+            "source_mask_hash": source_mask_hash,
+            "regions_revision": revision,
+            "region_count": len(records),
+            "active_region_count": active_count,
+            "deleted_region_count": len(records) - active_count,
+            "exported_at": _layout_regions.utc_now_iso(),
+            "files": ["regions.json", "source_mask.png", "manifest.json"],
+        }
+
+        with tempfile.TemporaryDirectory(
+            prefix="layout_region_export_",
+            dir=runtime_export_dir,
+        ) as temporary:
+            staging_dir = Path(temporary)
+            with (staging_dir / "regions.json").open("w", encoding="utf-8") as handle:
+                json.dump(document, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            with (staging_dir / "manifest.json").open("w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            if not cv2.imwrite(
+                str(staging_dir / "source_mask.png"),
+                np.asarray(source_mask, dtype=np.uint8) * 255,
+            ):
+                raise OSError("cannot write source_mask.png")
+            _prune_public_downloads()
+            archive_path = _public_downloads.publish_zip(
+                public_download_dir,
+                "region_annotation_exports",
+                staging_dir,
+                f"layout_regions_{layout_id}_r{revision}.zip",
+            )
+
+        status = (
+            f"\u5df2\u5bfc\u51fa Region \u6807\u6ce8\uff1a"
+            f"active={active_count}, revision={revision}"
+        )
+        return str(archive_path), status
+    except Exception as exc:
+        return None, f"\u5bfc\u51fa Region \u5931\u8d25\uff1a{exc}"
+
+
 def _layout_editor_empty(image_state=None, status="请先加载或生成版图 mask"):
     base_url = ""
     target_width = 0
@@ -3871,12 +4006,61 @@ def _run_layout_mask_page(session_state, image_state, input_image, threshold, in
         return state, _layout_editor_empty(image_state, info), None, None, None, None, None, info
 
 
+def _run_layout_mask_page_with_downloads(
+    session_state,
+    image_state,
+    input_image,
+    threshold,
+    invert,
+    open_kernel,
+    close_kernel,
+    min_component_area,
+    region_mode,
+):
+    result = list(
+        _run_layout_mask_page(
+            session_state,
+            image_state,
+            input_image,
+            threshold,
+            invert,
+            open_kernel,
+            close_kernel,
+            min_component_area,
+            region_mode,
+        )
+    )
+    internal_mask_path, internal_contour_path = result[5], result[6]
+    if not internal_mask_path or not internal_contour_path:
+        return tuple(result)
+    try:
+        public_mask_path, public_contour_path = _publish_layout_downloads(
+            internal_mask_path,
+            internal_contour_path,
+        )
+    except Exception as exc:
+        result[5] = None
+        result[6] = None
+        safe_info = str(result[7]).split("\nmask:", 1)[0]
+        result[7] = f"{safe_info}\n\u4e0b\u8f7d\u526f\u672c\u751f\u6210\u5931\u8d25\uff1a{exc}"
+        return tuple(result)
+    result[5] = public_mask_path
+    result[6] = public_contour_path
+    result[7] = (
+        str(result[7])
+        .replace(str(internal_mask_path), public_mask_path)
+        .replace(str(internal_contour_path), public_contour_path)
+    )
+    return tuple(result)
+
+
 def _save_current_layout_mask(layout_state):
     try:
         cached = _layout_cache_get(layout_state)
+        mask_path, contour_path = _publish_layout_downloads(cached.get("mask_path"), cached.get("contour_json_path"))
         return (
-            cached.get("mask_path"),
-            cached.get("contour_json_path"),
+            mask_path,
+            contour_path,
             f"Saved current layout mask: {layout_state.get('layout_id')}",
         )
     except Exception as exc:
@@ -4187,8 +4371,8 @@ def _load_layout_binary_mask_png(session_state, image_state, input_image, region
             raise ValueError("Binary mask is empty after filtering")
         contours = _layout_mask_contours(mask)
         params = {"source": "uploaded_binary_mask_png", "region_mode": str(region_mode or "all"), "foreground_rule": "auto_smaller_nonzero"}
-        state, mask_path, contour_path, _ = _save_layout_mask_files(session_state, image, mask, contours, params)
-        info = f"二值 mask PNG 已载入。\n{_layout_state_summary(state)}\nmask: {mask_path}\ncontours: {contour_path}"
+        state, _, _, _ = _save_layout_mask_files(session_state, image, mask, contours, params)
+        info = f"二值 mask PNG 已载入。\n{_layout_state_summary(state)}"
         return state, _layout_editor_payload(image_state, state, "二值 mask PNG 已载入版图编辑器。"), info
     except Exception as exc:
         state = _new_layout_state(_session_id_from_state(session_state))
@@ -4235,7 +4419,12 @@ def create_demo():
     }
     """
     theme = gr.themes.Soft(primary_hue="blue", secondary_hue="slate", font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"])
-    with gr.Blocks(theme=theme, css=custom_css, title="SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0") as demo:
+    with gr.Blocks(
+        theme=theme,
+        css=custom_css,
+        title="SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0",
+        delete_cache=(3600, _PUBLIC_DOWNLOAD_TTL_SECONDS),
+    ) as demo:
         with gr.Column(elem_classes="container"):
             gr.Markdown("# SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0")
             gr.Markdown("\u57fa\u4e8e SAM3 \u7684 PCS \u81ea\u52a8\u6982\u5ff5\u5206\u5272\u4e0e PVS \u624b\u52a8\u5b9e\u4f8b\u5206\u5272\u5de5\u4f5c\u53f0", elem_classes="description")
@@ -4471,14 +4660,23 @@ def create_demo():
                             )
                             delete_layout_region_btn = gr.Button("软删除选中 Region", variant="secondary", interactive=False)
                             layout_region_status = gr.Textbox(label="Region 状态", lines=4, interactive=False)
+                            export_layout_regions_btn = gr.Button(
+                                "\u5bfc\u51fa\u5f53\u524d Region \u6807\u6ce8",
+                                variant="secondary",
+                            )
+                            layout_region_export_file = gr.File(
+                                label="\u4e0b\u8f7d Region \u6807\u6ce8\u5305",
+                                interactive=False,
+                            )
                 with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
                     gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
 
             run_layout_mask_event = run_layout_mask_btn.click(
-                fn=_run_layout_mask_page,
+                fn=_run_layout_mask_page_with_downloads,
                 inputs=[session_state, image_state, layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode],
                 outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
+                api_name="_run_layout_mask_page",
             )
             run_layout_mask_event.then(
                 fn=_load_layout_region_context,
@@ -4526,6 +4724,13 @@ def create_demo():
                 fn=_delete_layout_region,
                 inputs=[layout_state, layout_region_state, layout_region_annotator, layout_region_selector],
                 outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+
+            export_layout_regions_btn.click(
+                fn=_export_layout_regions,
+                inputs=[layout_state, layout_region_state],
+                outputs=[layout_region_export_file, layout_region_status],
                 concurrency_limit=1,
             )
 
@@ -4620,14 +4825,17 @@ def main():
             return
 
     print("🚀 正在启动 SAM3 交互式视觉工作台...")
+    _public_downloads.ensure_public_download_dirs(public_download_dir)
+    _prune_public_downloads()
     demo = create_demo()
     demo.queue(default_concurrency_limit=1)
     demo.launch(
         server_name="0.0.0.0",
         server_port=7890,
         share=False,
-        debug=True,
-        allowed_paths=[str(current_dir)],
+        debug=False,
+        allowed_paths=_gradio_allowed_paths(),
+        blocked_paths=_gradio_blocked_paths(),
     )
 
 

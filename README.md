@@ -105,6 +105,8 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 
 Region 标注层只属于 `版图截图转掩码` Tab，当前不会显示在 PCS/PVS 页面，也不会作为 SAM3 或 PVS prompt。
 
+下载采用显式导出边界：PCS/PVS 结果包、版图 mask/contour 和 Region 标注包会复制或打包到随机 ID 的 `public_downloads/` 子目录；`.runtime/layout_masks`、`.runtime/layout_regions`、反馈、源码、配置和模型文件不允许直接下载。Region 导出包由服务端重新校验当前 session、layout、source-mask hash 和 revision，固定包含 `regions.json`、`source_mask.png` 与 `manifest.json`。公开副本在启动及后续导出时清理，Gradio 下载缓存每小时扫描并清理超过 24 小时的文件。
+
 ---
 
 ## 安装启动 / Setup
@@ -339,16 +341,16 @@ masks/*.png
 
 ```bash
 cd /data/zhengqiyuan/sam3-gradio/.runtime/codex-worktrees/sam3-pvs-workspace
-/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m py_compile sam3_gradio_demo.py layout_transform_utils.py layout_region_utils.py layout_transform_editor/backend/gradio_layout_transform_editor/layouttransformeditor.py layout_region_annotator/backend/gradio_layout_region_annotator/layoutregionannotator.py
+/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m py_compile sam3_gradio_demo.py public_download_utils.py layout_transform_utils.py layout_region_utils.py layout_transform_editor/backend/gradio_layout_transform_editor/layouttransformeditor.py layout_region_annotator/backend/gradio_layout_region_annotator/layoutregionannotator.py
 /data/zhengqiyuan/miniforge3/envs/sam3/bin/python tests/test_layout_transform_utils.py
-/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m unittest tests.test_layout_region_utils tests.test_layout_region_annotator_component tests.test_layout_region_callbacks -v
+/data/zhengqiyuan/miniforge3/envs/sam3/bin/python -m unittest tests.test_public_download_security tests.test_layout_region_utils tests.test_layout_region_annotator_component tests.test_layout_region_callbacks -v
 cd layout_transform_editor
 /data/zhengqiyuan/miniforge3/envs/sam3/bin/gradio cc build --python-path /data/zhengqiyuan/miniforge3/envs/sam3/bin/python --no-generate-docs
 cd ..
 cd layout_region_annotator
 /data/zhengqiyuan/miniforge3/envs/sam3/bin/gradio cc build --python-path /data/zhengqiyuan/miniforge3/envs/sam3/bin/python --no-generate-docs
 cd ..
-git diff --check -- sam3_gradio_demo.py README.md layout_region_utils.py layout_region_annotator tests
+git diff --check -- sam3_gradio_demo.py README.md public_download_utils.py layout_region_utils.py layout_region_annotator tests
 git status --short --branch
 ```
 
