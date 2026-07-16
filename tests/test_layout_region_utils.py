@@ -1,5 +1,7 @@
 import copy
 import json
+import multiprocessing
+import queue
 import sys
 import tempfile
 import unittest
@@ -12,6 +14,37 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import layout_region_utils as regions
+
+
+def _save_region_in_subprocess(
+    layout_masks,
+    layout_regions,
+    categories_path,
+    session_id,
+    layout_id,
+    source_hash,
+    started,
+    result_queue,
+):
+    store = regions.LayoutRegionStore(
+        layout_masks_root=layout_masks,
+        layout_regions_root=layout_regions,
+        categories_path=categories_path,
+    )
+    started.set()
+    try:
+        document, record = store.save_region(
+            session_id=session_id,
+            layout_id=layout_id,
+            source_mask_hash=source_hash,
+            expected_revision=0,
+            lasso_polygon=[[0, 0], [39, 0], [39, 31], [0, 31]],
+            class_label="via",
+            name="child",
+        )
+        result_queue.put(("saved", document["regions_revision"], record["region_id"]))
+    except Exception as exc:
+        result_queue.put((type(exc).__name__, str(exc)))
 
 
 class LayoutRegionUtilsTest(unittest.TestCase):
@@ -218,6 +251,74 @@ class LayoutRegionUtilsTest(unittest.TestCase):
             )
         self.assertEqual(json.loads(target.read_text(encoding="utf-8")), original)
         self.assertEqual(list(target.parent.glob(".regions.json.*.tmp")), [])
+
+    def test_cross_process_write_lock_prevents_lost_update(self):
+        context = multiprocessing.get_context("spawn")
+        started = context.Event()
+        result_queue = context.Queue()
+        process = context.Process(
+            target=_save_region_in_subprocess,
+            args=(
+                str(self.layout_masks),
+                str(self.layout_regions),
+                str(self.categories_path),
+                self.session_id,
+                self.layout_id,
+                self.source_hash,
+                started,
+                result_queue,
+            ),
+        )
+
+        try:
+            with self.store._layout_write_lock(self.session_id, self.layout_id):
+                process.start()
+                self.assertTrue(started.wait(timeout=5))
+                with self.assertRaises(queue.Empty):
+                    result_queue.get(timeout=1)
+
+                document, source_mask = self.store.load_document(
+                    self.session_id,
+                    self.layout_id,
+                    self.source_hash,
+                )
+                region_mask = regions.rasterize_uncovered_region_mask(
+                    source_mask,
+                    self._polygon(),
+                    document,
+                )
+                updated, _ = regions.append_region(
+                    document,
+                    class_label="metal",
+                    name="parent",
+                    region_mask=region_mask,
+                    allowed_categories=["metal", "via"],
+                )
+                regions.write_json_atomic(
+                    self.store.regions_path(self.session_id, self.layout_id),
+                    updated,
+                )
+        finally:
+            if process.pid is not None:
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=5)
+
+        self.assertFalse(process.is_alive())
+        self.assertEqual(process.exitcode, 0)
+        outcome = result_queue.get(timeout=2)
+        self.assertEqual(outcome[0], "StaleRegionsRevisionError")
+        restored, _ = self.store.load_document(
+            self.session_id,
+            self.layout_id,
+            self.source_hash,
+        )
+        self.assertEqual(restored["regions_revision"], 1)
+        self.assertEqual(
+            [record["name"] for record in regions.active_regions(restored)],
+            ["parent"],
+        )
 
     def test_saved_overlay_excludes_soft_deleted_region(self):
         document, _ = self._save(0)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import math
@@ -10,6 +11,7 @@ import os
 import re
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -464,6 +466,19 @@ class LayoutRegionStore:
         sid, lid = self._identity(session_id, layout_id)
         return self.layout_regions_root / sid / lid / "regions.json"
 
+    @contextmanager
+    def _layout_write_lock(self, session_id: Any, layout_id: Any):
+        sid, lid = self._identity(session_id, layout_id)
+        lock_path = self.layout_regions_root / sid / lid / ".regions.lock"
+        with self._lock:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+b") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def load_source_mask(
         self,
         session_id: Any,
@@ -552,7 +567,7 @@ class LayoutRegionStore:
         class_label: Any,
         name: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        with self._lock:
+        with self._layout_write_lock(session_id, layout_id):
             document, source_mask = self.load_document(session_id, layout_id, source_mask_hash)
             self._check_revision(document, expected_revision)
             region_mask = rasterize_uncovered_region_mask(source_mask, lasso_polygon, document)
@@ -576,7 +591,7 @@ class LayoutRegionStore:
         expected_revision: int,
         region_id: int,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        with self._lock:
+        with self._layout_write_lock(session_id, layout_id):
             document, _ = self.load_document(session_id, layout_id, source_mask_hash)
             self._check_revision(document, expected_revision)
             updated, record = soft_delete_region(document, int(region_id))
