@@ -10,6 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import periodic_template_matching as periodic
 from periodic_template_matching import match_periodic_instances, smart_annotation
 
 
@@ -98,14 +99,32 @@ class PeriodicTemplateMatchingTest(unittest.TestCase):
         self.assertEqual(len(cli_matches), 2)
         self.assertIn("matched 2 repeated instances", result.stdout)
 
-    def test_invalid_uniform_template_is_rejected(self):
-        image = np.zeros((32, 32, 3), dtype=np.uint8)
-        with self.assertRaisesRegex(ValueError, "no intensity variation"):
-            match_periodic_instances(
-                image,
-                [[4, 4], [12, 4], [12, 12], [4, 12]],
-                label="blank",
-                expand_threshold=2,
+    def test_spatially_uniform_templates_are_rejected(self):
+        images = [
+            np.zeros((32, 32, 3), dtype=np.uint8),
+            np.full((32, 32, 3), [20, 120, 220], dtype=np.uint8),
+        ]
+        for image in images:
+            with self.subTest(color=image[0, 0].tolist()):
+                with self.assertRaisesRegex(ValueError, "no intensity variation"):
+                    match_periodic_instances(
+                        image,
+                        [[4, 4], [12, 4], [12, 12], [4, 12]],
+                        label="blank",
+                        expand_threshold=2,
+                    )
+
+    def test_excessive_local_peak_count_is_rejected_before_nms(self):
+        score_map = np.zeros((130, 130), dtype=np.float32)
+        score_map[::2, ::2] = 1.0
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "too many local template matches",
+        ):
+            periodic._local_peak_candidates(
+                score_map,
+                0.5,
             )
 
 

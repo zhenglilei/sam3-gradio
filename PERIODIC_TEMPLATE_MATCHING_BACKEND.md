@@ -79,6 +79,8 @@ cd /data/zhengqiyuan/sam3-gradio/.runtime/codex-worktrees/sam3-pvs-workspace
 - 空候选直接返回空数组，不依赖 `NMSBoxes(...).flatten()`。
 - 已有标注作为显式 blocker，不再依赖人为设置 `score = 2`。
 - 对缺失参数、越界/退化多边形、非法阈值和无灰度变化模板给出明确错误。
+- 无灰度变化按每个通道的空间方差判断，纯色 BGR ROI 不会因通道值不同而被误认为有效纹理。
+- 阈值命中先收敛为局部峰值，并合并相邻等分平台；超过 4096 个局部峰值时明确拒绝，避免候选列表和贪心 NMS 失控。
 
 ## 适用边界
 

@@ -16,6 +16,9 @@ import cv2
 import numpy as np
 
 
+MAX_LOCAL_MATCH_CANDIDATES = 4096
+
+
 def _polygon_points(value: Any, name: str) -> np.ndarray:
     points = np.asarray(value, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 2 or len(points) < 3:
@@ -36,6 +39,62 @@ def _validate_threshold(value: Any, name: str) -> float:
     if not 0.0 <= threshold <= 1.0:
         raise ValueError(f"{name} must be between 0 and 1")
     return threshold
+
+
+def _template_has_spatial_variation(template: np.ndarray) -> bool:
+    values = template.astype(np.float32)
+    if values.ndim == 2:
+        return float(np.std(values)) >= 1e-6
+    channel_std = np.std(values, axis=(0, 1))
+    return bool(np.any(channel_std >= 1e-6))
+
+
+def _local_peak_candidates(
+    score_map: np.ndarray,
+    match_threshold: float,
+    *,
+    max_candidates: int = MAX_LOCAL_MATCH_CANDIDATES,
+) -> list[tuple[int, int, float]]:
+    finite = np.isfinite(score_map)
+    working = np.where(finite, score_map, -2.0).astype(np.float32, copy=False)
+    neighborhood_max = cv2.dilate(
+        working,
+        np.ones((3, 3), dtype=np.uint8),
+    )
+    peak_mask = (
+        finite
+        & (working >= match_threshold)
+        & (working == neighborhood_max)
+    ).astype(np.uint8)
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        peak_mask,
+        connectivity=8,
+    )
+    candidate_count = component_count - 1
+    if candidate_count > max_candidates:
+        raise ValueError(
+            "too many local template matches "
+            f"({candidate_count} > {max_candidates}); increase match_threshold "
+            "or use a more distinctive seed template"
+        )
+
+    candidates: list[tuple[int, int, float]] = []
+    for component_id in range(1, component_count):
+        x, y, width, height, _ = stats[component_id].tolist()
+        component = labels[y : y + height, x : x + width] == component_id
+        component_scores = np.where(
+            component,
+            working[y : y + height, x : x + width],
+            -np.inf,
+        )
+        offset_y, offset_x = np.unravel_index(
+            int(np.argmax(component_scores)),
+            component_scores.shape,
+        )
+        match_x = int(x + offset_x)
+        match_y = int(y + offset_y)
+        candidates.append((match_x, match_y, float(working[match_y, match_x])))
+    return candidates
 
 
 def _padded_bbox(
@@ -131,19 +190,19 @@ def match_periodic_instances(
     ]
     if template.size == 0:
         raise ValueError("the seed polygon produced an empty template")
-    if float(np.std(template.astype(np.float32))) < 1e-6:
+    if not _template_has_spatial_variation(template):
         raise ValueError("the template has no intensity variation")
 
     score_map = cv2.matchTemplate(image, template, cv2.TM_CCOEFF_NORMED)
-    candidate_y, candidate_x = np.where(
-        np.isfinite(score_map) & (score_map >= match_threshold)
-    )
     candidates = [
         (
             (int(x), int(y), template_width, template_height),
-            float(score_map[y, x]),
+            score,
         )
-        for y, x in zip(candidate_y, candidate_x)
+        for x, y, score in _local_peak_candidates(
+            score_map,
+            match_threshold,
+        )
     ]
 
     # Always block the seed template itself. Existing annotations are padded in
