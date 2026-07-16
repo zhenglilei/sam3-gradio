@@ -329,6 +329,39 @@ masks/*.png
 
 ---
 
+## 可复现离线 PCS/PVS 评测
+
+离线评测分为“生成固定预测产物”和“纯离线复评”两步：
+
+1. `run_pvs_bbox_label_eval.py`、`run_pvs_bbox_grouped_eval.py` 和
+   `run_pcs_o3_grouped_eval.py` 必须写入一个全新的空输出目录。
+2. 正常推理完成后，每个预测 mask 都会单独保存，并由
+   `run_manifest.json` 固定 selected/prediction ID、文件 hash 和顺序。
+3. `run_mask_iou95_eval.py` 只读取 manifest 中列出的 mask；不会加载
+   SAM3、不会重新推理，也不会扫描 `groups/*/prediction.json`。
+4. 旧版 `fef70b7` 生成且没有 `run_manifest.json` 的目录必须重新生成，
+   不能继续作为可信评测输入。
+
+当前 T4 权威标注为 COCO：
+
+```text
+/data/zhengqiyuan/ADC_contour/datasets/T4/original_size/<layer>/annotations/instances_all.json
+```
+
+T4 的细分类名称读取 `annotation.original_label`，缺失时才回退到 COCO
+category。O3/T4 的 annotation、image、category、尺寸和 SHA-256 都会在复评
+时重新核对。COCO 中声明的 canonical image 缺失时会明确失败，不再递归选择
+同名可视化副本。
+
+示例：
+
+```bash
+python scripts/run_pvs_bbox_grouped_eval.py --datasets t4 --dry-run --out-dir /tmp/pvs_t4_check
+python scripts/run_pcs_o3_grouped_eval.py --split-order train --dry-run --confidence 0.73 --max-groups 1 --out-dir /tmp/pcs_o3_check
+python scripts/run_mask_iou95_eval.py --pvs-dir <completed-pvs-run> --pcs-dir <completed-pcs-run> --out-dir <new-empty-dir>
+```
+
+
 ## 开发与自检 / Development Checks
 
 远端 worktree：

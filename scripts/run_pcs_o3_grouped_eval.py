@@ -14,6 +14,7 @@ import argparse
 import csv
 import importlib.util
 import json
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -29,6 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from scripts import offline_eval_utils as eval_utils
 
 spec = importlib.util.spec_from_file_location("pvs_bbox_label_base", SCRIPT_DIR / "run_pvs_bbox_label_eval.py")
 if spec is None or spec.loader is None:
@@ -63,6 +66,9 @@ class PcsCategoryImage:
     category_id: int
     boxes: list[list[float]]
     annotation_ids: list[str]
+    annotation_relpath: str
+    annotation_sha256: str
+    image_sha256: str
 
 
 def safe(value: Any) -> str:
@@ -99,43 +105,85 @@ def to_numpy(value: Any) -> np.ndarray:
         return value.detach().float().cpu().numpy()
     return np.asarray(value)
 
-def collect_o3_category_images(o3_root: Path, images_per_category: int, split_order: list[str], min_boxes: int) -> list[PcsCategoryImage]:
+def collect_o3_category_images(
+    o3_root: Path,
+    images_per_category: int,
+    split_order: list[str],
+    min_boxes: int,
+) -> list[PcsCategoryImage]:
+    o3_root = base._require_dataset_root(o3_root, "O3")
+    if images_per_category <= 0:
+        raise ValueError("images_per_category must be positive")
+    if min_boxes <= 0:
+        raise ValueError("min_boxes must be positive")
+    if not split_order or any(not split for split in split_order):
+        raise ValueError("split_order must contain at least one split")
+    if len(split_order) != len(set(split_order)):
+        raise ValueError("split_order must not contain duplicate splits")
+    dataset_dirs = sorted(
+        path
+        for path in o3_root.iterdir()
+        if path.is_dir()
+        and not path.is_symlink()
+        and path.name.endswith("_coco")
+    )
+    if not dataset_dirs:
+        raise ValueError(f"No O3 *_coco datasets found under {o3_root}")
+
     selected: list[PcsCategoryImage] = []
-    for dataset_dir in sorted(p for p in o3_root.iterdir() if p.is_dir() and p.name.endswith("_coco")):
-        layer = dataset_dir.name.replace("_coco", "")
+    image_hashes: dict[Path, str] = {}
+    for dataset_dir in dataset_dirs:
+        layer = dataset_dir.name.removesuffix("_coco")
         candidates_by_label: dict[str, list[PcsCategoryImage]] = {}
         for split in split_order:
-            ann_path = dataset_dir / "annotations" / f"instances_{split}.json"
-            if not ann_path.exists():
+            annotation_path = (
+                dataset_dir / "annotations" / f"instances_{split}.json"
+            )
+            if not annotation_path.exists():
                 continue
-            data = json.loads(ann_path.read_text(encoding="utf-8"))
-            categories = {int(c["id"]): str(c.get("name") or c["id"]) for c in data.get("categories", [])}
-            images = {int(img["id"]): img for img in data.get("images", [])}
-            anns_by_image_cat: dict[tuple[int, int], list[dict[str, Any]]] = {}
-            for ann in sorted(data.get("annotations", []), key=lambda a: int(a.get("id", 0))):
-                anns_by_image_cat.setdefault((int(ann.get("image_id")), int(ann.get("category_id"))), []).append(ann)
-            for (image_id, category_id), anns in sorted(anns_by_image_cat.items()):
-                label = categories.get(category_id, str(category_id))
-                image_record = images.get(image_id)
-                if not image_record:
-                    continue
-                image_path = base._find_image_path(dataset_dir, split, str(image_record.get("file_name")))
-                if image_path is None:
-                    continue
-                width = int(image_record.get("width") or 0)
-                height = int(image_record.get("height") or 0)
-                if width <= 0 or height <= 0:
-                    with Image.open(image_path) as im:
-                        width, height = im.size
-                boxes = []
-                ann_ids = []
-                for ann in anns:
-                    x, y, w, h = [float(v) for v in ann.get("bbox", [0, 0, 1, 1])]
-                    boxes.append(base._clip_box_xyxy([x, y, x + w, y + h], width, height))
-                    ann_ids.append(str(ann.get("id")))
+            categories, images, annotations = base._load_coco(annotation_path)
+            annotation_relpath = annotation_path.relative_to(o3_root).as_posix()
+            annotation_sha256 = eval_utils.file_sha256(annotation_path)
+            annotations_by_image_category: dict[
+                tuple[int, int], list[dict[str, Any]]
+            ] = {}
+            for annotation in annotations:
+                key = (
+                    int(annotation["image_id"]),
+                    int(annotation["category_id"]),
+                )
+                annotations_by_image_category.setdefault(key, []).append(annotation)
+
+            for (image_id, category_id), category_annotations in sorted(
+                annotations_by_image_category.items()
+            ):
+                label = categories[category_id]
+                image_record = images[image_id]
+                image_path = base._resolve_coco_image(
+                    dataset_dir,
+                    image_record,
+                    annotation_path,
+                    split=split,
+                )
+                if image_path not in image_hashes:
+                    image_hashes[image_path] = eval_utils.file_sha256(image_path)
+                boxes: list[list[float]] = []
+                annotation_ids: list[str] = []
+                for annotation in category_annotations:
+                    x, y, width, height = [
+                        float(value) for value in annotation["bbox"]
+                    ]
+                    boxes.append(
+                        base._clip_box_xyxy(
+                            [x, y, x + width, y + height],
+                            int(image_record["width"]),
+                            int(image_record["height"]),
+                        )
+                    )
+                    annotation_ids.append(str(annotation["id"]))
                 group_id = (
                     f"pcs_o3_{safe(layer)}_{safe(label)}_"
-                    f"{safe(Path(str(image_record.get('file_name'))).stem)[:70]}"
+                    f"{safe(Path(str(image_record['file_name'])).stem)[:70]}"
                 )
                 candidates_by_label.setdefault(label, []).append(
                     PcsCategoryImage(
@@ -146,21 +194,35 @@ def collect_o3_category_images(o3_root: Path, images_per_category: int, split_or
                         label=label,
                         image_path=str(image_path),
                         image_id=str(image_id),
-                        image_file_name=str(image_record.get("file_name")),
+                        image_file_name=str(image_record["file_name"]),
                         category_id=category_id,
                         boxes=boxes,
-                        annotation_ids=ann_ids,
+                        annotation_ids=annotation_ids,
+                        annotation_relpath=annotation_relpath,
+                        annotation_sha256=annotation_sha256,
+                        image_sha256=image_hashes[image_path],
                     )
                 )
         for label in sorted(candidates_by_label):
             candidates = candidates_by_label[label]
-            preferred = [g for g in candidates if len(g.boxes) >= min_boxes]
-            fallback = [g for g in candidates if len(g.boxes) < min_boxes]
-            for idx, group in enumerate((preferred + fallback)[:images_per_category], start=1):
-                group.group_id = f"pcs_o3_{safe(group.layer)}_{safe(group.label)}_{idx:02d}_{safe(Path(group.image_file_name).stem)[:70]}"
+            preferred = [
+                group for group in candidates if len(group.boxes) >= min_boxes
+            ]
+            fallback = [
+                group for group in candidates if len(group.boxes) < min_boxes
+            ]
+            for index, group in enumerate(
+                (preferred + fallback)[:images_per_category], start=1
+            ):
+                group.group_id = (
+                    f"pcs_o3_{safe(group.layer)}_{safe(group.label)}_"
+                    f"{index:02d}_"
+                    f"{safe(Path(group.image_file_name).stem)[:70]}"
+                )
                 selected.append(group)
+    if not selected:
+        raise ValueError(f"No O3 category-image groups found under {o3_root}")
     return selected
-
 
 def draw_pcs_input_overlay(image: Image.Image, group: PcsCategoryImage, prompt_boxes: list[list[float]]) -> Image.Image:
     out = image.convert("RGB").copy()
@@ -198,24 +260,65 @@ def draw_pcs_result_overlay(image: Image.Image, group: PcsCategoryImage, pcs: di
 
 def run_pcs_from_boxes(predictor: Any, image: Image.Image, prompt_boxes: list[list[float]], threshold: float) -> dict[str, Any]:
     width, height = image.size
+    if not np.isfinite(threshold) or not 0.0 <= float(threshold) <= 1.0:
+        raise ValueError("threshold must be finite and within [0, 1]")
     state = predictor.set_image(image)
     for box in prompt_boxes:
         state = predictor.add_geometric_prompt(xyxy_to_cxcywh_norm(box, width, height), True, state)
     state = predictor.set_confidence_threshold(float(threshold), state)
-    masks = state.get("masks")
-    if masks is None or len(masks) == 0:
-        return {"masks": [], "boxes": [], "scores": [], "pcs_fullres_prob": []}
-    masks_np = to_numpy(masks).astype(bool)
+
+    masks_value = state.get("masks")
+    if masks_value is None:
+        masks_np = np.empty((0, height, width), dtype=bool)
+    else:
+        masks_np = to_numpy(masks_value).astype(bool)
     if masks_np.ndim == 4:
+        if masks_np.shape[1] != 1:
+            raise ValueError(f"PCS masks must have one channel, got shape {masks_np.shape}")
         masks_np = masks_np[:, 0]
     elif masks_np.ndim == 2:
         masks_np = masks_np[None, ...]
-    boxes_np = to_numpy(state.get("boxes")).astype(np.float32)
-    scores_np = to_numpy(state.get("scores")).astype(np.float32).reshape(-1)
+    if masks_np.ndim != 3 or tuple(masks_np.shape[1:]) != (height, width):
+        raise ValueError(
+            f"PCS mask shape {masks_np.shape} does not match image {(height, width)}"
+        )
+    instance_count = int(masks_np.shape[0])
+
+    boxes_value = state.get("boxes")
+    if boxes_value is None:
+        boxes_np = np.empty((0, 4), dtype=np.float32)
+    else:
+        boxes_np = to_numpy(boxes_value).astype(np.float32)
+        if boxes_np.size == 0:
+            boxes_np = np.empty((0, 4), dtype=np.float32)
+    if boxes_np.ndim != 2 or boxes_np.shape[1] != 4:
+        raise ValueError(f"PCS boxes must have shape Nx4, got {boxes_np.shape}")
+
+    scores_value = state.get("scores")
+    if scores_value is None:
+        scores_np = np.empty((0,), dtype=np.float32)
+    else:
+        scores_np = to_numpy(scores_value).astype(np.float32).reshape(-1)
+    if len(boxes_np) != instance_count or len(scores_np) != instance_count:
+        raise ValueError(
+            "PCS output count mismatch: "
+            f"masks={instance_count}, boxes={len(boxes_np)}, scores={len(scores_np)}"
+        )
+    if not np.isfinite(boxes_np).all() or not np.isfinite(scores_np).all():
+        raise ValueError("PCS boxes and scores must be finite")
+
     probs = state.get("masks_logits")
     probs_np = [] if probs is None else to_numpy(probs).astype(np.float32)
     if isinstance(probs_np, np.ndarray) and probs_np.ndim == 4:
+        if probs_np.shape[1] != 1:
+            raise ValueError(f"PCS mask logits must have one channel, got shape {probs_np.shape}")
         probs_np = probs_np[:, 0]
+    elif isinstance(probs_np, np.ndarray) and probs_np.ndim == 2:
+        probs_np = probs_np[None, ...]
+    if isinstance(probs_np, np.ndarray) and len(probs_np) != instance_count:
+        raise ValueError(
+            f"PCS mask logits count {len(probs_np)} does not match masks {instance_count}"
+        )
     return {
         "masks": [m for m in masks_np],
         "boxes": [base._clip_box_xyxy(b.tolist(), width, height) for b in boxes_np],
@@ -227,6 +330,7 @@ def run_pcs_from_boxes(predictor: Any, image: Image.Image, prompt_boxes: list[li
 def review_row(
     group: PcsCategoryImage,
     prompt_count: int,
+    confidence: float,
     side: str = "",
     input_overlay: str = "",
     pcs_overlay: str = "",
@@ -241,8 +345,11 @@ def review_row(
         "image_path": group.image_path,
         "image_id": group.image_id,
         "label": group.label,
+        "annotation_relpath": group.annotation_relpath,
+        "annotation_sha256": group.annotation_sha256,
+        "image_sha256": group.image_sha256,
         "text_prompt": "",
-        "confidence": "0.5",
+        "confidence": float(confidence),
         "prompt_count": prompt_count,
         "gt_count": len(group.boxes),
         "pred_count": pred_count,
@@ -266,6 +373,9 @@ def write_review(rows: list[dict[str, Any]], out_dir: Path) -> None:
         "image_path",
         "image_id",
         "label",
+        "annotation_relpath",
+        "annotation_sha256",
+        "image_sha256",
         "text_prompt",
         "confidence",
         "prompt_count",
@@ -322,27 +432,64 @@ def write_class_summary(rows: list[dict[str, Any]], out_dir: Path) -> None:
             writer.writerow({**item, "success_rate": rate, "status": "pending" if reviewed == 0 else "reviewed"})
 
 
-def run_groups(groups: list[PcsCategoryImage], out_dir: Path, prompt_counts: list[int], threshold: float, device: str, dry_run: bool) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
+def run_groups(
+    groups: list[PcsCategoryImage],
+    out_dir: Path,
+    prompt_counts: list[int],
+    threshold: float,
+    device: str,
+    dry_run: bool,
+) -> None:
+    if not groups:
+        raise ValueError("At least one PCS group is required")
+    if len({group.group_id for group in groups}) != len(groups):
+        raise ValueError("PCS group_id values must be unique")
+    if (
+        not prompt_counts
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in prompt_counts
+        )
+        or len(set(prompt_counts)) != len(prompt_counts)
+    ):
+        raise ValueError("prompt_counts must contain unique positive integers")
+    if not np.isfinite(threshold) or not 0.0 <= float(threshold) <= 1.0:
+        raise ValueError("threshold must be finite and within [0, 1]")
+
+    expected_run_ids = [
+        f"{group.group_id}_p{prompt_count}"
+        for group in groups
+        for prompt_count in prompt_counts
+        if len(group.boxes) >= prompt_count
+    ]
+    if not expected_run_ids:
+        raise ValueError("No PCS runs can be generated from the selected groups")
+    if len(set(expected_run_ids)) != len(expected_run_ids):
+        raise ValueError("PCS run_id values must be unique")
+
+    eval_utils.prepare_empty_output_dir(out_dir)
     (out_dir / "groups").mkdir(parents=True, exist_ok=True)
-    (out_dir / "selected_groups.json").write_text(json.dumps([asdict(g) for g in groups], ensure_ascii=False, indent=2), encoding="utf-8")
+    eval_utils.write_json_atomic(
+        out_dir / "selected_groups.json",
+        [asdict(group) for group in groups],
+    )
 
     rows: list[dict[str, Any]] = []
     if dry_run:
         for group in groups:
             for prompt_count in prompt_counts:
                 if len(group.boxes) >= prompt_count:
-                    rows.append(review_row(group, prompt_count))
+                    rows.append(review_row(group, prompt_count, threshold))
         write_review(rows, out_dir)
         write_class_summary(rows, out_dir)
         return
 
     predictor = base.init_image_predictor(device)
-    pred_jsonl = out_dir / "predictions.jsonl"
-    with pred_jsonl.open("w", encoding="utf-8") as f:
-        for gi, group in enumerate(groups, start=1):
-            with Image.open(group.image_path) as im:
-                image = im.convert("RGB")
+    predictions_path = out_dir / "predictions.jsonl"
+    with predictions_path.open("w", encoding="utf-8") as stream:
+        for group_index, group in enumerate(groups, start=1):
+            with Image.open(group.image_path) as image_file:
+                image = image_file.convert("RGB")
             for prompt_count in prompt_counts:
                 if len(group.boxes) < prompt_count:
                     continue
@@ -350,45 +497,88 @@ def run_groups(groups: list[PcsCategoryImage], out_dir: Path, prompt_counts: lis
                 run_id = f"{group.group_id}_p{prompt_count}"
                 run_dir = out_dir / "groups" / run_id
                 run_dir.mkdir(parents=True, exist_ok=True)
-                print(f"[{gi}/{len(groups)}] PCS {run_id} prompts={prompt_count} gt={len(group.boxes)}")
-                pcs = run_pcs_from_boxes(predictor, image, prompt_boxes, threshold)
-                input_img = draw_pcs_input_overlay(image, group, prompt_boxes)
-                pcs_img = draw_pcs_result_overlay(image, group, pcs)
-                side = base.side_by_side(input_img, pcs_img)
+                print(
+                    f"[{group_index}/{len(groups)}] PCS {run_id} "
+                    f"prompts={prompt_count} gt={len(group.boxes)}"
+                )
+                pcs = run_pcs_from_boxes(
+                    predictor, image, prompt_boxes, float(threshold)
+                )
+                input_image = draw_pcs_input_overlay(image, group, prompt_boxes)
+                pcs_image = draw_pcs_result_overlay(image, group, pcs)
+                side = base.side_by_side(input_image, pcs_image)
                 input_path = run_dir / "input_overlay.png"
                 pcs_path = run_dir / "pcs_overlay.png"
                 side_path = run_dir / "side_by_side.png"
-                input_img.save(input_path)
-                pcs_img.save(pcs_path)
+                input_image.save(input_path)
+                pcs_image.save(pcs_path)
                 side.save(side_path)
+
+                pred_instances = []
+                for instance_index, (mask, box, score) in enumerate(
+                    zip(pcs["masks"], pcs["boxes"], pcs["scores"])
+                ):
+                    mask_artifact = eval_utils.save_binary_mask(
+                        out_dir,
+                        f"groups/{run_id}/pred_masks/pred_{instance_index:04d}.png",
+                        mask,
+                    )
+                    pred_instances.append(
+                        {
+                            "instance_index": instance_index,
+                            "mask_artifact": mask_artifact,
+                            "box_xyxy": box,
+                            "score": float(score),
+                        }
+                    )
+
                 pred_record = {
                     **asdict(group),
+                    "source": "O3",
                     "run_id": run_id,
                     "text_prompt": "",
-                    "confidence": threshold,
+                    "confidence": float(threshold),
                     "prompt_count": prompt_count,
                     "prompt_boxes_xyxy": prompt_boxes,
                     "pred_count": len(pcs["boxes"]),
                     "pred_boxes_xyxy": pcs["boxes"],
                     "scores": pcs["scores"],
+                    "pred_instances": pred_instances,
                     "input_overlay": base.relative(input_path, out_dir),
                     "pcs_overlay": base.relative(pcs_path, out_dir),
                     "side_by_side": base.relative(side_path, out_dir),
                 }
-                (run_dir / "prediction.json").write_text(json.dumps(pred_record, ensure_ascii=False, indent=2), encoding="utf-8")
-                f.write(json.dumps(pred_record, ensure_ascii=False) + "\n")
+                eval_utils.write_json_atomic(run_dir / "prediction.json", pred_record)
+                stream.write(json.dumps(pred_record, ensure_ascii=False) + "\n")
                 rows.append(
                     review_row(
                         group,
                         prompt_count,
+                        float(threshold),
                         side=base.relative(side_path, out_dir),
                         input_overlay=base.relative(input_path, out_dir),
                         pcs_overlay=base.relative(pcs_path, out_dir),
                         pred_count=len(pcs["boxes"]),
                     )
                 )
+        stream.flush()
+        os.fsync(stream.fileno())
+
     write_review(rows, out_dir)
     write_class_summary(rows, out_dir)
+    eval_utils.write_complete_run_manifest(
+        out_dir,
+        run_kind="pcs_o3_grouped_eval",
+        selected_manifest_path="selected_groups.json",
+        predictions_jsonl_path="predictions.jsonl",
+        expected_selected_ids=[group.group_id for group in groups],
+        expected_prediction_ids=expected_run_ids,
+        metadata={
+            "source": "O3",
+            "confidence": float(threshold),
+            "prompt_counts": list(prompt_counts),
+        },
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -407,16 +597,58 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    out_dir = Path(args.out_dir) if args.out_dir else REPO_ROOT / ".runtime" / "eval" / "pcs_o3_grouped_eval" / time.strftime("%Y%m%d_%H%M%S")
-    prompt_counts = [int(x.strip()) for x in args.prompt_counts.split(",") if x.strip()]
-    min_boxes = max(prompt_counts) if prompt_counts else 1
-    groups = collect_o3_category_images(Path(args.o3_root), args.images_per_category, [s.strip() for s in args.split_order.split(",") if s.strip()], min_boxes)
+    out_dir = (
+        Path(args.out_dir)
+        if args.out_dir
+        else REPO_ROOT
+        / ".runtime"
+        / "eval"
+        / "pcs_o3_grouped_eval"
+        / time.strftime("%Y%m%d_%H%M%S")
+    )
+    prompt_counts = [
+        int(value.strip())
+        for value in args.prompt_counts.split(",")
+        if value.strip()
+    ]
+    if (
+        not prompt_counts
+        or any(value <= 0 for value in prompt_counts)
+        or len(set(prompt_counts)) != len(prompt_counts)
+    ):
+        raise ValueError("--prompt-counts must contain unique positive integers")
+    if not np.isfinite(args.confidence) or not 0.0 <= float(args.confidence) <= 1.0:
+        raise ValueError("--confidence must be finite and within [0, 1]")
+    split_order = [
+        split.strip() for split in args.split_order.split(",") if split.strip()
+    ]
+    if not split_order:
+        raise ValueError("--split-order must contain at least one split")
+
+    groups = collect_o3_category_images(
+        Path(args.o3_root),
+        args.images_per_category,
+        split_order,
+        max(prompt_counts),
+    )
     if args.max_groups > 0:
         groups = groups[: args.max_groups]
+    if not groups:
+        raise ValueError("No PCS groups selected")
     print(f"Selected {len(groups)} O3 category-image groups")
-    print(f"Runs to generate: {sum(1 for g in groups for n in prompt_counts if len(g.boxes) >= n)}")
+    print(
+        "Runs to generate: "
+        f"{sum(1 for group in groups for count in prompt_counts if len(group.boxes) >= count)}"
+    )
     print(f"Output directory: {out_dir}")
-    run_groups(groups, out_dir, prompt_counts, args.confidence, args.device, args.dry_run)
+    run_groups(
+        groups,
+        out_dir,
+        prompt_counts,
+        float(args.confidence),
+        args.device,
+        args.dry_run,
+    )
     print(f"Done. Review sheet: {out_dir / 'review_sheet.csv'}")
     print(f"Class summary: {out_dir / 'class_summary.csv'}")
 

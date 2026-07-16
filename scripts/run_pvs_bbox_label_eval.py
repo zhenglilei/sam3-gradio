@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Batch PVS bbox prompting from labeled O3 COCO and T4 LabelMe annotations.
+"""Batch PVS bbox prompting from labeled O3 and T4 COCO annotations.
 
 This script uses the same SAM3 PVS path as the demo: set_image once per image,
 then predict_inst(box=...) for each labeled bbox. PVS is class agnostic, so the
@@ -16,7 +16,7 @@ import sys
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 import cv2
@@ -27,6 +27,9 @@ from PIL import Image, ImageDraw, ImageFont
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from scripts import offline_eval_utils as eval_utils
+
 
 QY_CACHE_DIR = Path("/data/zhengqiyuan/.cache")
 RUNTIME_DIR = REPO_ROOT / ".runtime"
@@ -51,7 +54,6 @@ os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(QY_CACHE_DIR / "huggingface" 
 os.environ.setdefault("MODELSCOPE_CACHE", str(QY_CACHE_DIR / "modelscope"))
 
 
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 SUCCESS_VALUES = {"1", "true", "yes", "y", "success", "pass", "成功", "通过", "好", "及格"}
 FAIL_VALUES = {"0", "false", "no", "n", "fail", "failed", "失败", "不通过", "差"}
 
@@ -67,6 +69,10 @@ class EvalSample:
     annotation_id: str
     label: str
     bbox_xyxy: list[float]
+    category_label: str
+    annotation_relpath: str
+    annotation_sha256: str
+    image_sha256: str
     label_shape_type: str = ""
 
 
@@ -110,78 +116,239 @@ def _mask_box(mask: np.ndarray) -> list[float]:
     return [float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)]
 
 
-def _find_image_path(base_dir: Path, split: str, file_name: str) -> Path | None:
-    candidates = [
-        base_dir / split / file_name,
-        base_dir / file_name,
-        base_dir / Path(file_name).name,
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    name = Path(file_name).name
-    matches = list(base_dir.rglob(name))
-    return matches[0] if matches else None
+def _require_dataset_root(root: Path, source: str) -> Path:
+    root = Path(root)
+    if not root.exists():
+        raise FileNotFoundError(f"{source} dataset root does not exist: {root}")
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError(f"{source} dataset root must be a non-symlink directory: {root}")
+    return root
 
 
-def _labelme_image_path(json_path: Path, data: dict[str, Any]) -> Path | None:
-    image_path = data.get("imagePath")
-    if image_path:
-        candidate = json_path.parent / image_path
-        if candidate.exists():
-            return candidate
-    for suffix in IMAGE_SUFFIXES:
-        candidate = json_path.with_suffix(suffix)
-        if candidate.exists():
-            return candidate
-    stem = json_path.stem
-    for p in json_path.parent.iterdir():
-        if p.is_file() and p.stem == stem and p.suffix.lower() in IMAGE_SUFFIXES:
-            return p
-    return None
+def _coco_integer(value: Any, *, field: str, annotation_path: Path) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"COCO {field} must be an integer in {annotation_path}")
+    return value
+
+
+def _coco_relative_path(value: Any, *, field: str, annotation_path: Path) -> PurePosixPath:
+    text = str(value or "")
+    path = PurePosixPath(text)
+    if (
+        not text
+        or "\\" in text
+        or ":" in text
+        or path.is_absolute()
+        or path.as_posix() != text
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(
+            f"COCO {field} is not a safe relative path in {annotation_path}: {text!r}"
+        )
+    return path
+
+
+def _load_coco(
+    annotation_path: Path,
+) -> tuple[dict[int, str], dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        document = json.loads(annotation_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read COCO annotation document {annotation_path}: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ValueError(f"COCO document must be an object: {annotation_path}")
+    for field in ("categories", "images", "annotations"):
+        if not isinstance(document.get(field), list):
+            raise ValueError(f"COCO schema requires a {field} list: {annotation_path}")
+
+    categories: dict[int, str] = {}
+    for record in document["categories"]:
+        if not isinstance(record, dict):
+            raise ValueError(f"COCO category must be an object: {annotation_path}")
+        category_id = _coco_integer(
+            record.get("id"), field="category id", annotation_path=annotation_path
+        )
+        name = str(record.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"COCO category {category_id} has no name: {annotation_path}")
+        if category_id in categories:
+            raise ValueError(f"Duplicate COCO category id {category_id}: {annotation_path}")
+        categories[category_id] = name
+
+    images: dict[int, dict[str, Any]] = {}
+    for record in document["images"]:
+        if not isinstance(record, dict):
+            raise ValueError(f"COCO image must be an object: {annotation_path}")
+        image_id = _coco_integer(
+            record.get("id"), field="image id", annotation_path=annotation_path
+        )
+        if image_id in images:
+            raise ValueError(f"Duplicate COCO image id {image_id}: {annotation_path}")
+        _coco_relative_path(
+            record.get("file_name"), field="image file_name", annotation_path=annotation_path
+        )
+        for field in ("width", "height"):
+            value = _coco_integer(
+                record.get(field), field=f"image {field}", annotation_path=annotation_path
+            )
+            if value <= 0:
+                raise ValueError(f"COCO image {field} must be positive: {annotation_path}")
+        images[image_id] = record
+
+    annotations: list[dict[str, Any]] = []
+    annotation_ids: set[int] = set()
+    for record in document["annotations"]:
+        if not isinstance(record, dict):
+            raise ValueError(f"COCO annotation must be an object: {annotation_path}")
+        annotation_id = _coco_integer(
+            record.get("id"), field="annotation id", annotation_path=annotation_path
+        )
+        image_id = _coco_integer(
+            record.get("image_id"), field="annotation image_id", annotation_path=annotation_path
+        )
+        category_id = _coco_integer(
+            record.get("category_id"),
+            field="annotation category_id",
+            annotation_path=annotation_path,
+        )
+        if annotation_id in annotation_ids:
+            raise ValueError(f"Duplicate COCO annotation id {annotation_id}: {annotation_path}")
+        if image_id not in images:
+            raise ValueError(
+                f"COCO annotation {annotation_id} references unknown image_id "
+                f"{image_id}: {annotation_path}"
+            )
+        if category_id not in categories:
+            raise ValueError(
+                f"COCO annotation {annotation_id} references unknown category_id "
+                f"{category_id}: {annotation_path}"
+            )
+        bbox = record.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise ValueError(
+                f"COCO annotation {annotation_id} bbox must be [x,y,w,h]: {annotation_path}"
+            )
+        try:
+            bbox_array = np.asarray(bbox, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"COCO annotation {annotation_id} bbox is not numeric: {annotation_path}"
+            ) from exc
+        if (
+            not np.isfinite(bbox_array).all()
+            or bbox_array[2] <= 0
+            or bbox_array[3] <= 0
+        ):
+            raise ValueError(f"COCO annotation {annotation_id} bbox is invalid: {annotation_path}")
+        if "segmentation" not in record:
+            raise ValueError(
+                f"COCO annotation {annotation_id} has no segmentation: {annotation_path}"
+            )
+        annotation_ids.add(annotation_id)
+        annotations.append(record)
+    return categories, images, sorted(
+        annotations, key=lambda record: (int(record["image_id"]), int(record["id"]))
+    )
+
+
+def _annotation_label(
+    annotation: dict[str, Any],
+    category_label: str,
+    annotation_path: Path,
+) -> str:
+    if "original_label" not in annotation:
+        return category_label
+    value = annotation["original_label"]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"COCO annotation {annotation.get('id')} original_label must be a "
+            f"non-empty string: {annotation_path}"
+        )
+    return value.strip()
+
+
+def _resolve_coco_image(
+    dataset_dir: Path,
+    image_record: dict[str, Any],
+    annotation_path: Path,
+    *,
+    split: str | None,
+) -> Path:
+    relative_name = _coco_relative_path(
+        image_record.get("file_name"),
+        field="image file_name",
+        annotation_path=annotation_path,
+    )
+    if split is not None and relative_name.parts[0] != split:
+        image_path = dataset_dir.joinpath(split, *relative_name.parts)
+    else:
+        image_path = dataset_dir.joinpath(*relative_name.parts)
+    if not image_path.exists() or not image_path.is_file():
+        raise FileNotFoundError(f"COCO image does not exist: {image_path}")
+    if image_path.is_symlink():
+        raise ValueError(f"COCO image must not be a symlink: {image_path}")
+    with Image.open(image_path) as image:
+        actual_size = image.size
+    declared_size = (int(image_record["width"]), int(image_record["height"]))
+    if actual_size != declared_size:
+        raise ValueError(
+            f"COCO image dimensions {declared_size} do not match {actual_size}: {image_path}"
+        )
+    return image_path
 
 
 def collect_o3_samples(o3_root: Path, per_class: int, splits: set[str]) -> list[EvalSample]:
+    o3_root = _require_dataset_root(o3_root, "O3")
+    if not splits:
+        raise ValueError("O3 splits must not be empty")
     buckets: dict[str, list[EvalSample]] = defaultdict(list)
-    for ann_path in sorted(o3_root.rglob("annotations/instances_*.json")):
-        split = ann_path.stem.replace("instances_", "")
+    image_hashes: dict[Path, str] = {}
+    annotation_paths = sorted(o3_root.glob("*_coco/annotations/instances_*.json"))
+    for annotation_path in annotation_paths:
+        split = annotation_path.stem.removeprefix("instances_")
         if split not in splits:
             continue
-        dataset_dir = ann_path.parent.parent
+        dataset_dir = annotation_path.parent.parent
         dataset_name = dataset_dir.name
-        data = json.loads(ann_path.read_text(encoding="utf-8"))
-        categories = {int(c["id"]): str(c.get("name") or c["id"]) for c in data.get("categories", [])}
-        images = {int(img["id"]): img for img in data.get("images", [])}
-        anns = sorted(data.get("annotations", []), key=lambda a: (int(a.get("image_id", 0)), int(a.get("id", 0))))
-        for ann in anns:
-            cat_id = int(ann.get("category_id"))
-            label = categories.get(cat_id, str(cat_id))
-            if len(buckets[label]) >= per_class:
+        categories, images, annotations = _load_coco(annotation_path)
+        annotation_relpath = annotation_path.relative_to(o3_root).as_posix()
+        annotation_sha256 = eval_utils.file_sha256(annotation_path)
+        for annotation in annotations:
+            category_id = int(annotation["category_id"])
+            category_label = categories[category_id]
+            if len(buckets[category_label]) >= per_class:
                 continue
-            image_record = images.get(int(ann.get("image_id")))
-            if not image_record:
-                continue
-            image_path = _find_image_path(dataset_dir, split, str(image_record.get("file_name")))
-            if image_path is None:
-                continue
-            x, y, w, h = [float(v) for v in ann.get("bbox", [0, 0, 1, 1])]
-            width = int(image_record.get("width") or 0)
-            height = int(image_record.get("height") or 0)
-            if width <= 0 or height <= 0:
-                with Image.open(image_path) as img:
-                    width, height = img.size
-            sample_index = len(buckets[label]) + 1
-            buckets[label].append(
+            image_record = images[int(annotation["image_id"])]
+            image_path = _resolve_coco_image(
+                dataset_dir,
+                image_record,
+                annotation_path,
+                split=split,
+            )
+            if image_path not in image_hashes:
+                image_hashes[image_path] = eval_utils.file_sha256(image_path)
+            image_sha256 = image_hashes[image_path]
+            x, y, width, height = [float(value) for value in annotation["bbox"]]
+            sample_index = len(buckets[category_label]) + 1
+            buckets[category_label].append(
                 EvalSample(
-                    sample_id=f"o3_{_safe_name(label)}_{sample_index:03d}",
+                    sample_id=f"o3_{_safe_name(category_label)}_{sample_index:03d}",
                     source="O3",
                     dataset=dataset_name,
                     split=split,
                     image_path=str(image_path),
-                    image_id=str(image_record.get("id")),
-                    annotation_id=str(ann.get("id")),
-                    label=label,
-                    bbox_xyxy=_clip_box_xyxy([x, y, x + w, y + h], width, height),
+                    image_id=str(image_record["id"]),
+                    annotation_id=str(annotation["id"]),
+                    label=category_label,
+                    bbox_xyxy=_clip_box_xyxy(
+                        [x, y, x + width, y + height],
+                        int(image_record["width"]),
+                        int(image_record["height"]),
+                    ),
+                    category_label=category_label,
+                    annotation_relpath=annotation_relpath,
+                    annotation_sha256=annotation_sha256,
+                    image_sha256=image_sha256,
                 )
             )
     samples: list[EvalSample] = []
@@ -193,40 +360,81 @@ def collect_o3_samples(o3_root: Path, per_class: int, splits: set[str]) -> list[
 def collect_t4_samples(t4_root: Path, scope: str) -> list[EvalSample]:
     if scope == "none":
         return []
+    t4_root = _require_dataset_root(t4_root, "T4")
     samples: list[EvalSample] = []
-    counters: dict[str, int] = defaultdict(int)
-    for json_path in sorted(t4_root.rglob("*.json")):
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-        image_path = _labelme_image_path(json_path, data)
-        if image_path is None:
-            continue
-        with Image.open(image_path) as img:
-            width, height = img.size
-        dataset = str(json_path.relative_to(t4_root).parent)
-        for idx, shape in enumerate(data.get("shapes", []), start=1):
-            points = shape.get("points") or []
-            if len(points) < 2:
-                continue
-            arr = np.asarray(points, dtype=np.float32).reshape(-1, 2)
-            label = str(shape.get("label") or "unknown")
-            x1, y1 = arr.min(axis=0)
-            x2, y2 = arr.max(axis=0)
-            counters[label] += 1
+    counters: dict[tuple[str, str], int] = defaultdict(int)
+    image_hashes: dict[Path, str] = {}
+    annotation_paths = sorted(t4_root.glob("*/annotations/instances_all.json"))
+    for annotation_path in annotation_paths:
+        layer_dir = annotation_path.parent.parent
+        layer = layer_dir.name
+        categories, images, annotations = _load_coco(annotation_path)
+        annotation_relpath = annotation_path.relative_to(t4_root).as_posix()
+        annotation_sha256 = eval_utils.file_sha256(annotation_path)
+        for annotation in annotations:
+            category_label = categories[int(annotation["category_id"])]
+            label = _annotation_label(
+                annotation, category_label, annotation_path
+            )
+            image_record = images[int(annotation["image_id"])]
+            image_path = _resolve_coco_image(
+                layer_dir,
+                image_record,
+                annotation_path,
+                split=None,
+            )
+            if image_path not in image_hashes:
+                image_hashes[image_path] = eval_utils.file_sha256(image_path)
+            image_sha256 = image_hashes[image_path]
+            x, y, width, height = [float(value) for value in annotation["bbox"]]
+            counter_key = (layer, label)
+            counters[counter_key] += 1
             samples.append(
                 EvalSample(
-                    sample_id=f"t4_{_safe_name(label)}_{counters[label]:04d}",
+                    sample_id=(
+                        f"t4_{_safe_name(layer)}_{_safe_name(label)}_"
+                        f"{counters[counter_key]:04d}"
+                    ),
                     source="T4",
-                    dataset=dataset,
+                    dataset=f"{t4_root.name}/{layer}",
                     split="original_size",
                     image_path=str(image_path),
-                    image_id=str(json_path.relative_to(t4_root)),
-                    annotation_id=f"{json_path.stem}:shape{idx}",
+                    image_id=str(image_record["id"]),
+                    annotation_id=str(annotation["id"]),
                     label=label,
-                    bbox_xyxy=_clip_box_xyxy([x1, y1, x2, y2], width, height),
-                    label_shape_type=str(shape.get("shape_type") or ""),
+                    bbox_xyxy=_clip_box_xyxy(
+                        [x, y, x + width, y + height],
+                        int(image_record["width"]),
+                        int(image_record["height"]),
+                    ),
+                    category_label=category_label,
+                    annotation_relpath=annotation_relpath,
+                    annotation_sha256=annotation_sha256,
+                    image_sha256=image_sha256,
+                    label_shape_type=str(
+                        annotation.get("source_shape_type")
+                        or annotation.get("shape_type")
+                        or ""
+                    ),
                 )
             )
     return samples
+
+
+def require_requested_sources(
+    requested_sources: set[str],
+    counts: dict[str, int],
+) -> None:
+    missing = sorted(
+        source
+        for source in requested_sources
+        if int(counts.get(source.lower(), counts.get(source, 0))) <= 0
+    )
+    if missing:
+        raise ValueError(
+            "Requested evaluation source(s) produced zero samples: "
+            + ", ".join(missing)
+        )
 
 
 def init_image_predictor(device: str) -> Any:
@@ -393,26 +601,37 @@ def summarize_review_sheet(review_sheet: Path, summary_out: Path) -> None:
             writer.writerow({**group, "success_rate": rate, "status": status})
 
 
-def run_samples(samples: list[EvalSample], out_dir: Path, device: str, dry_run: bool = False) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "samples").mkdir(parents=True, exist_ok=True)
+def run_samples(
+    samples: list[EvalSample],
+    out_dir: Path,
+    device: str,
+    dry_run: bool = False,
+) -> None:
+    if not samples:
+        raise ValueError("At least one evaluation sample is required")
+    sample_ids = [sample.sample_id for sample in samples]
+    if len(set(sample_ids)) != len(sample_ids):
+        raise ValueError("Evaluation sample_id values must be unique")
+
+    eval_utils.prepare_empty_output_dir(out_dir)
+    (out_dir / "samples").mkdir(parents=True, exist_ok=False)
     selected_path = out_dir / "selected_samples.json"
-    selected_path.write_text(json.dumps([asdict(s) for s in samples], ensure_ascii=False, indent=2), encoding="utf-8")
+    eval_utils.write_json_atomic(selected_path, [asdict(sample) for sample in samples])
 
     if dry_run:
         rows = [
             {
-                "sample_id": s.sample_id,
-                "source": s.source,
-                "dataset": s.dataset,
-                "split": s.split,
-                "image_path": s.image_path,
-                "annotation_id": s.annotation_id,
-                "label": s.label,
-                "output_label": s.label,
-                "input_bbox_xyxy": json.dumps(s.bbox_xyxy),
+                "sample_id": sample.sample_id,
+                "source": sample.source,
+                "dataset": sample.dataset,
+                "split": sample.split,
+                "image_path": sample.image_path,
+                "annotation_id": sample.annotation_id,
+                "label": sample.label,
+                "output_label": sample.label,
+                "input_bbox_xyxy": json.dumps(sample.bbox_xyxy),
             }
-            for s in samples
+            for sample in samples
         ]
         write_review_and_summary(rows, out_dir)
         return
@@ -421,9 +640,11 @@ def run_samples(samples: list[EvalSample], out_dir: Path, device: str, dry_run: 
     state_cache: dict[str, dict[str, Any]] = {}
     rows: list[dict[str, Any]] = []
     predictions_path = out_dir / "predictions.jsonl"
-    with predictions_path.open("w", encoding="utf-8") as jsonl:
+    with predictions_path.open("x", encoding="utf-8") as jsonl:
         for index, sample in enumerate(samples, start=1):
             image_path = Path(sample.image_path)
+            if eval_utils.file_sha256(image_path) != sample.image_sha256:
+                raise ValueError(f"Source image changed after sample selection: {image_path}")
             with Image.open(image_path) as img:
                 image = img.convert("RGB")
             box = _clip_box_xyxy(sample.bbox_xyxy, image.width, image.height)
@@ -435,24 +656,32 @@ def run_samples(samples: list[EvalSample], out_dir: Path, device: str, dry_run: 
                 print(f"[{index}/{len(samples)}] reuse_image {image_path}")
 
             pred = predict_from_box(predictor, state_cache[cache_key], box)
-            mask = pred["mask"]
+            mask = np.asarray(pred["mask"], dtype=bool)
+            if mask.shape != (image.height, image.width):
+                raise ValueError(
+                    f"Prediction mask shape {mask.shape} does not match "
+                    f"image shape {(image.height, image.width)} for {sample.sample_id}"
+                )
             score = float(pred["score"])
             pred_box = _mask_box(mask)
 
             sample_dir = out_dir / "samples" / sample.sample_id
-            sample_dir.mkdir(parents=True, exist_ok=True)
+            sample_dir.mkdir(parents=True, exist_ok=False)
             input_overlay = draw_input_overlay(image, sample)
             pvs_overlay = draw_pvs_overlay(image, sample, mask, pred_box, score)
             side = side_by_side(input_overlay, pvs_overlay)
             input_overlay_path = sample_dir / "input_overlay.png"
             pvs_overlay_path = sample_dir / "pvs_overlay.png"
             side_path = sample_dir / "side_by_side.png"
-            mask_path = sample_dir / "mask.png"
             pred_path = sample_dir / "prediction.json"
             input_overlay.save(input_overlay_path)
             pvs_overlay.save(pvs_overlay_path)
             side.save(side_path)
-            Image.fromarray((mask.astype(np.uint8) * 255), mode="L").save(mask_path)
+            mask_artifact = eval_utils.save_binary_mask(
+                out_dir,
+                f"samples/{sample.sample_id}/mask.png",
+                mask,
+            )
 
             prediction = {
                 **asdict(sample),
@@ -465,9 +694,10 @@ def run_samples(samples: list[EvalSample], out_dir: Path, device: str, dry_run: 
                 "input_overlay": relative(input_overlay_path, out_dir),
                 "pvs_overlay": relative(pvs_overlay_path, out_dir),
                 "side_by_side": relative(side_path, out_dir),
-                "mask": relative(mask_path, out_dir),
+                "mask": mask_artifact["path"],
+                "mask_artifact": mask_artifact,
             }
-            pred_path.write_text(json.dumps(prediction, ensure_ascii=False, indent=2), encoding="utf-8")
+            eval_utils.write_json_atomic(pred_path, prediction)
             jsonl.write(json.dumps(prediction, ensure_ascii=False) + "\n")
             rows.append(
                 {
@@ -484,16 +714,31 @@ def run_samples(samples: list[EvalSample], out_dir: Path, device: str, dry_run: 
                     "score": f"{score:.6f}",
                     "side_by_side": relative(side_path, out_dir),
                     "pvs_overlay": relative(pvs_overlay_path, out_dir),
-                    "mask": relative(mask_path, out_dir),
+                    "mask": mask_artifact["path"],
                 }
             )
+        jsonl.flush()
+        os.fsync(jsonl.fileno())
     write_review_and_summary(rows, out_dir)
+    eval_utils.write_complete_run_manifest(
+        out_dir,
+        run_kind="pvs_bbox_label_eval",
+        selected_manifest_path="selected_samples.json",
+        predictions_jsonl_path="predictions.jsonl",
+        expected_selected_ids=sample_ids,
+        expected_prediction_ids=sample_ids,
+        metadata={
+            "sources": sorted({sample.source for sample in samples}),
+            "device": str(device),
+            "sample_count": len(samples),
+        },
+    )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run SAM3 PVS bbox prompting from O3 COCO and T4 LabelMe labels.")
+    parser = argparse.ArgumentParser(description="Run SAM3 PVS bbox prompting from strict O3 and T4 COCO labels.")
     parser.add_argument("--o3-root", type=Path, default=Path("/data/zhengqiyuan/ADC_contour/datasets/O3_coco"))
-    parser.add_argument("--t4-root", type=Path, default=Path("/data/zhengqiyuan/ADC_contour/datasets/T4/labelme_pairs/original_size"))
+    parser.add_argument("--t4-root", type=Path, default=Path("/data/zhengqiyuan/ADC_contour/datasets/T4/original_size"))
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--datasets", choices=["both", "o3", "t4"], default="both")
     parser.add_argument("--o3-per-class", type=int, default=3)
@@ -518,12 +763,30 @@ def main() -> None:
     out_dir = args.out_dir or (RUNTIME_DIR / "eval" / "pvs_bbox_label_eval" / _now_stamp())
     splits = {s.strip() for s in args.o3_splits.split(",") if s.strip()}
     samples: list[EvalSample] = []
+    requested_sources: set[str] = set()
+    source_counts = {"o3": 0, "t4": 0}
     if args.datasets in {"both", "o3"}:
-        samples.extend(collect_o3_samples(args.o3_root, max(1, int(args.o3_per_class)), splits))
-    if args.datasets in {"both", "t4"}:
-        samples.extend(collect_t4_samples(args.t4_root, args.t4_scope))
+        requested_sources.add("o3")
+        o3_samples = collect_o3_samples(
+            args.o3_root,
+            max(1, int(args.o3_per_class)),
+            splits,
+        )
+        source_counts["o3"] = len(o3_samples)
+        samples.extend(o3_samples)
+    if args.datasets in {"both", "t4"} and args.t4_scope != "none":
+        requested_sources.add("t4")
+        t4_samples = collect_t4_samples(args.t4_root, args.t4_scope)
+        source_counts["t4"] = len(t4_samples)
+        samples.extend(t4_samples)
+    require_requested_sources(requested_sources, source_counts)
     if args.max_samples and args.max_samples > 0:
         samples = samples[: args.max_samples]
+        capped_counts = {
+            "o3": sum(sample.source == "O3" for sample in samples),
+            "t4": sum(sample.source == "T4" for sample in samples),
+        }
+        require_requested_sources(requested_sources, capped_counts)
     if not samples:
         raise SystemExit("No evaluation samples found.")
     print(f"Selected {len(samples)} samples")
