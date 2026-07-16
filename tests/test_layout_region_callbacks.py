@@ -171,6 +171,100 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertIsNotNone(document["regions"][0]["deleted_at"])
         self.assertIn("mask_rle", document["regions"][0])
 
+    def test_stale_draft_cannot_bind_to_a_different_layout(self):
+        loaded_a = demo_module._load_layout_region_context(self.layout_state)
+        region_state_a, editor_a = loaded_a[0], loaded_a[1]
+        stale_editor = copy.deepcopy(editor_a)
+        stale_editor["client_intent"]["lasso_polygon"] = [
+            [4, 3],
+            [44, 3],
+            [44, 33],
+            [4, 33],
+        ]
+
+        layout_id_b = "layout2"
+        source_mask_b = np.zeros((36, 48), dtype=np.uint8)
+        source_mask_b[10:25, 12:36] = 1
+        source_hash_b = regions.mask_pixel_sha256(source_mask_b)
+        layout_dir_b = self.layout_masks / self.session_id / layout_id_b
+        layout_dir_b.mkdir(parents=True)
+        cv2.imwrite(str(layout_dir_b / "source_mask.png"), source_mask_b * 255)
+        Image.new("RGB", (48, 36), (80, 64, 48)).save(
+            layout_dir_b / "source_image.png"
+        )
+        (layout_dir_b / "layout_meta.json").write_text(
+            json.dumps({"source_mask_pixel_sha256": source_hash_b}),
+            encoding="utf-8",
+        )
+        layout_state_b = {
+            "session_id": self.session_id,
+            "layout_id": layout_id_b,
+            "source_mask_pixel_sha256": source_hash_b,
+        }
+        loaded_b = demo_module._load_layout_region_context(layout_state_b)
+        region_state_b = loaded_b[0]
+
+        stale_preview = demo_module._preview_layout_region(
+            layout_state_b,
+            region_state_b,
+            stale_editor,
+        )
+        self.assertIn("does not match current layout", stale_preview[3])
+        self.assertEqual(
+            stale_preview[1]["client_intent"]["layout_id"],
+            layout_id_b,
+        )
+        self.assertEqual(stale_preview[1]["client_intent"]["lasso_polygon"], [])
+        self.assertEqual(
+            stale_preview[1]["server_view"]["draft_region_overlay_image"],
+            "",
+        )
+
+        retagged_editor = copy.deepcopy(stale_editor)
+        retagged_editor["client_intent"].update(
+            {
+                "layout_id": layout_id_b,
+                "source_mask_hash": source_hash_b,
+                "expected_regions_revision": region_state_b["regions_revision"],
+            }
+        )
+        retagged_preview = demo_module._preview_layout_region(
+            layout_state_b,
+            region_state_a,
+            retagged_editor,
+        )
+        self.assertIn("Region state layout_id does not match", retagged_preview[3])
+        self.assertEqual(
+            retagged_preview[1]["client_intent"]["layout_id"],
+            layout_id_b,
+        )
+        self.assertEqual(retagged_preview[1]["client_intent"]["lasso_polygon"], [])
+
+        failed_save = demo_module._save_layout_region(
+            layout_state_b,
+            region_state_a,
+            retagged_editor,
+            "metal",
+            "must_not_save",
+        )
+        self.assertIn("Region state layout_id does not match", failed_save[7])
+        self.assertEqual(
+            failed_save[1]["client_intent"]["layout_id"],
+            layout_id_b,
+        )
+        self.assertEqual(failed_save[1]["client_intent"]["lasso_polygon"], [])
+        self.assertEqual(
+            failed_save[1]["server_view"]["draft_region_overlay_image"],
+            "",
+        )
+        document_b, _ = self.store.load_document(
+            self.session_id,
+            layout_id_b,
+            source_hash_b,
+        )
+        self.assertEqual(regions.active_regions(document_b), [])
+        self.assertEqual(document_b["regions_revision"], 0)
+
     def test_layout_download_wrapper_publishes_copies_only_for_file_outputs(self):
         internal_dir = self.root / "internal_layout"
         internal_dir.mkdir()

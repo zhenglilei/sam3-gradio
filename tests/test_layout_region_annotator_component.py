@@ -58,6 +58,21 @@ class LayoutRegionAnnotatorComponentTest(unittest.TestCase):
         self.assertIn("黄色：Draft", source)
         self.assertIn("绿色：Saved Region", source)
 
+    def test_frontend_binds_loaded_images_and_draft_to_layout_identity(self):
+        source = (
+            ROOT / "layout_region_annotator" / "frontend" / "Index.svelte"
+        ).read_text(encoding="utf-8")
+        self.assertIn("const generation = ++imageLoadGeneration", source)
+        self.assertIn("generation === imageLoadGeneration", source)
+        self.assertIn("const nextIdentity = layoutIdentity(intent)", source)
+        self.assertIn("if (!imagesReady)", source)
+        self.assertIn("activeDraftIdentity = loadedIdentity", source)
+        self.assertGreaterEqual(
+            source.count("activeDraftIdentity !== loadedIdentity"),
+            2,
+        )
+        self.assertIn("Layout 已切换，Draft 已清除", source)
+
 
 if __name__ == "__main__":
     unittest.main()

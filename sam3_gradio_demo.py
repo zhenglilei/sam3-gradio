@@ -3350,6 +3350,37 @@ def _layout_region_identity(layout_state):
     return session_id, layout_id, source_mask_hash
 
 
+def _layout_region_state_matches_identity(
+    region_state, session_id, layout_id, source_mask_hash
+):
+    if not isinstance(region_state, dict):
+        return False
+    return all(
+        region_state.get(field) == expected
+        for field, expected in {
+            "session_id": session_id,
+            "layout_id": layout_id,
+            "source_mask_hash": source_mask_hash,
+        }.items()
+    )
+
+
+def _validate_layout_region_state_identity(layout_state, region_state):
+    session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+    if not isinstance(region_state, dict):
+        raise _layout_regions.RegionValidationError("Region state is missing")
+    for field, expected in {
+        "session_id": session_id,
+        "layout_id": layout_id,
+        "source_mask_hash": source_mask_hash,
+    }.items():
+        if region_state.get(field) != expected:
+            raise _layout_regions.RegionValidationError(
+                f"Region state {field} does not match current layout"
+            )
+    return session_id, layout_id, source_mask_hash
+
+
 def _layout_region_client_intent(payload):
     raw = payload if isinstance(payload, dict) else {}
     intent = raw.get("client_intent") if isinstance(raw.get("client_intent"), dict) else raw
@@ -3368,15 +3399,28 @@ def _layout_region_client_intent(payload):
     }
 
 
-def _validate_layout_region_intent(layout_state, intent, *, require_lasso=False):
-    session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+def _validate_layout_region_intent(
+    layout_state,
+    intent,
+    *,
+    region_state=None,
+    require_lasso=False,
+):
+    if region_state is None:
+        session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+    else:
+        session_id, layout_id, source_mask_hash = _validate_layout_region_state_identity(
+            layout_state, region_state
+        )
     for field, value in {
         "session_id": session_id,
         "layout_id": layout_id,
         "source_mask_hash": source_mask_hash,
     }.items():
         if intent.get(field) != value:
-            raise _layout_regions.RegionValidationError(f"Region request {field} does not match current layout")
+            raise _layout_regions.RegionValidationError(
+                f"Region request {field} does not match current layout"
+            )
     if intent.get("expected_regions_revision") is None:
         raise _layout_regions.RegionValidationError("Region request revision is missing")
     if require_lasso and intent.get("tool_mode") != "lasso":
@@ -3531,7 +3575,7 @@ def _preview_layout_region(layout_state, region_state, editor_payload):
     selected = (region_state or {}).get("selected_region_id") if isinstance(region_state, dict) else None
     try:
         session_id, layout_id, source_mask_hash = _validate_layout_region_intent(
-            layout_state, intent, require_lasso=True
+            layout_state, intent, region_state=region_state, require_lasso=True
         )
         region_mask, document = _LAYOUT_REGION_STORE.preview_region(
             session_id=session_id,
@@ -3577,7 +3621,9 @@ def _preview_layout_region(layout_state, region_state, editor_payload):
 
 def _select_layout_region(layout_state, region_state, selected_region_id):
     try:
-        session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+        session_id, layout_id, source_mask_hash = _validate_layout_region_state_identity(
+            layout_state, region_state
+        )
         document, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
         selected = int(selected_region_id) if selected_region_id not in (None, "") else None
         state = _layout_region_state_from_document(document, selected)
@@ -3603,7 +3649,14 @@ def _select_layout_region(layout_state, region_state, selected_region_id):
         )
 
 
-def _layout_region_latest_values(layout_state, selected, status, intent=None, keep_draft=False):
+def _layout_region_latest_values(
+    layout_state,
+    selected,
+    status,
+    intent=None,
+    keep_draft=False,
+    region_state=None,
+):
     session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
     document, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
     state = _layout_region_state_from_document(document, selected)
@@ -3612,6 +3665,12 @@ def _layout_region_latest_values(layout_state, selected, status, intent=None, ke
     if (
         keep_draft
         and isinstance(intent, dict)
+        and _layout_region_state_matches_identity(
+            region_state, session_id, layout_id, source_mask_hash
+        )
+        and intent.get("session_id") == session_id
+        and intent.get("layout_id") == layout_id
+        and intent.get("source_mask_hash") == source_mask_hash
         and intent.get("expected_regions_revision") == document.get("regions_revision")
         and intent.get("lasso_polygon")
     ):
@@ -3645,7 +3704,7 @@ def _save_layout_region(layout_state, region_state, editor_payload, class_label,
     previous_selected = (region_state or {}).get("selected_region_id") if isinstance(region_state, dict) else None
     try:
         session_id, layout_id, source_mask_hash = _validate_layout_region_intent(
-            layout_state, intent, require_lasso=True
+            layout_state, intent, region_state=region_state, require_lasso=True
         )
         document, record = _LAYOUT_REGION_STORE.save_region(
             session_id=session_id,
@@ -3678,7 +3737,12 @@ def _save_layout_region(layout_state, region_state, editor_payload, class_label,
         status = f"保存 Region 失败：{exc}"
         try:
             state, editor, choices, save_update, delete_update = _layout_region_latest_values(
-                layout_state, previous_selected, status, intent=intent, keep_draft=True
+                layout_state,
+                previous_selected,
+                status,
+                intent=intent,
+                keep_draft=True,
+                region_state=region_state,
             )
         except Exception:
             state = _new_layout_region_state()
@@ -3706,7 +3770,9 @@ def _delete_layout_region(layout_state, region_state, editor_payload, selected_r
     intent = _layout_region_client_intent(editor_payload)
     previous_selected = (region_state or {}).get("selected_region_id") if isinstance(region_state, dict) else None
     try:
-        session_id, layout_id, source_mask_hash = _validate_layout_region_intent(layout_state, intent)
+        session_id, layout_id, source_mask_hash = _validate_layout_region_intent(
+            layout_state, intent, region_state=region_state
+        )
         if selected_region_id in (None, ""):
             raise _layout_regions.RegionValidationError("请先选择活动 Region")
         document, deleted = _LAYOUT_REGION_STORE.delete_region(

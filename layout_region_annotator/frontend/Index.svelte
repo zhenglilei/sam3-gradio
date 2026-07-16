@@ -35,6 +35,12 @@
 	let activePointerId: number | null = null;
 	let lastClientPoint: Point | null = null;
 	let lastSignature = "";
+	let imageLoadGeneration = 0;
+	let loadedIdentity = "";
+	let activeDraftIdentity: string | null = null;
+	let sourceLoadDone = false;
+	let maskLoadDone = false;
+	let imagesReady = $state(false);
 
 	function cloneValue(value: LayoutRegionAnnotatorValue | null | undefined): LayoutRegionAnnotatorValue {
 		return JSON.parse(JSON.stringify(value || {}));
@@ -57,6 +63,17 @@
 		return localValue.client_intent || {};
 	}
 
+	function layoutIdentity(intent: RegionClientIntent = clientIntent()): string {
+		const view = serverView();
+		return JSON.stringify([
+			intent.session_id || "",
+			intent.layout_id || "",
+			intent.source_mask_hash || "",
+			Number(view.natural_width || 0),
+			Number(view.natural_height || 0),
+		]);
+	}
+
 	function naturalWidth(): number {
 		return Math.max(1, Number(serverView().natural_width || sourceImg?.naturalWidth || 1));
 	}
@@ -69,15 +86,33 @@
 		return Math.min(1, MAX_CANVAS_SIDE / Math.max(naturalWidth(), naturalHeight()));
 	}
 
-	function loadImage(url: string | null | undefined, callback: (image: HTMLImageElement | null) => void): void {
+	function loadImage(
+		url: string | null | undefined,
+		generation: number,
+		callback: (image: HTMLImageElement | null) => void,
+	): void {
+		const finish = (image: HTMLImageElement | null) => {
+			if (generation === imageLoadGeneration) callback(image);
+		};
 		if (!url) {
-			callback(null);
+			finish(null);
 			return;
 		}
 		const image = new Image();
-		image.onload = () => callback(image);
-		image.onerror = () => callback(null);
+		image.onload = () => finish(image);
+		image.onerror = () => finish(null);
 		image.src = url;
+	}
+
+	function refreshImageReadiness(generation: number, payloadStatus: string): void {
+		if (generation !== imageLoadGeneration) return;
+		imagesReady = sourceLoadDone && maskLoadDone && sourceImg !== null && sourceMaskImg !== null;
+		if (sourceLoadDone && maskLoadDone) {
+			statusText = imagesReady
+				? payloadStatus
+				: "当前 Layout 图像加载失败，套索已禁用";
+		}
+		draw();
 	}
 
 	function rebuildSourceMaskTint(): void {
@@ -117,31 +152,67 @@
 	function ingestValue(value: LayoutRegionAnnotatorValue | null): void {
 		localValue = cloneValue(value);
 		const intent = clientIntent();
+		const view = serverView();
+		const generation = ++imageLoadGeneration;
+		const nextIdentity = layoutIdentity(intent);
+		const identityChanged = nextIdentity !== loadedIdentity;
+		loadedIdentity = nextIdentity;
+		const payloadStatus = view.status || "Region 标注器已加载";
+
 		toolMode = intent.tool_mode === "lasso" ? "lasso" : "browse";
 		points = Array.isArray(intent.lasso_polygon)
 			? intent.lasso_polygon
 					.filter((point) => Array.isArray(point) && point.length === 2)
 					.map((point) => ({ x: Number(point[0]), y: Number(point[1]) }))
 			: [];
-		statusText = serverView().status || "Region 标注器已加载";
+		if (activePointerId !== null && canvasEl?.hasPointerCapture(activePointerId)) {
+			canvasEl.releasePointerCapture(activePointerId);
+		}
 		drawing = false;
 		capped = false;
 		activePointerId = null;
+		activeDraftIdentity = null;
 		lastClientPoint = null;
-		loadImage(serverView().source_image, (image) => {
+		savedOverlayImg = null;
+		draftOverlayImg = null;
+
+		if (identityChanged || view.enabled !== true) {
+			sourceImg = null;
+			sourceMaskImg = null;
+			sourceMaskTint = null;
+			sourceLoadDone = false;
+			maskLoadDone = false;
+			imagesReady = false;
+		} else {
+			sourceLoadDone = sourceImg !== null;
+			maskLoadDone = sourceMaskImg !== null;
+			imagesReady = sourceLoadDone && maskLoadDone;
+		}
+
+		if (view.enabled !== true) {
+			statusText = payloadStatus;
+			draw();
+			return;
+		}
+		statusText = imagesReady ? payloadStatus : "正在加载当前 Layout 图像…";
+		draw();
+
+		loadImage(view.source_image, generation, (image) => {
 			sourceImg = image;
-			draw();
+			sourceLoadDone = true;
+			refreshImageReadiness(generation, payloadStatus);
 		});
-		loadImage(serverView().source_mask_image, (image) => {
+		loadImage(view.source_mask_image, generation, (image) => {
 			sourceMaskImg = image;
+			maskLoadDone = true;
 			rebuildSourceMaskTint();
-			draw();
+			refreshImageReadiness(generation, payloadStatus);
 		});
-		loadImage(serverView().saved_region_overlay_image, (image) => {
+		loadImage(view.saved_region_overlay_image, generation, (image) => {
 			savedOverlayImg = image;
 			draw();
 		});
-		loadImage(serverView().draft_region_overlay_image, (image) => {
+		loadImage(view.draft_region_overlay_image, generation, (image) => {
 			draftOverlayImg = image;
 			draw();
 		});
@@ -194,13 +265,19 @@
 	}
 
 	function onPointerDown(event: PointerEvent): void {
-		if (event.button !== 0 || toolMode !== "lasso" || serverView().enabled === false) return;
+		if (event.button !== 0 || toolMode !== "lasso" || serverView().enabled !== true) return;
+		if (!imagesReady) {
+			statusText = "当前 Layout 图像尚未加载完成，不能开始套索";
+			draw();
+			return;
+		}
 		event.preventDefault();
 		clearServerDraftLocally();
 		points = [eventToNatural(event)];
 		drawing = true;
 		capped = false;
 		activePointerId = event.pointerId;
+		activeDraftIdentity = loadedIdentity;
 		lastClientPoint = { x: event.clientX, y: event.clientY };
 		canvasEl.setPointerCapture(event.pointerId);
 		statusText = "正在绘制 Draft";
@@ -210,6 +287,10 @@
 
 	function onPointerMove(event: PointerEvent): void {
 		if (!drawing || event.pointerId !== activePointerId || !lastClientPoint) return;
+		if (activeDraftIdentity !== loadedIdentity) {
+			cancelDraft("Layout 已切换，Draft 已清除");
+			return;
+		}
 		event.preventDefault();
 		const cssDistance = Math.hypot(event.clientX - lastClientPoint.x, event.clientY - lastClientPoint.y);
 		if (cssDistance < SAMPLE_DISTANCE_CSS_PX) return;
@@ -238,6 +319,7 @@
 			canvasEl.releasePointerCapture(activePointerId);
 		}
 		activePointerId = null;
+		activeDraftIdentity = null;
 		lastClientPoint = null;
 		drawing = false;
 		event.preventDefault();
@@ -245,6 +327,10 @@
 
 	function onPointerUp(event: PointerEvent): void {
 		if (!drawing || event.pointerId !== activePointerId) return;
+		if (activeDraftIdentity !== loadedIdentity) {
+			cancelDraft("Layout 已切换，Draft 已清除");
+			return;
+		}
 		appendFinalPoint(event);
 		finishPointer(event);
 		const unique = new Set(points.map((point) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`));
@@ -262,6 +348,7 @@
 			canvasEl.releasePointerCapture(activePointerId);
 		}
 		activePointerId = null;
+		activeDraftIdentity = null;
 		lastClientPoint = null;
 		drawing = false;
 		capped = false;
@@ -300,7 +387,11 @@
 			context.fillRect(0, 0, width, height);
 			context.fillStyle = "#64748b";
 			context.font = "18px sans-serif";
-			context.fillText("请先生成版图 binary mask", 24, 42);
+			context.fillText(
+				serverView().enabled === true ? "正在加载当前 Layout 图像…" : "请先生成版图 binary mask",
+				24,
+				42,
+			);
 		}
 		context.imageSmoothingEnabled = false;
 		if (sourceMaskTint) context.drawImage(sourceMaskTint, 0, 0, width, height);
