@@ -2235,7 +2235,7 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
     if show_instances and _is_pcs_mode(mode):
         for inst in _active_instances(pcs_state):
             color = (0, 255, 90)
-            paint(inst["mask_fullres_bool"], color, 0.24)
+            paint(inst["mask_fullres_bool"], color, 0.40)
             x1, y1, x2, y2 = [int(round(v)) for v in inst["box_xyxy_px"]]
             queue_box((x1, y1, x2, y2), color, 3)
             queue_label(f"PCS#{inst['id']}", x1, max(18, y1 - 6), color)
@@ -2248,6 +2248,18 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             queue_box(box, color, 3)
             x1, y1, x2, y2 = [int(round(v)) for v in box]
             queue_label(f"B-ID{rec.get('id')}", x1, max(18, y1 - 6), color)
+        for inst in _active_instances(pvs_state):
+            for event in reversed(inst.get("prompt_history") or []):
+                if event.get("op") != "create_from_pending_bbox":
+                    continue
+                box = event.get("box_xyxy_px") or []
+                if len(box) != 4:
+                    continue
+                color = (0, 255, 90)
+                queue_box(box, color, 3)
+                x1, y1, _, _ = [int(round(v)) for v in box]
+                queue_label(f"PVS-B#{inst['id']}", x1, max(18, y1 - 6), color)
+                break
     if show_instances and _is_pvs_pool_mode(mode):
         active_id = pvs_state.get("active_instance_id")
         for inst in _active_instances(pvs_state):
