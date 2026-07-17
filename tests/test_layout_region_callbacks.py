@@ -432,6 +432,17 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertTrue(region_ids)
         self.assertTrue(region_ids <= layout_ids)
         self.assertFalse(region_ids & image_ids)
+        point_refine_accordions = [
+            component
+            for component in config["components"]
+            if component.get("type") == "accordion"
+            and component.get("props", {}).get("label") == "点提示修缮"
+        ]
+        self.assertEqual(len(point_refine_accordions), 1)
+        point_refine_accordion = point_refine_accordions[0]
+        self.assertIn(point_refine_accordion["id"], image_ids)
+        self.assertNotIn(point_refine_accordion["id"], layout_ids)
+        self.assertFalse(point_refine_accordion["props"]["visible"])
 
         dependencies = {item.get("api_name"): item for item in config["dependencies"]}
         run_dependency = dependencies["_run_layout_mask_page"]
@@ -439,7 +450,47 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertIn("_export_layout_regions", dependencies)
         self.assertEqual((len(run_dependency["inputs"]), len(run_dependency["outputs"])), (9, 8))
         self.assertEqual((len(clear_dependency["inputs"]), len(clear_dependency["outputs"])), (2, 8))
+        layout_point_dependency = dependencies["_layout_point_refine"]
+        pvs_point_dependency = dependencies["_pvs_point_prompt"]
+        mode_dependency = dependencies["_switch_mode_with_layout_editor"]
+        upload_point_cleanup = dependencies["_clear_pending_point_payload"]
+        self.assertEqual(
+            (len(layout_point_dependency["inputs"]), len(layout_point_dependency["outputs"])),
+            (7, 11),
+        )
+        self.assertEqual(
+            (len(pvs_point_dependency["inputs"]), len(pvs_point_dependency["outputs"])),
+            (6, 9),
+        )
+        self.assertEqual(
+            (len(upload_point_cleanup["inputs"]), len(upload_point_cleanup["outputs"])),
+            (0, 1),
+        )
+        self.assertEqual(len(mode_dependency["outputs"]), 28)
+        self.assertIn(point_refine_accordion["id"], mode_dependency["outputs"])
+        self.assertIsNotNone(upload_point_cleanup.get("trigger_after"))
 
+        source = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        create_demo_node = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "create_demo"
+        )
+        common_assignment = next(
+            node for node in ast.walk(create_demo_node)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "common"
+                for target in node.targets
+            )
+        )
+        self.assertEqual(
+            [item.id for item in common_assignment.value.elts],
+            [
+                "image_upload", "result_image", "analysis_report", "pcs_summary",
+                "pvs_summary", "active_pvs", "interaction_info", "pvs_pending_count",
+            ],
+        )
     def test_protected_function_bodies_match_baseline(self):
         baseline = subprocess.run(
             ["git", "show", "fef70b7:sam3_gradio_demo.py"],

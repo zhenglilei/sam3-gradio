@@ -2490,7 +2490,9 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
         w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
         tool = _click_tool_key(click_tool)
         if _is_layout_mask_mode(mode):
-            info = "版图 mask 提示分割不使用左侧点击交互；请在版图面板中加载 mask 并更新预览。"
+            prompt_state["last_point"] = point
+            point_payload = _payload_json({"type": "point", "point_xy_px": point, "image_width": w, "image_height": h})
+            info = f"已记录待应用版图修缮点: {[round(v, 1) for v in point]}。请选择点类型并点击“应用点提示”。"
             return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
         if _is_pcs_mode(mode) and tool != "bbox":
             tool = "bbox"
@@ -2624,6 +2626,12 @@ def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
         text_prompt_update = gr.update()
         info = "版图 mask 提示分割的临时点击提示已清空；已生成实例和待生成 bbox 不会被删除"
     return prompt_state, "", "", "", pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), text_prompt_update, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+
+
+def _clear_pending_point_payload():
+    return ""
+
+
 def _pcs_choice_update(pcs_state):
     choices = [(f"PCS #{i['id']} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pcs_state)]
     return gr.update(choices=choices, value=choices[0][1] if choices else None)
@@ -2636,7 +2644,7 @@ def _status_label(status):
 def _pvs_choice_update(pvs_state):
     choices = [(f"PVS #{i['id']} {_status_label(i.get('status'))}", str(i["id"])) for i in _active_instances(pvs_state)]
     active = pvs_state.get("active_instance_id")
-    value = str(active) if active is not None and any(c[1] == str(active) for c in choices) else (choices[0][1] if choices else None)
+    value = str(active) if active is not None and any(c[1] == str(active) for c in choices) else None
     return gr.update(choices=choices, value=value)
 
 
@@ -2888,8 +2896,143 @@ def _set_active_pvs(image_state, pcs_state, pvs_state, mode, selected_id):
         pvs_state["active_instance_id"] = int(selected_id)
         info = f"Selected PVS #{selected_id}"
     else:
+        pvs_state["active_instance_id"] = None
         info = "No PVS instance selected"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+def _refine_active_pvs_with_point(image_state, pvs_state, point, point_label, progress=None):
+    active_id = pvs_state.get("active_instance_id")
+    if active_id is None:
+        raise ValueError("请先创建或选择一个 active PVS instance")
+    try:
+        active_id = int(active_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("active PVS instance ID 无效") from exc
+
+    instances = pvs_state.get("instances", {})
+    active_inst = instances.get(active_id)
+    if active_inst is None:
+        raise ValueError("active PVS instance 不存在，请重新选择")
+    if active_inst.get("status") == "deleted":
+        raise ValueError("active PVS instance 已删除，请重新选择")
+
+    point_array = np.asarray(point, dtype=np.float32).reshape(-1)
+    if point_array.shape != (2,) or not np.isfinite(point_array).all():
+        raise ValueError("point coordinate 必须是两个有限数值")
+    width = int(image_state.get("width") or 0)
+    height = int(image_state.get("height") or 0)
+    if width <= 0 or height <= 0:
+        raise ValueError("image dimensions 无效，请重新加载图像")
+    if not (0.0 <= point_array[0] < width and 0.0 <= point_array[1] < height):
+        raise ValueError("point coordinate 超出当前图像边界")
+    try:
+        point_label_value = float(point_label)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("point label 必须是 0 或 1") from exc
+    if not np.isfinite(point_label_value) or point_label_value not in (0.0, 1.0):
+        raise ValueError("point label 必须是 0 或 1")
+    point_label = int(point_label_value)
+    point_xy = [float(point_array[0]), float(point_array[1])]
+
+    previous_value = active_inst.get("pvs_lowres_logits")
+    previous_status = active_inst.get("status")
+    if previous_value is None:
+        raise ValueError("active PVS instance 缺少上一轮 low-res logits")
+    previous_logits = np.asarray(previous_value)
+    expected = _prompt_mask_size()
+    valid_previous_shape = (
+        previous_logits.ndim == 2
+        or (previous_logits.ndim == 3 and previous_logits.shape[0] == 1)
+    ) and tuple(previous_logits.shape[-2:]) == expected
+    if previous_logits.dtype != np.float32 or not valid_previous_shape or not np.isfinite(previous_logits).all():
+        raise ValueError(f"active PVS instance logits 必须是有限 float32，形状为 {expected} 或 1x{expected}")
+
+    point_name = "负向点" if point_label == 0 else "正向点"
+    _pvs_progress(progress, 0.32, f"SAM3 正在根据{point_name}修缮 active instance", delay=0.12)
+    pred = _predict_inst(
+        _fresh_state(image_state),
+        mask_input_lowres_logits=previous_logits.copy(),
+        point_coords_px=[point_xy],
+        point_labels=[point_label],
+    )
+
+    scores = np.asarray(pred.get("scores"), dtype=np.float32).reshape(-1)
+    if scores.size == 0 or not np.isfinite(scores).all():
+        raise ValueError("predict_inst 返回的候选分数无效")
+    idx = int(np.argmax(scores))
+
+    masks = np.asarray(pred.get("masks"))
+    if masks.ndim == 2:
+        masks = masks[None, ...]
+    if masks.ndim not in (3, 4) or masks.shape[0] != scores.size:
+        raise ValueError("predict_inst 返回的候选 mask 数量或形状无效")
+    mask = np.asarray(masks[idx])
+    if mask.ndim == 3 and mask.shape[0] == 1:
+        mask = mask[0]
+    if mask.ndim != 2:
+        raise ValueError("predict_inst 返回的候选 mask 必须是二维图像")
+    if mask.shape != (height, width):
+        raise ValueError("predict_inst 返回的候选 mask 尺寸与当前图像不一致")
+    if np.issubdtype(mask.dtype, np.number) and not np.isfinite(mask).all():
+        raise ValueError("predict_inst 返回的候选 mask 包含非有限值")
+    mask = mask.astype(bool)
+
+    candidate_logits = np.asarray(pred.get("lowres_logits"), dtype=np.float32)
+    if candidate_logits.ndim == 2:
+        if scores.size != 1:
+            raise ValueError("predict_inst 返回的 low-res logits 缺少候选维度")
+        selected_logits = candidate_logits
+    elif candidate_logits.ndim in (3, 4) and candidate_logits.shape[0] == scores.size:
+        selected_logits = candidate_logits[idx]
+    else:
+        raise ValueError("predict_inst 返回的 low-res logits 数量或形状无效")
+    valid_selected_shape = (
+        selected_logits.ndim == 2
+        or (selected_logits.ndim == 3 and selected_logits.shape[0] == 1)
+    ) and tuple(selected_logits.shape[-2:]) == expected
+    if not valid_selected_shape or not np.isfinite(selected_logits).all():
+        raise ValueError("predict_inst 返回的 low-res logits 无效")
+
+    score = float(scores[idx])
+    box = _mask_box(mask)
+    before = _history_snapshot(active_inst)
+    after = {
+        "box_xyxy_px": list(box),
+        "score": score,
+        "status": active_inst.get("status", "draft"),
+    }
+    prompt_type = "negative_point" if point_label == 0 else "positive_point"
+    op = "negative_point_refine" if point_label == 0 else "positive_point_refine"
+    updated_inst = dict(active_inst)
+    updated_inst["mask_fullres_bool"] = mask
+    updated_inst["box_xyxy_px"] = box
+    updated_inst["score"] = score
+    updated_inst["pvs_lowres_logits"] = selected_logits.copy()
+    updated_inst["prompt_history"] = list(active_inst.get("prompt_history") or [])
+    _append_prompt_history(
+        updated_inst,
+        {
+            "op": op,
+            "prompt": {"type": prompt_type, "point_xy_px": point_xy},
+            "before": before,
+            "after": after,
+            "candidate_scores": scores.astype(float).tolist(),
+        },
+    )
+    try:
+        current_active_id = int(pvs_state.get("active_instance_id"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("active PVS instance 在预测期间发生变化，请重试") from exc
+    if (
+        current_active_id != active_id
+        or pvs_state.get("instances") is not instances
+        or instances.get(active_id) is not active_inst
+        or active_inst.get("pvs_lowres_logits") is not previous_value
+        or active_inst.get("status") != previous_status
+    ):
+        raise ValueError("active PVS instance 在预测期间发生变化，请重试")
+    instances[active_id] = updated_inst
+    return active_id, prompt_type
 
 def _pvs_point_prompt(image_state, pcs_state, pvs_state, mode, point_payload, point_kind, progress=gr.Progress(track_tqdm=False)):
     try:
@@ -2899,39 +3042,104 @@ def _pvs_point_prompt(image_state, pcs_state, pvs_state, mode, point_payload, po
         _pvs_progress(progress, 0.04, f"准备{point_name} PVS 操作")
         point = _point_from_payload(point_payload, image_state)
         active_id = pvs_state.get("active_instance_id")
-        active_inst = None
-        mask_input = None
-        if active_id is not None and int(active_id) in pvs_state.get("instances", {}):
-            active_inst = pvs_state["instances"][int(active_id)]
-            mask_input = active_inst.get("pvs_lowres_logits")
-        if is_negative and active_inst is None:
-            raise ValueError("负向点必须先选择一个 active PVS instance")
-        _pvs_progress(progress, 0.32, f"SAM3 正在根据{point_name}预测 mask", delay=0.12)
-        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=mask_input, point_coords_px=[point], point_labels=[point_label])
-        _pvs_progress(progress, 0.78, f"整理{point_name}候选 mask")
-        idx = _best(pred)
-        mask = pred["masks"][idx]
-        if active_inst is None:
+        if active_id is None:
+            if is_negative:
+                raise ValueError("负向点必须先选择一个 active PVS instance")
+            _pvs_progress(progress, 0.32, f"SAM3 正在根据{point_name}预测 mask", delay=0.12)
+            pred = _predict_inst(_fresh_state(image_state), point_coords_px=[point], point_labels=[point_label])
+            _pvs_progress(progress, 0.78, f"整理{point_name}候选 mask")
+            idx = _best(pred)
+            mask = pred["masks"][idx]
             inst_id = int(pvs_state.get("next_instance_id", 1))
             pvs_state.setdefault("instances", {})[inst_id] = _make_inst(inst_id, "manual_pvs_point", mask, _mask_box(mask), pred["scores"][idx], pvs_logits=pred["lowres_logits"][idx], history=[{"op":"create_from_positive_point","point_xy_px":point,"candidate_scores":pred["scores"].astype(float).tolist()}])
             pvs_state["active_instance_id"] = inst_id
             pvs_state["next_instance_id"] = inst_id + 1
             info = f"Created PVS instance #{inst_id} from positive point"
         else:
-            before = _history_snapshot(active_inst)
-            active_inst["mask_fullres_bool"] = mask
-            active_inst["box_xyxy_px"] = _mask_box(mask)
-            active_inst["score"] = float(pred["scores"][idx])
-            active_inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
-            after = _history_snapshot(active_inst)
-            op = "negative_point_refine" if is_negative else "positive_point_refine"
-            prompt_type = "negative_point" if is_negative else "positive_point"
-            _append_prompt_history(active_inst, {"op":op,"prompt":{"type":prompt_type,"point_xy_px":point},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
-            info = f"PVS #{active_id} refined with {prompt_type}"
+            refined_id, prompt_type = _refine_active_pvs_with_point(
+                image_state,
+                pvs_state,
+                point,
+                point_label,
+                progress=progress,
+            )
+            _pvs_progress(progress, 0.78, f"整理{point_name}候选 mask")
+            info = f"PVS #{refined_id} refined with {prompt_type}"
         _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
     except Exception as exc:
         info = f"PVS point prompt failed: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
+def _layout_point_refine(image_state, pcs_state, pvs_state, mode, point_payload, point_kind, prompt_state, progress=gr.Progress(track_tqdm=False)):
+    prompt_state = prompt_state or _new_prompt_state()
+    try:
+        if not _is_layout_mask_mode(mode):
+            raise ValueError("点提示修缮只能在 Layout Mask 模式使用")
+        pending_point = prompt_state.get("last_point")
+        if not isinstance(pending_point, (list, tuple)) or len(pending_point) != 2:
+            raise ValueError("请先点击左侧原图记录一个待应用点")
+        point = _point_from_payload(point_payload, image_state)
+        pending_array = np.asarray(pending_point, dtype=np.float32)
+        if not np.isfinite(pending_array).all() or not np.allclose(pending_array, point, rtol=0.0, atol=1e-3):
+            raise ValueError("待应用点状态已过期，请重新点击左侧原图")
+
+        active_id = pvs_state.get("active_instance_id")
+        try:
+            active_id = int(active_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("请先创建或选择一个版图 PVS instance") from exc
+        active_inst = pvs_state.get("instances", {}).get(active_id)
+        if active_inst is None or active_inst.get("status") == "deleted":
+            raise ValueError("当前 active PVS instance 不存在或已删除")
+        creation_history = active_inst.get("prompt_history") or []
+        created_from_layout = any(
+            isinstance(event, dict) and event.get("op") == "create_from_layout_mask"
+            for event in creation_history
+        )
+        if active_inst.get("source") != "manual_pvs_layout_mask" or not created_from_layout:
+            raise ValueError("点提示修缮仅支持由版图 mask 创建的 PVS instance")
+
+        point_kind = str(point_kind or "")
+        if point_kind not in {"positive", "negative"}:
+            raise ValueError("点类型必须是正向点或负向点")
+        point_label = 0 if point_kind == "negative" else 1
+        point_name = "负向点" if point_label == 0 else "正向点"
+        _pvs_progress(progress, 0.04, f"准备版图实例{point_name}修缮")
+        refined_id, prompt_type = _refine_active_pvs_with_point(
+            image_state,
+            pvs_state,
+            point,
+            point_label,
+            progress=progress,
+        )
+        prompt_state = dict(prompt_state)
+        prompt_state["last_point"] = None
+        point_payload = ""
+        info = f"版图 PVS #{refined_id} 已应用 {prompt_type}；可继续点击下一修缮点"
+        try:
+            _pvs_progress(progress, 0.78, f"整理{point_name}候选 mask")
+            _pvs_progress(progress, 0.96, "渲染版图点提示修缮结果", delay=0.16)
+        except Exception as progress_exc:
+            info += f"；结果已保存，但进度提示更新失败: {progress_exc}"
+    except Exception as exc:
+        info = f"版图点提示修缮失败: {exc}"
+    try:
+        view = _view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+    except Exception as view_exc:
+        status = f"{info}；界面刷新失败: {view_exc}"
+        active = pvs_state.get("active_instance_id")
+        view = (
+            gr.update(),
+            gr.update(),
+            gr.update(value=status),
+            gr.update(),
+            gr.update(),
+            gr.update(value=str(active) if active is not None else None),
+            status,
+            gr.update(),
+        )
+    return prompt_state, point_payload, pvs_state, *view
 
 def _undo_pvs(image_state, pcs_state, pvs_state, mode):
     try:
@@ -3231,6 +3439,7 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         gr.update(visible=False),
         _pcs_bbox_choices(pcs_state),
         _pvs_pending_bbox_choices(pvs_state),
+        gr.update(visible=is_layout),
         *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
 def _switch_mode_with_layout_editor(mode, image_state, pcs_state, pvs_state, layout_state):
@@ -4665,6 +4874,15 @@ def create_demo():
                                     clear_prompt_btn = gr.Button("\u6e05\u7a7a\u63d0\u793a (Clear Prompts)", size="sm", variant="secondary")
                                 interaction_info = gr.Markdown("\u70b9\u51fb\u56fe\u50cf\u5f00\u59cb\u6dfb\u52a0\u63d0\u793a...", elem_id="interaction-info")
 
+                            with gr.Accordion("点提示修缮", open=False, visible=False) as layout_point_refine_panel:
+                                layout_point_kind = gr.Radio(
+                                    choices=[("正向点", "positive"), ("负向点", "negative")],
+                                    value="positive",
+                                    label="点类型",
+                                    elem_classes="mode-radio",
+                                )
+                                layout_point_btn = gr.Button("应用点提示", variant="primary")
+
                             with gr.Accordion("\u9ad8\u7ea7\u63d0\u793a\u9009\u9879", open=True):
                                 with gr.Group(visible=False) as pcs_panel:
                                     gr.Markdown("### PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272")
@@ -4965,11 +5183,12 @@ def create_demo():
                 concurrency_limit=1,
             )
 
-            image_upload.upload(fn=_init_workspace_with_layout_editor, inputs=[image_upload, mode, session_state, layout_state], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file, layout_editor], concurrency_limit=1)
+            image_upload_event = image_upload.upload(fn=_init_workspace_with_layout_editor, inputs=[image_upload, mode, session_state, layout_state], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file, layout_editor], concurrency_limit=1)
+            image_upload_event.then(fn=_clear_pending_point_payload, inputs=None, outputs=[point_payload], concurrency_limit=1)
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, *common, layout_editor], concurrency_limit=1)
+            mode.change(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, layout_point_refine_panel, *common, layout_editor], concurrency_limit=1)
             click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
             delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1)
             run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
@@ -4977,6 +5196,7 @@ def create_demo():
             delete_selected_pending_bbox_btn.click(fn=_delete_selected_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pvs_pending_bbox_selector], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
+            layout_point_btn.click(fn=_layout_point_refine, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, layout_point_kind, prompt_state], outputs=[prompt_state, point_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
             undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
             delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
