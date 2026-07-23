@@ -70,12 +70,14 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 
 - 使用当前已保存的版图 mask。
 - 载入或直接上传二值 mask PNG。
+- `版图 mask 选择`：`全部版图 mask` 保持原有单实例行为；`类别：<class_label>` 选择该类别的全部活动 Region。
+- 类别选择时 Canvas 仅显示该类别 Region 的预览并集；模型推理会按 `region_id` 升序逐条解码权威 RLE，每个 Region 独立创建一个 PVS instance。
 - 在 Canvas 编辑器里直接调整版图 mask：点中 mask 前景后拖动，滚轮缩放，用旋转手柄旋转。
 - 使用 `重置`、`居中`、`适配`、`找回视野` 快速恢复或定位版图。
 - 保留数值变换参数：`tx`、`ty`、`scale`、`rotation`、`alpha`，用于精确输入和回退。
 - `scale` 最大支持到 `20`。
 - `更新预览`：后端用 `warpAffine()` 生成权威 overlay，并校正 Canvas 显示。
-- `用版图创建实例`：提交当前 transform，由后端重新计算 matrix，再调用 `predict_inst(mask_input=...)` 创建 PVS 实例。
+- `用版图创建实例`：提交并冻结当前 transform。完整版图调用一次 `predict_inst(mask_input=...)`；类别模式对每个活动 Region 分别调用一次，并在全部成功且 Region/transform/PVS state 未变化后原子写入整批实例。
 - `点提示修缮`：选择版图创建的 active PVS instance，点击左图记录单个正向点或负向点，再手动应用。
 
 每轮点修缮只使用当前实例上一轮保存的 low-res logits 和本次单点，成功后保存新的 logits 供下一轮继续使用。没有 active 版图实例、实例来源不符或缺少 logits 时都会拒绝，不会退回原始版图二值 mask，也不会创建 point-only 实例。
@@ -95,7 +97,7 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 
 右侧先显示 `binary mask 预览` 和 `contour overlay`，其下方是独立的 `Region Annotation Layer`：
 
-1. 切换到 `套索选择`，按住鼠标左键描出区域，松开后生成黄色 `Draft` 预览。
+1. 切换到 `套索选择`：按住鼠标左键拖动可绘制自由线条，松开后 Draft 保持开放；随后可继续拖动补自由线，或逐点点击添加直线边。至少有 3 个不同点后点击 `完成套索`，此时才会闭合并生成黄色 `Draft` 预览。
 2. 选择必填类别；`区域/模块名称` 可留空。
 3. 点击 `保存当前 Draft Region` 后，服务端会从原始套索和 source binary mask 重新计算交集，Draft 变为绿色 Saved Region。
 4. 活动 Region 可在下拉列表中选择并软删除；软删除保留历史 RLE 和 metadata，但不再显示在列表或 overlay。
@@ -104,7 +106,7 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 
 类别来自版本化配置 `layout_categories.json`。配置只约束新建 Region；已经保存的历史类别即使不再位于当前配置中，仍可恢复、显示和软删除。Region 的压缩 COCO RLE 是唯一权威几何，持久化到 `.runtime/layout_regions/<session>/<layout_id>/regions.json`。
 
-Region 标注层只属于 `版图截图转掩码` Tab，当前不会显示在 PCS/PVS 页面，也不会作为 SAM3 或 PVS prompt。
+Region 标注与管理控件只属于 `版图截图转掩码` Tab，不显示在 PCS 或 PVS Manual 页面。已保存的活动 Region 可在 Layout Mask 模式按历史类别筛选，并作为独立 mask prompt 创建 PVS 实例；RLE、area 和 bbox 等权威数据始终只在服务端读取，不发送到浏览器。
 
 下载采用显式导出边界：PCS/PVS 结果包、版图 mask/contour 和 Region 标注包会复制或打包到随机 ID 的 `public_downloads/` 子目录；`.runtime/layout_masks`、`.runtime/layout_regions`、反馈、源码、配置和模型文件不允许直接下载。Region 导出包由服务端重新校验当前 session、layout、source-mask hash 和 revision，固定包含 `regions.json`、`source_mask.png` 与 `manifest.json`。公开副本在启动及后续导出时清理，Gradio 下载缓存每小时扫描并清理超过 24 小时的文件。
 
@@ -243,13 +245,14 @@ python sam3_gradio_demo.py
 3. 在 Canvas 编辑器中调整版图：点中白色 mask 前景后拖动，滚轮缩放，用右上角旋转手柄旋转。
 4. 如果版图移出视野，可以点击 `找回视野`；如果比例不合适，可以用 `适配`；需要重新开始则用 `重置`。
 5. 右侧数值控件会同步 `tx`、`ty`、`scale`、`rotation`、`alpha`，也可以直接输入数值微调。
-6. 勾选 `显示/启用版图 overlay` 后点击 `更新预览`，后端会生成权威 overlay。
-7. 位置合适后点击 `用版图创建实例`，该实例会自动成为 active。
-8. 在 PVS 实例区选择需要修缮的版图实例。
-9. 展开左侧 `点提示修缮`，点击原图记录待应用点，新点击会覆盖尚未应用的旧点。
-10. 选择正向点补区域或负向点删区域，点击 `应用点提示`。
-11. 成功后待应用点被清空并保存新 logits；可重复步骤 9–10 继续多轮修缮。
-12. 在 PVS 实例区确认或导出。
+6. 点击 `使用当前已保存版图 mask` 加载选择器；选择 `全部版图 mask`，或选择一个 `类别：<class_label>` 查看该类 Region 的 Canvas 预览并集。
+7. 勾选 `显示/启用版图 overlay` 后点击 `更新预览`，后端会生成权威 overlay。
+8. 位置合适后点击 `用版图创建实例`。完整版图创建一个实例；类别模式中每个活动 Region 创建一个实例，整批最后一个实例自动成为 active。
+9. 在 PVS 实例区选择需要修缮的版图实例。
+10. 展开左侧 `点提示修缮`，点击原图记录待应用点，新点击会覆盖尚未应用的旧点。
+11. 选择正向点补区域或负向点删区域，点击 `应用点提示`。
+12. 成功后待应用点被清空并保存新 logits；可重复步骤 10–11 继续多轮修缮。
+13. 在 PVS 实例区确认或导出。
 
 ---
 
@@ -329,7 +332,7 @@ masks/*.png
 ### 版图 mask 创建实例
 
 ```text
-上传图片 -> 版图 mask 提示分割 -> 载入或生成二值版图 mask -> Canvas 拖动/缩放/旋转 -> 更新预览 -> 用版图创建实例 -> 确认/导出 PVS
+上传图片 -> 版图 mask 提示分割 -> 载入或生成二值版图 mask -> 选择全部 mask 或 Region 类别 -> Canvas 拖动/缩放/旋转 -> 更新预览 -> 按完整 mask 或逐 Region 创建实例 -> 确认/导出 PVS
 ```
 
 ---
@@ -417,7 +420,7 @@ tests/test_layout_region_callbacks.py
 ## 当前限制 / Known Limits
 
 - 版图点提示修缮当前每次只提交一个点，不提供多点批量、reference IoU 候选选择或硬裁剪。
-- 版图 Region 当前只用于结构标注与持久化，尚未接入 PVS prompt 或模型推理。
+- Layout Region 类别批量采用全有或全无；一个保存 Region 即使含多个连通组件也只创建一个 PVS instance，不按类别并集做单次推理。
 - Feedback 用于 RL / 偏好数据收集，不等同于正式质检系统。
 - Gradio State 暂存实例和 mask，长时间多用户并发需要迁移到 server-side cache。
 - 高分辨率图像和大量实例会增加显存与内存压力。

@@ -317,6 +317,51 @@ def active_regions(document: dict[str, Any]) -> list[dict[str, Any]]:
     return [region for region in document.get("regions", []) if region.get("deleted_at") is None]
 
 
+def active_regions_for_class(
+    document: dict[str, Any],
+    class_label: Any,
+) -> list[dict[str, Any]]:
+    """Return active Regions for one persisted class, ordered by Region id."""
+    if not isinstance(class_label, str) or not class_label.strip():
+        raise RegionValidationError("region category is required")
+    target = class_label.strip()
+    matches = [
+        record
+        for record in active_regions(document)
+        if record.get("class_label") == target
+    ]
+    return sorted(matches, key=lambda record: int(record["region_id"]))
+
+
+def decode_region_masks(
+    region_records: Iterable[dict[str, Any]],
+    expected_shape: Sequence[int],
+) -> list[tuple[dict[str, Any], np.ndarray]]:
+    """Decode Region RLEs independently while preserving record order."""
+    return [
+        (record, decode_binary_mask(record.get("mask_rle"), expected_shape))
+        for record in region_records
+    ]
+
+
+def class_region_preview_mask(
+    document: dict[str, Any],
+    class_label: Any,
+    expected_shape: Sequence[int],
+) -> np.ndarray:
+    """Build a display-only union of all active Regions in one class."""
+    if len(expected_shape) < 2:
+        raise RegionValidationError("invalid source mask shape")
+    height, width = int(expected_shape[0]), int(expected_shape[1])
+    if height <= 0 or width <= 0:
+        raise RegionValidationError("invalid source mask dimensions")
+    preview = np.zeros((height, width), dtype=bool)
+    records = active_regions_for_class(document, class_label)
+    for _, mask in decode_region_masks(records, (height, width)):
+        preview = np.logical_or(preview, mask)
+    return preview
+
+
 def rasterize_uncovered_region_mask(
     source_mask: Any,
     points: Any,

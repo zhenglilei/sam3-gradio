@@ -30,10 +30,13 @@
 	let toolMode = $state<ToolMode>("browse");
 	let statusText = $state("请先生成版图 binary mask");
 	let drawing = $state(false);
+	let openDraft = $state(false);
 	let capped = $state(false);
 	let points = $state<Point[]>([]);
 	let activePointerId: number | null = null;
 	let lastClientPoint: Point | null = null;
+	let pointerStartNatural: Point | null = null;
+	let freehandGesture = false;
 	let lastSignature = "";
 	let imageLoadGeneration = 0;
 	let loadedIdentity = "";
@@ -169,10 +172,13 @@
 			canvasEl.releasePointerCapture(activePointerId);
 		}
 		drawing = false;
+		openDraft = false;
 		capped = false;
 		activePointerId = null;
 		activeDraftIdentity = null;
 		lastClientPoint = null;
+		pointerStartNatural = null;
+		freehandGesture = false;
 		savedOverlayImg = null;
 		draftOverlayImg = null;
 
@@ -241,9 +247,12 @@
 	}
 
 	function setToolMode(mode: ToolMode): void {
-		if (drawing) cancelDraft("绘制已取消");
+		if (drawing || openDraft) cancelDraft("绘制已取消");
 		toolMode = mode;
-		statusText = mode === "lasso" ? "按住鼠标左键拖动套索" : "浏览模式：Canvas 只读";
+		statusText =
+			mode === "lasso"
+				? "按住拖动绘制自由线，松开后可继续点击添加直线段；点击完成后统一闭合"
+				: "浏览模式：Canvas 只读";
 		updateBrowserValue(false);
 		draw();
 	}
@@ -272,15 +281,24 @@
 			return;
 		}
 		event.preventDefault();
-		clearServerDraftLocally();
-		points = [eventToNatural(event)];
+		if (openDraft && activeDraftIdentity !== loadedIdentity) {
+			cancelDraft("Layout 已切换，Draft 已清除");
+			return;
+		}
+		const point = eventToNatural(event);
+		if (!openDraft) {
+			clearServerDraftLocally();
+			points = [point];
+			activeDraftIdentity = loadedIdentity;
+			capped = false;
+		}
 		drawing = true;
-		capped = false;
+		freehandGesture = false;
 		activePointerId = event.pointerId;
-		activeDraftIdentity = loadedIdentity;
+		pointerStartNatural = point;
 		lastClientPoint = { x: event.clientX, y: event.clientY };
 		canvasEl.setPointerCapture(event.pointerId);
-		statusText = "正在绘制 Draft";
+		statusText = openDraft ? "松开添加直线顶点，或继续拖动绘制自由线条" : "正在绘制 Draft";
 		updateBrowserValue(false);
 		draw();
 	}
@@ -295,6 +313,19 @@
 		const cssDistance = Math.hypot(event.clientX - lastClientPoint.x, event.clientY - lastClientPoint.y);
 		if (cssDistance < SAMPLE_DISTANCE_CSS_PX) return;
 		const point = eventToNatural(event);
+		if (!freehandGesture) {
+			freehandGesture = true;
+			if (openDraft && pointerStartNatural) {
+				const last = points[points.length - 1];
+				if (
+					(!last || last.x !== pointerStartNatural.x || last.y !== pointerStartNatural.y) &&
+					points.length < MAX_LASSO_POINTS
+				) {
+					points = [...points, pointerStartNatural];
+				}
+			}
+			openDraft = false;
+		}
 		if (points.length < MAX_LASSO_POINTS) {
 			points = [...points, point];
 		} else {
@@ -311,18 +342,45 @@
 		const last = points[points.length - 1];
 		if (last && last.x === point.x && last.y === point.y) return;
 		if (points.length < MAX_LASSO_POINTS) points = [...points, point];
-		else points = [...points.slice(0, -1), point];
+		else {
+			points = [...points.slice(0, -1), point];
+			capped = true;
+		}
 	}
 
-	function finishPointer(event: PointerEvent): void {
+	function finishPointer(event: PointerEvent, keepDraftIdentity = false): void {
 		if (activePointerId !== null && canvasEl.hasPointerCapture(activePointerId)) {
 			canvasEl.releasePointerCapture(activePointerId);
 		}
 		activePointerId = null;
-		activeDraftIdentity = null;
+		if (!keepDraftIdentity) activeDraftIdentity = null;
 		lastClientPoint = null;
+		pointerStartNatural = null;
 		drawing = false;
+		freehandGesture = false;
 		event.preventDefault();
+	}
+
+	function uniquePointCount(): number {
+		return new Set(points.map((point) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`)).size;
+	}
+
+	function finishDraft(): void {
+		if (!openDraft) return;
+		if (activeDraftIdentity !== loadedIdentity) {
+			cancelDraft("Layout 已切换，Draft 已清除");
+			return;
+		}
+		if (points.length < 3 || uniquePointCount() < 3) {
+			statusText = "套索至少需要 3 个不同点";
+			draw();
+			return;
+		}
+		openDraft = false;
+		activeDraftIdentity = null;
+		statusText = "正在生成权威 Draft 交集预览…";
+		updateBrowserValue(true);
+		draw();
 	}
 
 	function onPointerUp(event: PointerEvent): void {
@@ -331,15 +389,26 @@
 			cancelDraft("Layout 已切换，Draft 已清除");
 			return;
 		}
-		appendFinalPoint(event);
-		finishPointer(event);
-		const unique = new Set(points.map((point) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`));
-		if (points.length < 3 || unique.size < 3) {
-			cancelDraft("套索点不足，Draft 已清除");
+		if (freehandGesture) {
+			appendFinalPoint(event);
+			finishPointer(event, true);
+			openDraft = true;
+			statusText = capped
+				? `已达到 ${MAX_LASSO_POINTS} 点上限，请点击“完成套索”`
+				: `自由线段已保留；可继续拖动或点击添加直线段，最后点击“完成套索”`;
+			updateBrowserValue(false);
+			draw();
 			return;
 		}
-		statusText = "正在生成权威 Draft 交集预览…";
-		updateBrowserValue(true);
+
+		const continuingOpenDraft = openDraft;
+		if (continuingOpenDraft) appendFinalPoint(event);
+		finishPointer(event, true);
+		openDraft = true;
+		statusText = capped
+			? `已达到 ${MAX_LASSO_POINTS} 点上限，请完成套索`
+			: `Draft 点数：${points.length}；可继续拖动或点击添加直线段，最后点击“完成套索”`;
+		updateBrowserValue(false);
 		draw();
 	}
 
@@ -350,7 +419,10 @@
 		activePointerId = null;
 		activeDraftIdentity = null;
 		lastClientPoint = null;
+		pointerStartNatural = null;
 		drawing = false;
+		openDraft = false;
+		freehandGesture = false;
 		capped = false;
 		points = [];
 		clearServerDraftLocally();
@@ -365,7 +437,7 @@
 	}
 
 	function onWindowBlur(): void {
-		if (drawing) cancelDraft("窗口失焦，Draft 已清除");
+		if (drawing || openDraft) cancelDraft("窗口失焦，Draft 已清除");
 	}
 
 	function draw(): void {
@@ -402,11 +474,21 @@
 			context.beginPath();
 			context.moveTo(points[0].x, points[0].y);
 			for (let index = 1; index < points.length; index += 1) context.lineTo(points[index].x, points[index].y);
-			if (!drawing && points.length >= 3) context.closePath();
+			if (!drawing && !openDraft && points.length >= 3) context.closePath();
 			context.setLineDash([8, 5]);
 			context.lineWidth = Math.max(2, width / 700);
 			context.strokeStyle = "rgba(255, 220, 0, 0.98)";
 			context.stroke();
+			if (openDraft) {
+				context.setLineDash([]);
+				context.fillStyle = "rgba(255, 220, 0, 0.98)";
+				const radius = Math.max(2.5, width / 500);
+				for (const point of points) {
+					context.beginPath();
+					context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+					context.fill();
+				}
+			}
 			context.restore();
 		}
 	}
@@ -436,6 +518,7 @@
 		<div class="toolbar" role="group" aria-label="Region annotation tool">
 			<button type="button" class:active={toolMode === "browse"} on:click={() => setToolMode("browse")}>浏览</button>
 			<button type="button" class:active={toolMode === "lasso"} on:click={() => setToolMode("lasso")}>套索选择</button>
+			<button type="button" class="finish" disabled={!openDraft || uniquePointCount() < 3} on:click={finishDraft}>完成套索</button>
 			<button type="button" class="clear" on:click={() => cancelDraft()}>清除 Draft</button>
 		</div>
 		<div class="legend">
@@ -466,7 +549,7 @@
 	}
 	.toolbar {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 8px;
 	}
 	.toolbar button {
@@ -485,6 +568,13 @@
 	}
 	.toolbar button.clear {
 		color: #9f1239;
+	}
+	.toolbar button.finish {
+		color: #166534;
+	}
+	.toolbar button:disabled {
+		cursor: not-allowed;
+		opacity: 0.45;
 	}
 	.legend {
 		display: flex;

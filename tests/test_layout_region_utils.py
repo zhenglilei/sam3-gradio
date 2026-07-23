@@ -177,6 +177,53 @@ class LayoutRegionUtilsTest(unittest.TestCase):
         self.assertEqual(via["class_label"], "via")
         self.assertEqual(updated["regions_revision"], 3)
 
+    def test_class_region_helpers_keep_regions_independent_and_ordered(self):
+        shape = (8, 10)
+        first_mask = np.zeros(shape, dtype=bool)
+        first_mask[1:3, 1:4] = True
+        third_mask = np.zeros(shape, dtype=bool)
+        third_mask[5:7, 6:9] = True
+        deleted_mask = np.zeros(shape, dtype=bool)
+        deleted_mask[3:5, 4:6] = True
+        other_mask = np.zeros(shape, dtype=bool)
+        other_mask[0:2, 8:10] = True
+
+        first = regions.region_record_from_mask(1, "legacy-metal", "first", first_mask)
+        third = regions.region_record_from_mask(3, "legacy-metal", "third", third_mask)
+        deleted = regions.region_record_from_mask(2, "legacy-metal", "deleted", deleted_mask)
+        deleted["deleted_at"] = regions.utc_now_iso()
+        other = regions.region_record_from_mask(4, "via", "other", other_mask)
+        document = {"regions": [third, other, deleted, first]}
+
+        selected = regions.active_regions_for_class(document, "legacy-metal")
+        self.assertEqual([record["region_id"] for record in selected], [1, 3])
+
+        decoded = regions.decode_region_masks(selected, shape)
+        self.assertEqual([record["region_id"] for record, _ in decoded], [1, 3])
+        self.assertTrue(np.array_equal(decoded[0][1], first_mask))
+        self.assertTrue(np.array_equal(decoded[1][1], third_mask))
+        self.assertEqual(regions.decode_region_masks([], shape), [])
+
+        preview = regions.class_region_preview_mask(document, "legacy-metal", shape)
+        self.assertTrue(np.array_equal(preview, np.logical_or(first_mask, third_mask)))
+        self.assertFalse(np.logical_and(preview, deleted_mask).any())
+        self.assertFalse(np.logical_and(preview, other_mask).any())
+
+    def test_class_region_helpers_validate_label_and_allow_no_matches(self):
+        document = {"regions": []}
+        for invalid_label in (None, "", "   "):
+            with self.subTest(class_label=invalid_label):
+                with self.assertRaisesRegex(
+                    regions.RegionValidationError,
+                    "region category is required",
+                ):
+                    regions.active_regions_for_class(document, invalid_label)
+
+        preview = regions.class_region_preview_mask(document, "historical", (5, 7))
+        self.assertEqual(preview.dtype, np.bool_)
+        self.assertEqual(preview.shape, (5, 7))
+        self.assertFalse(preview.any())
+
     def test_stale_revision_and_hash_mismatch_are_rejected(self):
         self._save(0)
         with self.assertRaises(regions.StaleRegionsRevisionError):

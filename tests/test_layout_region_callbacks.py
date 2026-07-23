@@ -444,6 +444,22 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertNotIn(point_refine_accordion["id"], layout_ids)
         self.assertFalse(point_refine_accordion["props"]["visible"])
 
+        layout_prompt_selectors = [
+            component
+            for component in config["components"]
+            if component.get("props", {}).get("elem_id")
+            == "layout_prompt_mask_selector"
+        ]
+        self.assertEqual(len(layout_prompt_selectors), 1)
+        layout_prompt_selector = layout_prompt_selectors[0]
+        self.assertIn(layout_prompt_selector["id"], image_ids)
+        self.assertNotIn(layout_prompt_selector["id"], layout_ids)
+        self.assertEqual(
+            layout_prompt_selector["props"]["value"],
+            demo_module._LAYOUT_PROMPT_SCOPE_FULL,
+        )
+        self.assertFalse(layout_prompt_selector["props"]["interactive"])
+
         dependencies = {item.get("api_name"): item for item in config["dependencies"]}
         run_dependency = dependencies["_run_layout_mask_page"]
         clear_dependency = dependencies["_clear_current_layout_mask"]
@@ -469,6 +485,78 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertEqual(len(mode_dependency["outputs"]), 28)
         self.assertIn(point_refine_accordion["id"], mode_dependency["outputs"])
         self.assertIsNotNone(upload_point_cleanup.get("trigger_after"))
+
+        use_current_dependency = dependencies["_use_current_layout_mask"]
+        load_choices_dependency = dependencies["_load_layout_prompt_choices"]
+        select_prompt_dependency = dependencies["_select_layout_prompt_mask"]
+        create_region_pvs_dependency = dependencies[
+            "_create_pvs_from_layout_selection"
+        ]
+        self.assertEqual(
+            (
+                len(use_current_dependency["inputs"]),
+                len(use_current_dependency["outputs"]),
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            (
+                len(load_choices_dependency["inputs"]),
+                len(load_choices_dependency["outputs"]),
+            ),
+            (2, 4),
+        )
+        self.assertIsNotNone(load_choices_dependency.get("trigger_after"))
+        self.assertEqual(
+            (
+                len(select_prompt_dependency["inputs"]),
+                len(select_prompt_dependency["outputs"]),
+            ),
+            (3, 4),
+        )
+        self.assertEqual(
+            (
+                len(create_region_pvs_dependency["inputs"]),
+                len(create_region_pvs_dependency["outputs"]),
+            ),
+            (13, 12),
+        )
+        sync_transform_dependency = dependencies[
+            "_sync_layout_controls_from_editor_with_prompt_epoch"
+        ]
+        reset_transform_dependency = dependencies[
+            "_reset_layout_controls_with_prompt_epoch"
+        ]
+        self.assertEqual(
+            (
+                len(sync_transform_dependency["inputs"]),
+                len(sync_transform_dependency["outputs"]),
+            ),
+            (2, 8),
+        )
+        self.assertEqual(
+            (
+                len(reset_transform_dependency["inputs"]),
+                len(reset_transform_dependency["outputs"]),
+            ),
+            (2, 9),
+        )
+
+        reset_dependencies = [
+            item
+            for item in config["dependencies"]
+            if str(item.get("api_name") or "").startswith(
+                "_reset_layout_prompt_selection"
+            )
+        ]
+        self.assertGreaterEqual(len(reset_dependencies), 6)
+        self.assertTrue(
+            all(
+                (len(item["inputs"]), len(item["outputs"])) == (2, 3)
+                and item.get("trigger_after") is not None
+                for item in reset_dependencies
+            )
+        )
 
         source = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
         tree = ast.parse(source)

@@ -121,6 +121,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sam3_gradio_demo")
 
+_LAYOUT_PROMPT_SCOPE_FULL = "full"
+_LAYOUT_PROMPT_SCOPE_REGION_CLASS = "region_class"
+_LAYOUT_PROMPT_CLASS_PREFIX = "region_class:"
 _PUBLIC_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60
 
 
@@ -1615,6 +1618,8 @@ _WORKSPACE_CACHE_MAX_ENTRIES = 4
 _WORKSPACE_CACHE_TTL_SECONDS = 3600.0
 _LAYOUT_CACHE = {}
 _LAYOUT_CACHE_LOCK = _sam3_threading.RLock()
+_LAYOUT_PROMPT_EPOCHS = {}
+_LAYOUT_PROMPT_EPOCH_LOCK = _sam3_threading.RLock()
 _LAYOUT_REGION_STORE = _layout_regions.LayoutRegionStore(
     layout_masks_root=runtime_layout_dir,
     layout_regions_root=runtime_layout_region_dir,
@@ -1760,6 +1765,10 @@ def _new_layout_state(session_id=None):
         "source_mask_file_sha256": None,
         "target_image_sha256": None,
         "matrix_2x3": None,
+        "prompt_mask_scope": _LAYOUT_PROMPT_SCOPE_FULL,
+        "prompt_class_label": None,
+        "prompt_regions_revision": None,
+        "prompt_region_ids": [],
     }
 
 
@@ -2744,6 +2753,10 @@ def _init_workspace(input_image, mode, session_state=None):
 
 
 def _init_workspace_with_layout_editor(input_image, mode, session_state=None, layout_state=None):
+    _advance_layout_prompt_epoch(
+        layout_state=layout_state,
+        session_state=session_state,
+    )
     result = _init_workspace(input_image, mode, session_state)
     image_state = result[0]
     if isinstance(layout_state, dict) and layout_state.get("layout_id"):
@@ -3213,32 +3226,132 @@ def _latest_layout_prompt_from_instances(instances):
     return None
 
 
+def _reconstruct_frozen_layout_prompt_mask(layout_prompt):
+    if not isinstance(layout_prompt, dict):
+        raise ValueError("layout prompt metadata 无效")
+    session_id = layout_prompt.get("session_id")
+    layout_id = layout_prompt.get("layout_id")
+    source_mask_hash = layout_prompt.get("source_mask_pixel_sha256")
+    target_width = int(layout_prompt.get("target_width") or 0)
+    target_height = int(layout_prompt.get("target_height") or 0)
+    if target_width <= 0 or target_height <= 0:
+        raise ValueError("layout prompt 目标尺寸无效")
+    matrix = np.asarray(layout_prompt.get("matrix_2x3"), dtype=np.float64)
+    if matrix.shape != (2, 3) or not np.isfinite(matrix).all():
+        raise ValueError("layout prompt 缺少有效的 frozen affine matrix")
+
+    scope = layout_prompt.get("mask_scope")
+    details = {"reconstruction_status": "ok"}
+    if not scope or scope == _LAYOUT_PROMPT_SCOPE_FULL:
+        source_mask, _ = _LAYOUT_REGION_STORE.load_source_mask(
+            session_id,
+            layout_id,
+            source_mask_hash,
+        )
+        prompt_mask = source_mask
+        details["reconstruction_method"] = "frozen_full_mask"
+    elif scope == "region":
+        document, source_mask = _LAYOUT_REGION_STORE.load_document(
+            session_id,
+            layout_id,
+            source_mask_hash,
+        )
+        details["current_regions_revision"] = int(
+            document.get("regions_revision") or 0
+        )
+        try:
+            region_id = int(layout_prompt.get("region_id"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("layout Region prompt 缺少有效 region_id") from exc
+        record = next(
+            (
+                item
+                for item in document.get("regions", [])
+                if int(item.get("region_id") or 0) == region_id
+            ),
+            None,
+        )
+        if record is None:
+            raise ValueError(f"layout Region R{region_id} 不存在")
+        prompt_mask = _layout_regions.decode_binary_mask(
+            record.get("mask_rle"),
+            source_mask.shape,
+        )
+        actual_hash = _layout_regions.mask_pixel_sha256(
+            prompt_mask.astype(np.uint8)
+        )
+        expected_hash = layout_prompt.get("region_mask_pixel_sha256")
+        if not expected_hash or actual_hash != str(expected_hash):
+            raise ValueError(f"layout Region R{region_id} mask hash 不匹配")
+        prompt_class = layout_prompt.get("class_label")
+        if prompt_class is not None and record.get("class_label") != prompt_class:
+            raise ValueError(f"layout Region R{region_id} 类别与实例记录不一致")
+        details.update(
+            {
+                "reconstruction_method": "frozen_region_rle",
+                "region_id": region_id,
+                "region_deleted_at": record.get("deleted_at"),
+            }
+        )
+    else:
+        raise ValueError(f"未知 layout prompt mask_scope: {scope}")
+
+    transformed = _layout_tx.warp_layout_mask(
+        prompt_mask,
+        matrix,
+        (target_width, target_height),
+    )
+    return transformed, details
+
+
 def _write_feedback_layout_artifacts(sample_dir, layout_prompt):
     if not layout_prompt:
         return {}
     transform_path = sample_dir / "layout_transform.json"
     layout_id = layout_prompt.get("layout_id")
-    cached = None
-    if layout_id:
-        try:
-            cached = _layout_cache_get({"layout_id": layout_id, "session_id": layout_prompt.get("session_id")})
-        except Exception:
-            cached = None
     transformed_mask_path = None
-    if cached is not None and cached.get("transformed_mask") is not None:
+    reconstruction = {}
+    try:
+        transformed_mask, reconstruction = (
+            _reconstruct_frozen_layout_prompt_mask(layout_prompt)
+        )
         transformed_mask_path = sample_dir / "layout_transformed_mask.png"
-        cv2.imwrite(str(transformed_mask_path), np.asarray(cached["transformed_mask"], dtype=np.uint8) * 255)
+        written = cv2.imwrite(
+            str(transformed_mask_path),
+            np.asarray(transformed_mask, dtype=np.uint8) * 255,
+        )
+        if not written:
+            raise OSError("cannot write reconstructed layout prompt mask")
+    except Exception as exc:
+        transformed_mask_path = None
+        reconstruction = {
+            "reconstruction_status": "unavailable",
+            "reconstruction_error": str(exc),
+        }
+
     payload = {
         "layout_prompt": layout_prompt,
         "layout_id": layout_id,
-        "has_cached_transformed_mask": transformed_mask_path is not None,
-        "layout_transformed_mask_file": str(transformed_mask_path) if transformed_mask_path is not None else None,
+        "has_cached_transformed_mask": False,
+        "has_reconstructed_transformed_mask": (
+            transformed_mask_path is not None
+        ),
+        "layout_transformed_mask_file": (
+            str(transformed_mask_path)
+            if transformed_mask_path is not None
+            else None
+        ),
+        **reconstruction,
     }
     with transform_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return {
         "layout_transform_file": str(transform_path),
-        "layout_transformed_mask_file": str(transformed_mask_path) if transformed_mask_path is not None else None,
+        "layout_transformed_mask_file": (
+            str(transformed_mask_path)
+            if transformed_mask_path is not None
+            else None
+        ),
     }
 
 def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_tags, feedback_comment):
@@ -3443,6 +3556,7 @@ def _switch_mode(mode, image_state, pcs_state, pvs_state):
         *_view(image_state, pcs_state, pvs_state, mode, f"Mode: {mode}，交互提示已重置", prompt_state),
     )
 def _switch_mode_with_layout_editor(mode, image_state, pcs_state, pvs_state, layout_state):
+    _advance_layout_prompt_epoch(image_state, layout_state)
     result = _switch_mode(mode, image_state, pcs_state, pvs_state)
     if _is_layout_mask_mode(mode):
         editor = _layout_editor_payload(image_state, layout_state, "已切换到版图 mask 提示分割，Canvas payload 已刷新。")
@@ -3781,6 +3895,188 @@ def _layout_region_summaries(document):
         }
         for region in _layout_regions.active_regions(document)
     ]
+
+
+class _LayoutPromptConflictError(RuntimeError):
+    pass
+
+
+def _layout_prompt_epoch_key(
+    image_state=None,
+    layout_state=None,
+    session_state=None,
+):
+    for state in (layout_state, image_state, session_state):
+        if isinstance(state, dict) and state.get("session_id"):
+            return str(state["session_id"])
+    return "default"
+
+
+def _layout_prompt_epoch_snapshot(
+    image_state=None,
+    layout_state=None,
+    session_state=None,
+):
+    key = _layout_prompt_epoch_key(
+        image_state,
+        layout_state,
+        session_state,
+    )
+    with _LAYOUT_PROMPT_EPOCH_LOCK:
+        return key, int(_LAYOUT_PROMPT_EPOCHS.get(key, 0))
+
+
+def _advance_layout_prompt_epoch(
+    image_state=None,
+    layout_state=None,
+    session_state=None,
+):
+    key = _layout_prompt_epoch_key(
+        image_state,
+        layout_state,
+        session_state,
+    )
+    with _LAYOUT_PROMPT_EPOCH_LOCK:
+        value = int(_LAYOUT_PROMPT_EPOCHS.get(key, 0)) + 1
+        _LAYOUT_PROMPT_EPOCHS[key] = value
+        return value
+
+def _reset_layout_prompt_selection_state(layout_state):
+
+    state = dict(layout_state or {})
+    state.update(
+        {
+            "prompt_mask_scope": _LAYOUT_PROMPT_SCOPE_FULL,
+            "prompt_class_label": None,
+            "prompt_regions_revision": None,
+            "prompt_region_ids": [],
+        }
+    )
+    return state
+
+
+def _layout_prompt_selection_token(scope, class_label=None):
+    if scope == _LAYOUT_PROMPT_SCOPE_FULL:
+        return _LAYOUT_PROMPT_SCOPE_FULL
+    if scope == _LAYOUT_PROMPT_SCOPE_REGION_CLASS and isinstance(class_label, str) and class_label:
+        return f"{_LAYOUT_PROMPT_CLASS_PREFIX}{class_label}"
+    raise ValueError("版图 mask 选择无效")
+
+
+def _parse_layout_prompt_selection(value):
+    text = str(value or "")
+    if text == _LAYOUT_PROMPT_SCOPE_FULL:
+        return _LAYOUT_PROMPT_SCOPE_FULL, None
+    if text.startswith(_LAYOUT_PROMPT_CLASS_PREFIX):
+        class_label = text[len(_LAYOUT_PROMPT_CLASS_PREFIX):].strip()
+        if class_label:
+            return _LAYOUT_PROMPT_SCOPE_REGION_CLASS, class_label
+    raise ValueError("版图 mask 选择无效")
+
+
+def _layout_prompt_class_counts(document):
+    counts = {}
+    for record in sorted(
+        _layout_regions.active_regions(document),
+        key=lambda item: int(item["region_id"]),
+    ):
+        class_label = str(record.get("class_label") or "")
+        if class_label:
+            counts[class_label] = counts.get(class_label, 0) + 1
+    return list(counts.items())
+
+
+def _layout_prompt_choice_update(document=None, selected_value=None):
+    choices = [("全部版图 mask", _LAYOUT_PROMPT_SCOPE_FULL)]
+    for class_label, count in _layout_prompt_class_counts(document or {}):
+        choices.append(
+            (
+                f"类别：{class_label}（{count} 个 Region）",
+                _layout_prompt_selection_token(
+                    _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
+                    class_label,
+                ),
+            )
+        )
+    values = {value for _, value in choices}
+    selected = selected_value if selected_value in values else _LAYOUT_PROMPT_SCOPE_FULL
+    return gr.update(
+        choices=choices,
+        value=selected,
+        interactive=len(choices) > 1,
+    )
+
+
+def _load_layout_prompt_region_document(layout_state, expected_revision=None):
+    session_id, layout_id, source_mask_hash = _layout_region_identity(layout_state)
+    document, source_mask = _LAYOUT_REGION_STORE.load_document(
+        session_id,
+        layout_id,
+        source_mask_hash,
+    )
+    if expected_revision is not None:
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision != int(document.get("regions_revision") or 0)
+        ):
+            raise _layout_regions.StaleRegionsRevisionError(
+                "版图 Region 已变化；请重新加载类别后再创建 PVS 实例"
+            )
+    return document, source_mask
+
+
+def _layout_prompt_class_records(document, class_label):
+    records = _layout_regions.active_regions_for_class(document, class_label)
+    if not records:
+        raise _layout_regions.RegionValidationError(
+            f"类别 {class_label} 没有活动 Region"
+        )
+    return records
+
+
+def _layout_prompt_display_mask(layout_state, source_mask):
+    source = np.asarray(source_mask, dtype=bool)
+    scope = str(
+        (layout_state or {}).get("prompt_mask_scope")
+        or _LAYOUT_PROMPT_SCOPE_FULL
+    )
+    if scope == _LAYOUT_PROMPT_SCOPE_FULL:
+        return source, None
+    if scope != _LAYOUT_PROMPT_SCOPE_REGION_CLASS:
+        raise _layout_regions.RegionValidationError("未知的版图 prompt mask scope")
+    class_label = str((layout_state or {}).get("prompt_class_label") or "")
+    expected_revision = (layout_state or {}).get("prompt_regions_revision")
+    document, stored_source = _load_layout_prompt_region_document(
+        layout_state,
+        expected_revision=expected_revision,
+    )
+    if stored_source.shape != source.shape:
+        raise _layout_regions.RegionValidationError(
+            "Region source mask 尺寸与当前版图不一致"
+        )
+    records = _layout_prompt_class_records(document, class_label)
+    region_ids = [int(record["region_id"]) for record in records]
+    expected_ids = (layout_state or {}).get("prompt_region_ids")
+    if not isinstance(expected_ids, list) or region_ids != [
+        int(region_id) for region_id in expected_ids
+    ]:
+        raise _layout_regions.StaleRegionsRevisionError(
+            "版图 Region 列表已变化；请重新加载类别"
+        )
+    preview = _layout_regions.class_region_preview_mask(
+        document,
+        class_label,
+        source.shape,
+    )
+    if not preview.any():
+        raise _layout_regions.RegionValidationError(
+            f"类别 {class_label} 的 Region mask 为空"
+        )
+    return preview, (
+        f"Canvas 正在预览类别 {class_label} 的 "
+        f"{len(region_ids)} 个 Region 并集；推理仍按每个 Region 独立执行。"
+    )
 
 
 def _layout_region_choice_update(document, selected_region_id=None):
@@ -4281,6 +4577,17 @@ def _layout_editor_payload(image_state, layout_state, status=None):
             target_hash = image_state.get("target_image_sha256") or _layout_tx.image_pixel_sha256(image)
         pivot = cached.get("pivot_xy") or _layout_tx.pivot_from_bbox_xyxy(cached.get("foreground_bbox_xyxy"))
         state = dict(layout_state or {})
+        display_mask = source_mask
+        prompt_display_status = None
+        try:
+            display_mask, prompt_display_status = _layout_prompt_display_mask(
+                state,
+                source_mask,
+            )
+        except Exception as exc:
+            if state.get("prompt_mask_scope") == _LAYOUT_PROMPT_SCOPE_REGION_CLASS:
+                display_mask = np.zeros_like(source_mask, dtype=bool)
+                prompt_display_status = f"类别 mask 预览不可用：{exc}"
         if all(k in state and state.get(k) is not None for k in ("center_x", "center_y", "pivot_x", "pivot_y")):
             center_x = float(state.get("center_x"))
             center_y = float(state.get("center_y"))
@@ -4306,17 +4613,23 @@ def _layout_editor_payload(image_state, layout_state, status=None):
             target_image_sha256=target_hash,
         )
         transform = _layout_tx.transform_with_derived_fields(transform, (target_width, target_height))
+        editor_status = status or "版图编辑器已加载：拖动 mask 平移，滚轮缩放，拖动圆形手柄旋转。"
+        if prompt_display_status:
+            editor_status = (
+                f"{editor_status}\n{prompt_display_status}"
+                if status else prompt_display_status
+            )
         return {
             "enabled": bool(state.get("enabled", True)),
             "base_image": base_url,
-            "mask_image": _data_url(_layout_mask_to_editor_image(source_mask)),
+            "mask_image": _data_url(_layout_mask_to_editor_image(display_mask)),
             "transform": copy.deepcopy(transform),
             "target_width": target_width,
             "target_height": target_height,
             "source_width": int(cached.get("source_width") or source_mask.shape[1]),
             "source_height": int(cached.get("source_height") or source_mask.shape[0]),
             "foreground_bbox_xyxy": copy.deepcopy(cached.get("foreground_bbox_xyxy")),
-            "status": status or "版图编辑器已加载：拖动 mask 平移，滚轮缩放，拖动圆形手柄旋转。",
+            "status": editor_status,
         }
     except Exception as exc:
         return _layout_editor_empty(image_state, status or f"版图编辑器不可用：{exc}")
@@ -4374,6 +4687,14 @@ def _sync_layout_controls_from_editor(layout_state, editor_payload):
         return state, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"Canvas 变换同步失败：{exc}"
 
 
+def _sync_layout_controls_from_editor_with_prompt_epoch(
+    layout_state,
+    editor_payload,
+):
+    _advance_layout_prompt_epoch(layout_state=layout_state)
+    return _sync_layout_controls_from_editor(layout_state, editor_payload)
+
+
 def _run_layout_mask_page(session_state, image_state, input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode):
     try:
         image, mask = _binarize_layout_image(input_image, threshold, invert, open_kernel, close_kernel)
@@ -4418,6 +4739,10 @@ def _run_layout_mask_page_with_downloads(
     min_component_area,
     region_mode,
 ):
+    _advance_layout_prompt_epoch(
+        image_state=image_state,
+        session_state=session_state,
+    )
     result = list(
         _run_layout_mask_page(
             session_state,
@@ -4473,6 +4798,14 @@ def _clear_current_layout_mask(image_state, layout_state):
     _clear_layout_cache(layout_state)
     state = _new_layout_state(session_id)
     return state, _layout_editor_empty(image_state, "当前版图 mask 已清除"), None, None, None, None, None, "当前版图 mask 已清除"
+
+
+def _clear_current_layout_mask_with_prompt_epoch(
+    image_state,
+    layout_state,
+):
+    _advance_layout_prompt_epoch(image_state, layout_state)
+    return _clear_current_layout_mask(image_state, layout_state)
 
 
 def _layout_numeric_controls_changed(layout_state, tx, ty, scale, rotation_deg, preview_alpha, tol=1e-6):
@@ -4756,6 +5089,10 @@ def _layout_state_summary(layout_state):
 
 
 def _load_layout_binary_mask_png(session_state, image_state, input_image, region_mode="all"):
+    _advance_layout_prompt_epoch(
+        image_state=image_state,
+        session_state=session_state,
+    )
     try:
         image = _pil_image(input_image)
         if image is None:
@@ -4781,12 +5118,582 @@ def _load_layout_binary_mask_png(session_state, image_state, input_image, region
 
 
 def _use_current_layout_mask(image_state, layout_state):
+    _advance_layout_prompt_epoch(image_state, layout_state)
     try:
         _layout_cache_get(layout_state)
         info = "Using current saved layout mask.\n" + _layout_state_summary(layout_state)
         return layout_state, _layout_editor_payload(image_state, layout_state, "当前已保存版图 mask 已载入 Canvas。"), info
     except Exception as exc:
         return layout_state or _new_layout_state(), _layout_editor_empty(image_state, f"当前版图 mask 不可用：{exc}"), f"当前版图 mask 不可用：{exc}"
+
+
+def _pvs_creation_commit_token(pvs_state):
+    instances = pvs_state.get("instances")
+    if not isinstance(instances, dict):
+        raise ValueError("PVS instance state 无效")
+    instance_tokens = []
+    for instance_id in sorted(instances, key=int):
+        instance = instances[instance_id]
+        instance_tokens.append(
+            (
+                int(instance_id),
+                id(instance),
+                instance.get("status"),
+                id(instance.get("mask_fullres_bool")),
+                id(instance.get("pvs_lowres_logits")),
+                len(instance.get("prompt_history") or []),
+            )
+        )
+    pending_records = pvs_state.get("pending_bbox_records")
+    pending_boxes = pvs_state.get("pending_boxes")
+    return (
+        id(instances),
+        tuple(instance_tokens),
+        pvs_state.get("active_instance_id"),
+        int(pvs_state.get("next_instance_id", 1)),
+        id(pending_records),
+        len(pending_records or []),
+        id(pending_boxes),
+        len(pending_boxes or []),
+        int(pvs_state.get("next_pending_bbox_id", 1)),
+    )
+
+
+def _selected_pvs_candidate(prediction, image_shape):
+    scores = np.asarray(prediction.get("scores"), dtype=np.float32).reshape(-1)
+    if scores.size == 0 or not np.isfinite(scores).all():
+        raise ValueError("predict_inst 返回的候选分数无效")
+    index = int(np.argmax(scores))
+
+    masks = np.asarray(prediction.get("masks"))
+    if masks.ndim == 2:
+        masks = masks[None, ...]
+    if masks.ndim == 4 and masks.shape[1] == 1:
+        masks = masks[:, 0]
+    if masks.ndim != 3 or masks.shape[0] != scores.size:
+        raise ValueError("predict_inst 返回的候选 mask 数量或形状无效")
+    mask = np.asarray(masks[index])
+    if mask.shape != tuple(image_shape):
+        raise ValueError("predict_inst 返回的候选 mask 尺寸与当前图像不一致")
+    if np.issubdtype(mask.dtype, np.number) and not np.isfinite(mask).all():
+        raise ValueError("predict_inst 返回的候选 mask 包含非有限值")
+    mask = mask.astype(bool)
+    if not mask.any():
+        raise ValueError("predict_inst 返回的最佳候选 mask 为空")
+
+    logits = np.asarray(prediction.get("lowres_logits"), dtype=np.float32)
+    if logits.ndim == 2:
+        if scores.size != 1:
+            raise ValueError("predict_inst 返回的 low-res logits 缺少候选维度")
+        selected_logits = logits
+    elif logits.ndim in (3, 4) and logits.shape[0] == scores.size:
+        selected_logits = logits[index]
+    else:
+        raise ValueError("predict_inst 返回的 low-res logits 数量或形状无效")
+    expected = _prompt_mask_size()
+    valid_shape = (
+        selected_logits.ndim == 2
+        or (selected_logits.ndim == 3 and selected_logits.shape[0] == 1)
+    ) and tuple(selected_logits.shape[-2:]) == expected
+    if not valid_shape or not np.isfinite(selected_logits).all():
+        raise ValueError("predict_inst 返回的 low-res logits 无效")
+    return (
+        mask,
+        float(scores[index]),
+        selected_logits.copy(),
+        scores.astype(float).tolist(),
+    )
+
+
+def _layout_prompt_region_fingerprint(decoded_records):
+    return tuple(
+        (
+            int(record["region_id"]),
+            _layout_regions.mask_pixel_sha256(mask.astype(np.uint8)),
+        )
+        for record, mask in decoded_records
+    )
+
+
+def _validate_layout_transform_snapshot(layout_state, transform):
+    with _LAYOUT_CACHE_LOCK:
+        cached = _layout_cache_get(layout_state)
+        committed_revision = int(cached.get("committed_revision") or 0)
+        source_hash = cached.get("source_mask_pixel_sha256")
+        target_hash = cached.get("target_image_sha256")
+        matrix = copy.deepcopy(cached.get("matrix_2x3"))
+    expected_matrix = transform.get("matrix_2x3")
+    if committed_revision != int(transform.get("revision") or 0):
+        raise ValueError("版图 transform 在批量预测期间发生变化")
+    if source_hash != transform.get("source_mask_pixel_sha256"):
+        raise ValueError("版图 source mask 在批量预测期间发生变化")
+    if target_hash != transform.get("target_image_sha256"):
+        raise ValueError("目标图像在批量预测期间发生变化")
+    if matrix is None or expected_matrix is None or not np.allclose(
+        np.asarray(matrix, dtype=np.float64),
+        np.asarray(expected_matrix, dtype=np.float64),
+        rtol=0.0,
+        atol=1e-6,
+    ):
+        raise ValueError("版图 affine matrix 在批量预测期间发生变化")
+
+
+def _load_layout_prompt_choices(image_state, layout_state):
+    _advance_layout_prompt_epoch(image_state, layout_state)
+    state = _reset_layout_prompt_selection_state(layout_state)
+    try:
+        _layout_cache_get(state)
+    except Exception as exc:
+        info = f"当前版图 mask 不可用：{exc}"
+        return (
+            state,
+            _layout_editor_empty(image_state, info),
+            _layout_prompt_choice_update(),
+            info,
+        )
+    try:
+        document, _ = _load_layout_prompt_region_document(state)
+        class_counts = _layout_prompt_class_counts(document)
+        info = (
+            f"当前已保存版图 mask 已加载；可选择完整 mask 或 "
+            f"{len(class_counts)} 个 Region 类别。"
+        )
+        return (
+            state,
+            _layout_editor_payload(image_state, state, info),
+            _layout_prompt_choice_update(document),
+            info,
+        )
+    except Exception as exc:
+        info = (
+            "当前已保存版图 mask 已加载；Region 类别不可用，"
+            f"仍可使用完整 mask：{exc}"
+        )
+        return (
+            state,
+            _layout_editor_payload(image_state, state, info),
+            _layout_prompt_choice_update(),
+            info,
+        )
+
+
+def _select_layout_prompt_mask(image_state, layout_state, selection):
+    _advance_layout_prompt_epoch(image_state, layout_state)
+    state = dict(layout_state or {})
+    try:
+        scope, class_label = _parse_layout_prompt_selection(selection)
+        if scope == _LAYOUT_PROMPT_SCOPE_FULL:
+            state = _reset_layout_prompt_selection_state(state)
+            info = "已选择全部版图 mask；将保持原有单实例创建行为。"
+            return (
+                state,
+                _layout_editor_payload(image_state, state, info),
+                gr.update(value=_LAYOUT_PROMPT_SCOPE_FULL),
+                info,
+            )
+
+        document, source_mask = _load_layout_prompt_region_document(state)
+        records = _layout_prompt_class_records(document, class_label)
+        region_ids = [int(record["region_id"]) for record in records]
+        preview = _layout_regions.class_region_preview_mask(
+            document,
+            class_label,
+            source_mask.shape,
+        )
+        if not preview.any():
+            raise _layout_regions.RegionValidationError(
+                f"类别 {class_label} 的 Region mask 为空"
+            )
+        state.update(
+            {
+                "prompt_mask_scope": _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
+                "prompt_class_label": class_label,
+                "prompt_regions_revision": int(
+                    document.get("regions_revision") or 0
+                ),
+                "prompt_region_ids": region_ids,
+            }
+        )
+        selected_token = _layout_prompt_selection_token(
+            _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
+            class_label,
+        )
+        info = (
+            f"已选择类别 {class_label}：Canvas 显示 {len(region_ids)} 个 "
+            "Region 的预览并集；创建时每个 Region 单独生成一个 PVS instance。"
+        )
+        return (
+            state,
+            _layout_editor_payload(image_state, state, info),
+            gr.update(value=selected_token),
+            info,
+        )
+    except Exception as exc:
+        current_scope = str(
+            state.get("prompt_mask_scope") or _LAYOUT_PROMPT_SCOPE_FULL
+        )
+        current_class = state.get("prompt_class_label")
+        try:
+            current_token = _layout_prompt_selection_token(
+                current_scope,
+                current_class,
+            )
+        except ValueError:
+            current_token = _LAYOUT_PROMPT_SCOPE_FULL
+        info = f"版图 mask 类别选择失败，已保留原选择：{exc}"
+        return (
+            state,
+            _layout_editor_payload(image_state, state, info),
+            gr.update(value=current_token),
+            info,
+        )
+
+
+def _reset_layout_prompt_selection(image_state, layout_state):
+    _advance_layout_prompt_epoch(image_state, layout_state)
+    state = _reset_layout_prompt_selection_state(layout_state)
+    info = "版图 mask 选择已重置；点击‘使用当前已保存版图 mask’加载类别。"
+    return (
+        state,
+        _layout_editor_payload(image_state, state, info),
+        _layout_prompt_choice_update(),
+    )
+
+
+def _create_pvs_from_layout_selection(
+    image_state,
+    pcs_state,
+    pvs_state,
+    mode,
+    layout_state,
+    enabled,
+    tx,
+    ty,
+    scale,
+    rotation_deg,
+    preview_alpha,
+    editor_payload,
+    prompt_selection,
+    progress=gr.Progress(track_tqdm=False),
+):
+    state = dict(layout_state or _new_layout_state())
+    try:
+        scope, class_label = _parse_layout_prompt_selection(prompt_selection)
+        state_scope = str(
+            state.get("prompt_mask_scope") or _LAYOUT_PROMPT_SCOPE_FULL
+        )
+        if scope != state_scope:
+            raise ValueError("版图 mask 选择与服务端状态不一致，请重新选择")
+    except Exception as exc:
+        info = f"用版图 mask 创建 PVS 实例失败：{exc}"
+        editor = _layout_editor_payload(image_state, state, info)
+        return (
+            pvs_state,
+            state,
+            editor,
+            info,
+            *_view(
+                image_state,
+                pcs_state,
+                pvs_state,
+                mode,
+                info,
+                layout_state=state,
+            ),
+        )
+
+    if scope == _LAYOUT_PROMPT_SCOPE_FULL:
+        state = _reset_layout_prompt_selection_state(state)
+        return _create_pvs_from_layout_mask(
+            image_state,
+            pcs_state,
+            pvs_state,
+            mode,
+            state,
+            enabled,
+            tx,
+            ty,
+            scale,
+            rotation_deg,
+            preview_alpha,
+            editor_payload,
+            progress=progress,
+        )
+
+    try:
+        if not _is_layout_mask_mode(mode):
+            raise ValueError("版图 Region prompt 只支持在版图 mask 提示分割模式使用")
+        if state.get("prompt_mask_scope") != _LAYOUT_PROMPT_SCOPE_REGION_CLASS:
+            raise ValueError("请先在版图 mask 选择中确认一个类别")
+        if state.get("prompt_class_label") != class_label:
+            raise ValueError("版图类别选择状态不一致，请重新选择")
+        expected_revision = state.get("prompt_regions_revision")
+        prompt_epoch_key, prompt_epoch = _layout_prompt_epoch_snapshot(
+            image_state,
+            state,
+        )
+        document, source_mask = _load_layout_prompt_region_document(
+            state,
+            expected_revision=expected_revision,
+        )
+        records = _layout_prompt_class_records(document, class_label)
+        region_ids = [int(record["region_id"]) for record in records]
+        if region_ids != [int(value) for value in state.get("prompt_region_ids") or []]:
+            raise _layout_regions.StaleRegionsRevisionError(
+                "版图 Region 列表已变化，请重新加载类别"
+            )
+        decoded_records = _layout_regions.decode_region_masks(
+            records,
+            source_mask.shape,
+        )
+        frozen_region_fingerprint = _layout_prompt_region_fingerprint(
+            decoded_records
+        )
+        pvs_commit_token = _pvs_creation_commit_token(pvs_state)
+        next_instance_id = int(pvs_state.get("next_instance_id", 1))
+        existing_instance_ids = {
+            int(instance_id)
+            for instance_id in (pvs_state.get("instances") or {})
+        }
+        if next_instance_id <= 0 or (
+            existing_instance_ids
+            and next_instance_id <= max(existing_instance_ids)
+        ):
+            raise ValueError("next PVS instance ID 无效或会复用已有 ID")
+        planned_instance_ids = set(
+            range(next_instance_id, next_instance_id + len(decoded_records))
+        )
+        if planned_instance_ids.intersection(existing_instance_ids):
+            raise ValueError("Region 批次计划的 PVS instance ID 已存在")
+
+        _pvs_progress(progress, 0.04, "提交并冻结完整版图 transform")
+        state, _, transform = _commit_layout_transform(
+            image_state,
+            state,
+            enabled,
+            tx,
+            ty,
+            scale,
+            rotation_deg,
+            preview_alpha,
+            transform_payload=editor_payload,
+        )
+        target_width = int(image_state.get("width") or 0)
+        target_height = int(image_state.get("height") or 0)
+        if target_width <= 0 or target_height <= 0:
+            raise ValueError("目标图像尺寸无效")
+        target_shape = (target_height, target_width)
+        frozen_transform = copy.deepcopy(transform)
+        frozen_matrix = copy.deepcopy(frozen_transform.get("matrix_2x3"))
+        if frozen_matrix is None:
+            raise ValueError("版图 affine matrix 缺失")
+
+        base_prompt = _layout_prompt_metadata(image_state, state)
+        base_prompt["transform"] = copy.deepcopy(frozen_transform)
+        base_prompt["matrix_2x3"] = copy.deepcopy(frozen_matrix)
+        base_prompt["revision"] = int(frozen_transform.get("revision") or 0)
+        base_prompt["mask_scope"] = "region"
+        base_prompt["class_label"] = class_label
+        base_prompt["regions_revision"] = int(
+            document.get("regions_revision") or 0
+        )
+        base_prompt["batch_region_ids"] = list(region_ids)
+
+        staged_instances = {}
+        batch_size = len(decoded_records)
+        for batch_index, (record, region_mask) in enumerate(
+            decoded_records,
+            start=1,
+        ):
+            _pvs_progress(
+                progress,
+                0.14 + 0.68 * (batch_index - 1) / max(1, batch_size),
+                (
+                    f"SAM3 正在处理类别 {class_label} 的 "
+                    f"R{record['region_id']}（{batch_index}/{batch_size}）"
+                ),
+                delay=0.0,
+            )
+            transformed_region = _layout_tx.warp_layout_mask(
+                region_mask,
+                frozen_matrix,
+                (target_width, target_height),
+            )
+            transformed_region = _validate_layout_prompt_mask(
+                transformed_region
+            )
+            lowres_logits = _mask_to_lowres_logits(transformed_region)
+            if not np.any(lowres_logits > 0):
+                raise ValueError(
+                    f"R{record['region_id']} 在 low-res mask_input 中没有前景"
+                )
+            prediction = _predict_inst(
+                _fresh_state(image_state),
+                mask_input_lowres_logits=lowres_logits,
+            )
+            mask, score, selected_logits, candidate_scores = (
+                _selected_pvs_candidate(prediction, target_shape)
+            )
+            instance_id = next_instance_id + batch_index - 1
+            prompt = copy.deepcopy(base_prompt)
+            prompt.update(
+                {
+                    "region_id": int(record["region_id"]),
+                    "batch_index": batch_index,
+                    "batch_size": batch_size,
+                    "region_mask_pixel_sha256": (
+                        _layout_regions.mask_pixel_sha256(
+                            region_mask.astype(np.uint8)
+                        )
+                    ),
+                }
+            )
+            staged_instances[instance_id] = _make_inst(
+                instance_id,
+                "manual_pvs_layout_mask",
+                mask,
+                _mask_box(mask),
+                score,
+                pvs_logits=selected_logits,
+                history=[
+                    {
+                        "op": "create_from_layout_mask",
+                        "prompt": prompt,
+                        "candidate_scores": candidate_scores,
+                    }
+                ],
+            )
+
+        candidate_state = dict(pvs_state)
+        candidate_instances = dict(pvs_state.get("instances") or {})
+        candidate_instances.update(staged_instances)
+        candidate_state["instances"] = candidate_instances
+        candidate_state["next_instance_id"] = next_instance_id + batch_size
+        candidate_state["active_instance_id"] = next_instance_id + batch_size - 1
+        created_ids = list(staged_instances)
+        mapping = ", ".join(
+            f"R{region_id}→PVS#{instance_id}"
+            for region_id, instance_id in zip(region_ids, created_ids)
+        )
+        info = (
+            f"已按类别 {class_label} 原子创建 {batch_size} 个 PVS 实例："
+            f"{mapping}"
+        )
+        editor = _layout_editor_payload(image_state, state, info)
+        view = _view(
+            image_state,
+            pcs_state,
+            candidate_state,
+            mode,
+            info,
+            layout_state=state,
+        )
+
+        _pvs_progress(
+            progress,
+            0.96,
+            "准备原子提交 Region PVS 批次",
+            delay=0.12,
+        )
+        try:
+            latest_document, latest_source = (
+                _load_layout_prompt_region_document(
+                    state,
+                    expected_revision=int(
+                        document.get("regions_revision") or 0
+                    ),
+                )
+            )
+            latest_records = _layout_prompt_class_records(
+                latest_document,
+                class_label,
+            )
+            latest_decoded = _layout_regions.decode_region_masks(
+                latest_records,
+                latest_source.shape,
+            )
+            if (
+                [int(record["region_id"]) for record, _ in latest_decoded]
+                != region_ids
+                or _layout_prompt_region_fingerprint(latest_decoded)
+                != frozen_region_fingerprint
+            ):
+                raise _layout_regions.StaleRegionsRevisionError(
+                    "版图 Region 在批量预测期间发生变化"
+                )
+            current_epoch_key, current_epoch = (
+                _layout_prompt_epoch_snapshot(image_state, state)
+            )
+            if (
+                current_epoch_key != prompt_epoch_key
+                or current_epoch != prompt_epoch
+            ):
+                raise ValueError(
+                    "版图 identity、类别选择或模式在批量预测期间发生变化"
+                )
+            _validate_layout_transform_snapshot(state, frozen_transform)
+            workspace_image = _workspace(image_state)["image"]
+            workspace_hash = _layout_tx.image_pixel_sha256(
+                workspace_image
+            )
+            if workspace_hash != frozen_transform.get(
+                "target_image_sha256"
+            ):
+                raise ValueError("目标图像在批量预测期间发生变化")
+            if _pvs_creation_commit_token(pvs_state) != pvs_commit_token:
+                raise ValueError(
+                    "PVS state 在批量预测期间发生变化，整批结果未提交"
+                )
+        except Exception as conflict:
+            raise _LayoutPromptConflictError(str(conflict)) from conflict
+
+        return candidate_state, state, editor, info, *view
+    except Exception as exc:
+        info = f"按类别逐 Region 创建 PVS 失败，整批未提交：{exc}"
+        if isinstance(exc, _LayoutPromptConflictError):
+            return (
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+                info,
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+                info,
+                gr.skip(),
+            )
+        editor = _layout_editor_payload(image_state, state, info)
+        try:
+            view = _view(
+                image_state,
+                pcs_state,
+                pvs_state,
+                mode,
+                info,
+                layout_state=state,
+            )
+        except Exception as view_exc:
+            info = f"{info}；界面刷新失败：{view_exc}"
+            view = (
+                gr.update(),
+                gr.update(),
+                gr.update(value=info),
+                gr.update(),
+                gr.update(),
+                gr.update(
+                    value=(
+                        str(pvs_state.get("active_instance_id"))
+                        if pvs_state.get("active_instance_id") is not None
+                        else None
+                    )
+                ),
+                info,
+                gr.update(),
+            )
+        return pvs_state, state, editor, info, *view
 
 
 def _reset_layout_controls(image_state, layout_state):
@@ -4797,6 +5704,11 @@ def _reset_layout_controls(image_state, layout_state):
         state["center_y"] = float(image_state.get("height")) / 2.0
     info = "版图变换控件已重置。\n" + _layout_state_summary(state)
     return state, True if state.get("layout_id") else False, 0.0, 0.0, 1.0, 0.0, 0.35, _layout_editor_payload(image_state, state, "Canvas 变换已重置。"), info
+
+def _reset_layout_controls_with_prompt_epoch(image_state, layout_state):
+    _advance_layout_prompt_epoch(image_state, layout_state)
+    return _reset_layout_controls(image_state, layout_state)
+
 
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
@@ -4817,6 +5729,23 @@ def create_demo():
         font-weight: 700;
         border-radius: 6px;
         box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+    }
+    .layout-preview-pager {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        gap: 12px;
+        overflow-x: auto !important;
+        overscroll-behavior-x: contain;
+        scroll-behavior: smooth;
+        scroll-snap-type: x mandatory;
+        scrollbar-gutter: stable;
+        padding-bottom: 8px;
+    }
+    .layout-preview-page {
+        flex: 0 0 100% !important;
+        min-width: 100% !important;
+        scroll-snap-align: start;
+        scroll-snap-stop: always;
     }
     """
     theme = gr.themes.Soft(primary_hue="blue", secondary_hue="slate", font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"])
@@ -4942,6 +5871,14 @@ def create_demo():
                                     with gr.Row():
                                         use_current_layout_btn = gr.Button("使用当前已保存版图 mask", variant="secondary")
                                         load_layout_binary_btn = gr.Button("载入二值 mask PNG", variant="secondary")
+                                    layout_prompt_mask_selector = gr.Dropdown(
+                                        choices=[("全部版图 mask", _LAYOUT_PROMPT_SCOPE_FULL)],
+                                        value=_LAYOUT_PROMPT_SCOPE_FULL,
+                                        label="版图 mask 选择",
+                                        allow_custom_value=False,
+                                        interactive=False,
+                                        elem_id="layout_prompt_mask_selector",
+                                    )
                                     gr.Markdown("#### 直接上传二值 mask PNG")
                                     layout_binary_upload = gr.Image(type="numpy", label="直接上传二值 mask PNG", show_label=False, sources=["upload", "clipboard"])
                                 with gr.Accordion("\u5bfc\u51fa\u4e0e COCO \u91cf\u5316", open=False):
@@ -5027,12 +5964,17 @@ def create_demo():
                                 layout_contour_file = gr.File(label="下载 contour JSON", interactive=False)
                         with gr.Column(scale=1):
                             layout_source_preview = gr.Image(type="pil", label="原图预览", show_label=False, visible=False)
-                            gr.Markdown("#### binary mask 预览")
-                            layout_mask_preview = gr.Image(type="pil", label="binary mask 预览", show_label=False)
-                            gr.Markdown("#### contour overlay")
-                            layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=False)
+                            gr.Markdown("### mask 与 contour 预览")
+                            gr.Markdown("左右滑动或拖动下方滚动条切换预览。")
+                            with gr.Row(elem_classes="layout-preview-pager"):
+                                with gr.Column(elem_classes="layout-preview-page"):
+                                    gr.Markdown("#### binary mask 预览")
+                                    layout_mask_preview = gr.Image(type="pil", label="binary mask 预览", show_label=False)
+                                with gr.Column(elem_classes="layout-preview-page"):
+                                    gr.Markdown("#### contour overlay")
+                                    layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=False)
                             gr.Markdown("### Region Annotation Layer")
-                            gr.Markdown("黄色表示未保存 Draft；绿色表示已保存 Region。Region 标注不会进入 PCS/PVS prompt。")
+                            gr.Markdown("黄色表示未保存 Draft；绿色表示已保存 Region。标注管理只在本页；智能图像分割的 Layout Mask 模式可按类别将每个活动 Region 独立作为 mask prompt。")
                             if LayoutRegionAnnotator is not None:
                                 layout_region_annotator = LayoutRegionAnnotator(
                                     value=_layout_region_editor_empty(),
@@ -5088,10 +6030,16 @@ def create_demo():
                 concurrency_limit=1,
                 api_name="_run_layout_mask_page",
             )
-            run_layout_mask_event.then(
+            run_layout_region_event = run_layout_mask_event.then(
                 fn=_load_layout_region_context,
                 inputs=[layout_state],
                 outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+            run_layout_region_event.then(
+                fn=_reset_layout_prompt_selection,
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
             )
             save_layout_mask_btn.click(
@@ -5101,15 +6049,22 @@ def create_demo():
                 concurrency_limit=1,
             )
             clear_layout_mask_event = clear_layout_mask_btn.click(
-                fn=_clear_current_layout_mask,
+                fn=_clear_current_layout_mask_with_prompt_epoch,
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
+                api_name="_clear_current_layout_mask",
             )
-            clear_layout_mask_event.then(
+            clear_layout_region_event = clear_layout_mask_event.then(
                 fn=_clear_layout_region_context,
                 inputs=[layout_state],
                 outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+            clear_layout_region_event.then(
+                fn=_reset_layout_prompt_selection,
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
             )
             layout_region_annotator.input(
@@ -5118,10 +6073,16 @@ def create_demo():
                 outputs=[layout_region_state, layout_region_annotator, save_layout_region_btn, layout_region_status],
                 concurrency_limit=1,
             )
-            save_layout_region_btn.click(
+            save_layout_region_event = save_layout_region_btn.click(
                 fn=_save_layout_region,
                 inputs=[layout_state, layout_region_state, layout_region_annotator, layout_region_category, layout_region_name],
                 outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+            save_layout_region_event.then(
+                fn=_reset_layout_prompt_selection,
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
             )
             layout_region_selector.input(
@@ -5130,10 +6091,16 @@ def create_demo():
                 outputs=[layout_region_state, layout_region_annotator, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
                 concurrency_limit=1,
             )
-            delete_layout_region_btn.click(
+            delete_layout_region_event = delete_layout_region_btn.click(
                 fn=_delete_layout_region,
                 inputs=[layout_state, layout_region_state, layout_region_annotator, layout_region_selector],
                 outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                concurrency_limit=1,
+            )
+            delete_layout_region_event.then(
+                fn=_reset_layout_prompt_selection,
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
             )
 
@@ -5145,16 +6112,34 @@ def create_demo():
             )
 
             common = [image_upload, result_image, analysis_report, pcs_summary, pvs_summary, active_pvs, interaction_info, pvs_pending_count]
-            use_current_layout_btn.click(
+            use_current_layout_event = use_current_layout_btn.click(
                 fn=_use_current_layout_mask,
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_pvs_info],
                 concurrency_limit=1,
             )
-            load_layout_binary_btn.click(
+            use_current_layout_event.then(
+                fn=_load_layout_prompt_choices,
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info],
+                concurrency_limit=1,
+            )
+            load_layout_binary_event = load_layout_binary_btn.click(
                 fn=_load_layout_binary_mask_png,
                 inputs=[session_state, image_state, layout_binary_upload, layout_region_mode],
                 outputs=[layout_state, layout_editor, layout_pvs_info],
+                concurrency_limit=1,
+            )
+            load_layout_binary_event.then(
+                fn=_reset_layout_prompt_selection,
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
+                concurrency_limit=1,
+            )
+            layout_prompt_mask_selector.input(
+                fn=_select_layout_prompt_mask,
+                inputs=[image_state, layout_state, layout_prompt_mask_selector],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info],
                 concurrency_limit=1,
             )
             update_layout_preview_btn.click(
@@ -5164,27 +6149,33 @@ def create_demo():
                 concurrency_limit=1,
             )
             layout_editor.change(
-                fn=_sync_layout_controls_from_editor,
+                fn=_sync_layout_controls_from_editor_with_prompt_epoch,
                 inputs=[layout_state, layout_editor],
                 outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
                 concurrency_limit=1,
             )
             reset_layout_btn.click(
-                fn=_reset_layout_controls,
+                fn=_reset_layout_controls_with_prompt_epoch,
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_pvs_info],
                 concurrency_limit=1,
             )
             create_from_layout_btn.click(
-                fn=_create_pvs_from_layout_mask,
-                inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor],
+                fn=_create_pvs_from_layout_selection,
+                inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_prompt_mask_selector],
                 outputs=[pvs_state, layout_state, layout_editor, layout_pvs_info, *common],
                 show_progress_on=[result_image],
                 concurrency_limit=1,
             )
 
             image_upload_event = image_upload.upload(fn=_init_workspace_with_layout_editor, inputs=[image_upload, mode, session_state, layout_state], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file, layout_editor], concurrency_limit=1)
-            image_upload_event.then(fn=_clear_pending_point_payload, inputs=None, outputs=[point_payload], concurrency_limit=1)
+            image_upload_point_event = image_upload_event.then(fn=_clear_pending_point_payload, inputs=None, outputs=[point_payload], concurrency_limit=1)
+            image_upload_point_event.then(
+                fn=_reset_layout_prompt_selection,
+                inputs=[image_state, layout_state],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
+                concurrency_limit=1,
+            )
             image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
             finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
             clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1)

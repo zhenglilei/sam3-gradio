@@ -46,17 +46,45 @@ class LayoutRegionAnnotatorComponentTest(unittest.TestCase):
         self.assertNotIn("area", sanitized)
         self.assertNotIn("bbox_xywh", sanitized)
 
-    def test_frontend_dispatches_input_only_from_valid_pointerup_path(self):
+    def test_frontend_dispatches_input_only_from_explicit_finish(self):
         source = (ROOT / "layout_region_annotator" / "frontend" / "Index.svelte").read_text(encoding="utf-8")
         self.assertEqual(source.count('gradio.dispatch("input")'), 1)
         pointer_move = source.split("function onPointerMove", 1)[1].split("function appendFinalPoint", 1)[0]
         self.assertNotIn("dispatch", pointer_move)
         pointer_up = source.split("function onPointerUp", 1)[1].split("function cancelDraft", 1)[0]
-        self.assertIn("updateBrowserValue(true)", pointer_up)
+        self.assertNotIn("updateBrowserValue(true)", pointer_up)
+        self.assertIn("updateBrowserValue(false)", pointer_up)
+        finish_draft = source.split("function finishDraft", 1)[1].split(
+            "function onPointerUp", 1
+        )[0]
+        self.assertIn("updateBrowserValue(true)", finish_draft)
         self.assertIn("MAX_LASSO_POINTS = 4096", source)
         self.assertIn("SAMPLE_DISTANCE_CSS_PX = 3", source)
         self.assertIn("黄色：Draft", source)
         self.assertIn("绿色：Saved Region", source)
+
+    def test_frontend_supports_mixed_freehand_and_straight_segments(self):
+        source = (
+            ROOT / "layout_region_annotator" / "frontend" / "Index.svelte"
+        ).read_text(encoding="utf-8")
+        self.assertIn('let openDraft = $state(false)', source)
+        self.assertIn("function finishDraft", source)
+        finish_click = source.split("function finishDraft", 1)[1].split(
+            "function onPointerUp", 1
+        )[0]
+        self.assertIn("points.length < 3", finish_click)
+        self.assertIn("uniquePointCount() < 3", finish_click)
+        self.assertIn("updateBrowserValue(true)", finish_click)
+        pointer_up = source.split("function onPointerUp", 1)[1].split(
+            "function cancelDraft", 1
+        )[0]
+        self.assertIn("if (freehandGesture)", pointer_up)
+        self.assertIn("finishPointer(event, true)", pointer_up)
+        self.assertGreaterEqual(pointer_up.count("openDraft = true"), 2)
+        self.assertIn("updateBrowserValue(false)", pointer_up)
+        self.assertNotIn("updateBrowserValue(true)", pointer_up)
+        self.assertIn("完成套索", source)
+        self.assertIn("!drawing && !openDraft", source)
 
     def test_frontend_binds_loaded_images_and_draft_to_layout_identity(self):
         source = (
