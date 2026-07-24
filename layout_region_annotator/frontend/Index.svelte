@@ -4,11 +4,13 @@
 	import { Block } from "@gradio/atoms";
 	import { StatusTracker } from "@gradio/statustracker";
 	import { Gradio } from "@gradio/utils";
+	import { regionSummaryLabel } from "./types";
 	import type {
 		LayoutRegionAnnotatorEvents,
 		LayoutRegionAnnotatorProps,
 		LayoutRegionAnnotatorValue,
 		RegionClientIntent,
+		RegionSummary,
 		ToolMode,
 	} from "./types";
 
@@ -46,7 +48,15 @@
 	let imagesReady = $state(false);
 
 	function cloneValue(value: LayoutRegionAnnotatorValue | null | undefined): LayoutRegionAnnotatorValue {
-		return JSON.parse(JSON.stringify(value || {}));
+		const cloned = JSON.parse(JSON.stringify(value || {})) as LayoutRegionAnnotatorValue;
+		const regions = cloned.server_view?.regions;
+		if (Array.isArray(regions)) {
+			cloned.server_view!.regions = regions.map((region: RegionSummary) => ({
+				...region,
+				label: regionSummaryLabel(region),
+			}));
+		}
+		return cloned;
 	}
 
 	function heightStyle(value: number | string | undefined): string {
@@ -241,8 +251,11 @@
 				lasso_polygon: points.map((point) => [point.x, point.y]),
 			},
 		};
-		gradio.props.value = localValue;
-		lastSignature = JSON.stringify(localValue);
+		const outbound: LayoutRegionAnnotatorValue = {
+			client_intent: JSON.parse(JSON.stringify(localValue.client_intent || {})),
+		};
+		gradio.props.value = outbound;
+		lastSignature = JSON.stringify(outbound);
 		if (dispatchChange) gradio.dispatch("input");
 	}
 
@@ -515,7 +528,7 @@
 		on_clear_status={() => gradio.dispatch("clear_status", gradio.shared.loading_status)}
 	/>
 	<div class="region-annotator" style={`min-height:${heightStyle(gradio.props.height)}`}>
-		<div class="toolbar" role="group" aria-label="Region annotation tool">
+		<div class="toolbar" role="group" aria-label="Label annotation tool">
 			<button type="button" class:active={toolMode === "browse"} on:click={() => setToolMode("browse")}>浏览</button>
 			<button type="button" class:active={toolMode === "lasso"} on:click={() => setToolMode("lasso")}>套索选择</button>
 			<button type="button" class="finish" disabled={!openDraft || uniquePointCount() < 3} on:click={finishDraft}>完成套索</button>
@@ -523,7 +536,7 @@
 		</div>
 		<div class="legend">
 			<span><i class="draft"></i>黄色：Draft</span>
-			<span><i class="saved"></i>绿色：Saved Region</span>
+			<span><i class="saved"></i>绿色：Saved Label</span>
 		</div>
 		<div class="canvas-wrap">
 			<canvas

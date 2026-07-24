@@ -4,9 +4,21 @@ export type ToolMode = "browse" | "lasso";
 
 export interface RegionSummary {
 	region_id: number;
-	class_label: string;
-	name: string;
+	label?: string;
+	/** Legacy fields kept only for reading server payloads created before label unification. */
+	class_label?: string;
+	name?: string;
 	area: number;
+}
+
+export function regionSummaryLabel(region: RegionSummary): string {
+	const label = String(region.label || "").trim();
+	if (label) return label;
+
+	const classLabel = String(region.class_label || "").trim();
+	const name = String(region.name || "").trim();
+	if (classLabel && name && classLabel !== name) return `${classLabel} / ${name}`;
+	return name || classLabel || `R${region.region_id}`;
 }
 
 export interface RegionServerView {

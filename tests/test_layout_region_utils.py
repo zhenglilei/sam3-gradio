@@ -177,6 +177,172 @@ class LayoutRegionUtilsTest(unittest.TestCase):
         self.assertEqual(via["class_label"], "via")
         self.assertEqual(updated["regions_revision"], 3)
 
+    def test_canonical_label_save_and_legacy_restore_are_compatible(self):
+        updated, record = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=0,
+            lasso_polygon=self._polygon(),
+            label="M1_power",
+        )
+        self.assertEqual(record["label"], "M1_power")
+        self.assertNotIn("class_label", record)
+        self.assertNotIn("name", record)
+        self.assertEqual(regions.region_label(record), "M1_power")
+        self.assertEqual(updated["regions_revision"], 1)
+
+        self._write_categories(["via"])
+        restored, _ = self.store.load_document(
+            self.session_id,
+            self.layout_id,
+            self.source_hash,
+        )
+        self.assertEqual(restored["regions"][0]["label"], "M1_power")
+
+        path = self.store.regions_path(self.session_id, self.layout_id)
+        label_only = json.loads(path.read_text(encoding="utf-8"))
+        label_only["regions"][0].pop("class_label", None)
+        label_only["regions"][0].pop("name", None)
+        path.write_text(json.dumps(label_only), encoding="utf-8")
+        restored, _ = self.store.load_document(
+            self.session_id,
+            self.layout_id,
+            self.source_hash,
+        )
+        self.assertEqual(restored["regions"][0]["label"], "M1_power")
+        self.assertNotIn("class_label", restored["regions"][0])
+        self.assertNotIn("name", restored["regions"][0])
+
+        legacy = regions.region_record_from_mask(
+            2,
+            "metal",
+            "M2_signal",
+            np.pad(np.ones((2, 2), dtype=bool), ((0, 30), (0, 38))),
+        )
+        self.assertNotIn("label", legacy)
+        self.assertEqual(regions.region_label(legacy), "metal / M2_signal")
+        self.assertEqual(
+            regions.region_label({"class_label": "via", "name": ""}),
+            "via",
+        )
+
+    def test_unicode_canonical_label_restore_enforces_80_character_limit(self):
+        label_80 = "界" * 80
+        document, record = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=0,
+            lasso_polygon=self._polygon(),
+            label=label_80,
+        )
+        self.assertEqual(record["label"], label_80)
+        restored, _ = self.store.load_document(
+            self.session_id,
+            self.layout_id,
+            self.source_hash,
+        )
+        self.assertEqual(restored["regions"][0]["label"], label_80)
+
+        corrupted = copy.deepcopy(document)
+        corrupted["regions"][0]["label"] = "界" * 81
+        self.store.regions_path(
+            self.session_id,
+            self.layout_id,
+        ).write_text(
+            json.dumps(corrupted, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            regions.RegionValidationError,
+            "at most 80 characters",
+        ):
+            self.store.load_document(
+                self.session_id,
+                self.layout_id,
+                self.source_hash,
+            )
+
+    def test_blank_label_uses_region_sequence_and_active_labels_are_unique(self):
+        document, first = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=0,
+            lasso_polygon=[[0, 0], [20, 0], [20, 18], [0, 18]],
+            label="  ",
+        )
+        self.assertEqual(first["label"], "Label 1")
+        self.assertEqual(regions.region_label(first), "Label 1")
+
+        remaining = np.logical_and(
+            self.source_mask.astype(bool),
+            np.logical_not(
+                regions.decode_binary_mask(
+                    first["mask_rle"],
+                    self.source_mask.shape,
+                )
+            ),
+        )
+        with self.assertRaisesRegex(
+            regions.RegionValidationError,
+            "active Region label already exists",
+        ):
+            regions.append_region(
+                document,
+                label="Label 1",
+                region_mask=remaining,
+            )
+
+        document, second = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=1,
+            lasso_polygon=self._polygon(),
+            label="",
+        )
+        self.assertEqual(second["region_id"], 2)
+        self.assertEqual(second["label"], "Label 2")
+        self.assertEqual(
+            [
+                regions.region_label(record)
+                for record in regions.active_regions(document)
+            ],
+            ["Label 1", "Label 2"],
+        )
+
+    def test_blank_label_skips_an_explicitly_occupied_sequence_name(self):
+        document, explicit = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=0,
+            lasso_polygon=[[0, 0], [20, 0], [20, 18], [0, 18]],
+            label="Label 2",
+        )
+        self.assertEqual(explicit["region_id"], 1)
+        self.assertEqual(explicit["label"], "Label 2")
+
+        document, automatic = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=document["regions_revision"],
+            lasso_polygon=self._polygon(),
+            label="",
+        )
+        self.assertEqual(automatic["region_id"], 2)
+        self.assertEqual(automatic["label"], "Label 3")
+        self.assertEqual(
+            [
+                regions.region_label(record)
+                for record in regions.active_regions(document)
+            ],
+            ["Label 2", "Label 3"],
+        )
+
     def test_class_region_helpers_keep_regions_independent_and_ordered(self):
         shape = (8, 10)
         first_mask = np.zeros(shape, dtype=bool)
@@ -224,6 +390,97 @@ class LayoutRegionUtilsTest(unittest.TestCase):
         self.assertEqual(preview.shape, (5, 7))
         self.assertFalse(preview.any())
 
+    def test_label_helpers_filter_preview_and_build_uint16_index(self):
+        shape = (8, 10)
+        via_mask = np.zeros(shape, dtype=bool)
+        via_mask[0:2, 0:3] = True
+        deleted_mask = np.zeros(shape, dtype=bool)
+        deleted_mask[2:4, 3:5] = True
+        metal_mask = np.zeros(shape, dtype=bool)
+        metal_mask[4:6, 5:8] = True
+        legacy_mask = np.zeros(shape, dtype=bool)
+        legacy_mask[6:8, 8:10] = True
+
+        via = regions.region_record_from_mask(
+            1, "via", "", via_mask, label="via"
+        )
+        deleted = regions.region_record_from_mask(
+            2, "via", "", deleted_mask, label="via"
+        )
+        deleted["deleted_at"] = regions.utc_now_iso()
+        metal = regions.region_record_from_mask(
+            3, "metal", "", metal_mask, label="metal"
+        )
+        legacy = regions.region_record_from_mask(
+            4, "metal", "M1_power", legacy_mask
+        )
+        document = {"regions": [metal, legacy, deleted, via]}
+
+        selected = regions.active_regions_for_labels(
+            document,
+            ["metal", "via"],
+        )
+        self.assertEqual(
+            [record["region_id"] for record in selected],
+            [1, 3],
+        )
+        preview = regions.labels_region_preview_mask(
+            document,
+            ["metal", "via"],
+            shape,
+        )
+        self.assertTrue(
+            np.array_equal(preview, np.logical_or(via_mask, metal_mask))
+        )
+        self.assertFalse(np.logical_and(preview, deleted_mask).any())
+        self.assertFalse(np.logical_and(preview, legacy_mask).any())
+
+        legacy_selected = regions.active_regions_for_labels(
+            document,
+            ["metal / M1_power"],
+        )
+        self.assertEqual(
+            [record["region_id"] for record in legacy_selected],
+            [4],
+        )
+        long_legacy_label = regions.region_label(
+            {"class_label": "metal", "name": "x" * 90}
+        )
+        self.assertEqual(
+            regions.normalize_region_label_selection([long_legacy_label]),
+            [long_legacy_label],
+        )
+        with self.assertRaisesRegex(
+            regions.RegionValidationError,
+            "duplicate region label",
+        ):
+            regions.active_regions_for_labels(document, ["metal", "metal"])
+        with self.assertRaisesRegex(
+            regions.RegionValidationError,
+            "active Region label does not exist",
+        ):
+            regions.active_regions_for_labels(document, ["missing"])
+
+        index_mask, labels = regions.region_label_index(document, shape)
+        self.assertEqual(index_mask.dtype, np.uint16)
+        self.assertEqual(
+            labels,
+            [
+                {"index": 1, "region_id": 1, "label": "via", "area": 6},
+                {"index": 2, "region_id": 3, "label": "metal", "area": 6},
+                {
+                    "index": 3,
+                    "region_id": 4,
+                    "label": "metal / M1_power",
+                    "area": 4,
+                },
+            ],
+        )
+        self.assertTrue(np.all(index_mask[via_mask] == 1))
+        self.assertTrue(np.all(index_mask[metal_mask] == 2))
+        self.assertTrue(np.all(index_mask[legacy_mask] == 3))
+        self.assertTrue(np.all(index_mask[deleted_mask] == 0))
+
     def test_stale_revision_and_hash_mismatch_are_rejected(self):
         self._save(0)
         with self.assertRaises(regions.StaleRegionsRevisionError):
@@ -239,6 +496,25 @@ class LayoutRegionUtilsTest(unittest.TestCase):
         path.write_text(json.dumps(corrupt), encoding="utf-8")
         with self.assertRaises(regions.RegionValidationError):
             self.store.load_document(self.session_id, self.layout_id, self.source_hash)
+
+    def test_restore_rejects_oversized_canonical_label(self):
+        document, _ = self.store.save_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=0,
+            lasso_polygon=self._polygon(),
+            label="valid",
+        )
+        corrupt = copy.deepcopy(document)
+        corrupt["regions"][0]["label"] = "x" * (
+            regions.MAX_REGION_LABEL_LENGTH + 1
+        )
+        path = self.store.regions_path(self.session_id, self.layout_id)
+        path.write_text(json.dumps(corrupt), encoding="utf-8")
+        with self.assertRaises(regions.RegionValidationError):
+            self.store.load_document(self.session_id, self.layout_id, self.source_hash)
+
 
     def test_restore_rejects_overlapping_active_regions(self):
         document, first = self.store.save_region(
@@ -384,6 +660,21 @@ class LayoutRegionUtilsTest(unittest.TestCase):
             regions.render_saved_region_overlay(document["regions"], self.source_mask.shape)
         )
         self.assertEqual(int(deleted_overlay[..., 3].sum()), 0)
+
+    def test_saved_overlay_uses_ascii_fallback_for_unicode_label(self):
+        mask = np.zeros_like(self.source_mask, dtype=bool)
+        mask[3:8, 4:10] = True
+        record = {
+            "region_id": 7,
+            "label": "金属层",
+            "mask_rle": regions.encode_binary_mask(mask),
+            "deleted_at": None,
+        }
+        with mock.patch.object(regions, "_draw_region_label") as draw_label:
+            regions.render_saved_region_overlay([record], mask.shape)
+
+        self.assertEqual(draw_label.call_args.args[2], "L7")
+
 
     def test_new_regions_only_use_pixels_not_covered_by_active_regions(self):
         left_polygon = [[0, 0], [22, 0], [22, 18], [0, 18]]

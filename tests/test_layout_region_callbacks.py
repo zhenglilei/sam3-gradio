@@ -101,6 +101,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
 
     def test_preview_save_and_soft_delete_round_trip(self):
         loaded = demo_module._load_layout_region_context(self.layout_state)
+        self.assertEqual(len(loaded), 7)
         region_state, editor = loaded[0], loaded[1]
         self.assertEqual(editor["server_view"]["regions"], [])
 
@@ -120,20 +121,20 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             self.layout_state,
             region_state,
             editor,
-            "metal",
             "M1_power",
         )
+        self.assertEqual(len(saved), 7)
         region_state, editor = saved[0], saved[1]
-        self.assertIn("已保存 R1 metal", saved[7])
+        self.assertIn("已保存 Label M1_power", saved[6])
         self.assertEqual(editor["server_view"]["draft_region_overlay_image"], "")
-        self.assertEqual(editor["server_view"]["regions"][0]["name"], "M1_power")
+        self.assertEqual(editor["server_view"]["regions"][0]["label"], "M1_power")
         self.assertTrue(editor["server_view"]["saved_region_overlay_image"].startswith("data:image/png;base64,"))
 
         archive_path, export_status = demo_module._export_layout_regions(
             self.layout_state,
             region_state,
         )
-        self.assertIn("Region", export_status)
+        self.assertIn("label 标注", export_status)
         archive_path = Path(archive_path).resolve()
         self.assertIn(
             (self.root / "public_downloads" / "region_annotation_exports").resolve(),
@@ -142,13 +143,65 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         with zipfile.ZipFile(archive_path) as archive:
             self.assertEqual(
                 set(archive.namelist()),
-                {"manifest.json", "regions.json", "source_mask.png"},
+                {
+                    "manifest.json",
+                    "regions.json",
+                    "source_mask.png",
+                    "region_label_index.png",
+                    "labels.json",
+                    "label_masks/label_0001_R1.png",
+                },
             )
             exported_document = json.loads(archive.read("regions.json"))
             exported_manifest = json.loads(archive.read("manifest.json"))
-        self.assertEqual(exported_document["regions"][0]["name"], "M1_power")
+            exported_labels = json.loads(archive.read("labels.json"))
+            exported_source = cv2.imdecode(
+                np.frombuffer(archive.read("source_mask.png"), dtype=np.uint8),
+                cv2.IMREAD_GRAYSCALE,
+            )
+            exported_index = cv2.imdecode(
+                np.frombuffer(
+                    archive.read("region_label_index.png"),
+                    dtype=np.uint8,
+                ),
+                cv2.IMREAD_UNCHANGED,
+            )
+            exported_label_mask = cv2.imdecode(
+                np.frombuffer(
+                    archive.read("label_masks/label_0001_R1.png"),
+                    dtype=np.uint8,
+                ),
+                cv2.IMREAD_GRAYSCALE,
+            )
+        self.assertEqual(exported_document["regions"][0]["label"], "M1_power")
         self.assertEqual(exported_manifest["active_region_count"], 1)
         self.assertEqual(exported_manifest["regions_revision"], 1)
+        self.assertEqual(exported_manifest["label_mask_count"], 1)
+        self.assertEqual(
+            exported_manifest["label_mask_files"],
+            ["label_masks/label_0001_R1.png"],
+        )
+        self.assertIn("label_masks/label_0001_R1.png", exported_manifest["files"])
+        self.assertEqual(exported_index.dtype, np.uint16)
+        self.assertEqual(exported_labels["labels"][0]["label"], "M1_power")
+        self.assertEqual(
+            exported_labels["labels"][0]["mask_file"],
+            "label_masks/label_0001_R1.png",
+        )
+        np.testing.assert_array_equal(
+            exported_source >= 128,
+            self.source_mask.astype(bool),
+        )
+        expected_region_mask = regions.decode_binary_mask(
+            exported_document["regions"][0]["mask_rle"],
+            self.source_mask.shape,
+        )
+        np.testing.assert_array_equal(exported_index == 1, expected_region_mask)
+        self.assertEqual(set(np.unique(exported_label_mask)), {0, 255})
+        np.testing.assert_array_equal(
+            exported_label_mask == 255,
+            expected_region_mask,
+        )
 
         stale_state = copy.deepcopy(region_state)
         stale_state["regions_revision"] = 0
@@ -165,11 +218,96 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             editor,
             1,
         )
-        self.assertIn("已软删除 R1", deleted[7])
+        self.assertEqual(len(deleted), 7)
+        self.assertIn("已软删除 Label M1_power", deleted[6])
         self.assertEqual(deleted[1]["server_view"]["regions"], [])
         document, _ = self.store.load_document(self.session_id, self.layout_id, self.source_hash)
         self.assertIsNotNone(document["regions"][0]["deleted_at"])
         self.assertIn("mask_rle", document["regions"][0])
+
+    def test_export_writes_one_binary_mask_per_active_label(self):
+        polygons = [
+            ([[8, 5], [17, 5], [17, 29], [8, 29]], "left"),
+            ([[19, 5], [27, 5], [27, 29], [19, 29]], "middle"),
+            ([[29, 5], [39, 5], [39, 29], [29, 29]], "right"),
+        ]
+        document = None
+        for expected_revision, (polygon, label) in enumerate(polygons):
+            document, _ = self.store.save_region(
+                session_id=self.session_id,
+                layout_id=self.layout_id,
+                source_mask_hash=self.source_hash,
+                expected_revision=expected_revision,
+                lasso_polygon=polygon,
+                label=label,
+            )
+        document, _ = self.store.delete_region(
+            session_id=self.session_id,
+            layout_id=self.layout_id,
+            source_mask_hash=self.source_hash,
+            expected_revision=3,
+            region_id=2,
+        )
+        self.assertEqual(document["regions_revision"], 4)
+
+        region_state = {
+            "session_id": self.session_id,
+            "layout_id": self.layout_id,
+            "source_mask_hash": self.source_hash,
+            "regions_revision": 4,
+        }
+        archive_path, status = demo_module._export_layout_regions(
+            self.layout_state,
+            region_state,
+        )
+        self.assertIn("label_masks=2", status)
+
+        expected_files = [
+            "label_masks/label_0001_R1.png",
+            "label_masks/label_0002_R3.png",
+        ]
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+            exported_document = json.loads(archive.read("regions.json"))
+            exported_manifest = json.loads(archive.read("manifest.json"))
+            exported_labels = json.loads(archive.read("labels.json"))
+            exported_masks = {
+                path: cv2.imdecode(
+                    np.frombuffer(archive.read(path), dtype=np.uint8),
+                    cv2.IMREAD_GRAYSCALE,
+                )
+                for path in expected_files
+            }
+
+        self.assertTrue(set(expected_files) <= names)
+        self.assertNotIn("label_masks/label_0002_R2.png", names)
+        self.assertEqual(exported_manifest["label_mask_count"], 2)
+        self.assertEqual(exported_manifest["label_mask_files"], expected_files)
+        self.assertEqual(
+            [entry["region_id"] for entry in exported_labels["labels"]],
+            [1, 3],
+        )
+        self.assertEqual(
+            [entry["label"] for entry in exported_labels["labels"]],
+            ["left", "right"],
+        )
+        self.assertEqual(
+            [entry["mask_file"] for entry in exported_labels["labels"]],
+            expected_files,
+        )
+
+        record_by_id = {
+            int(record["region_id"]): record
+            for record in exported_document["regions"]
+        }
+        for entry in exported_labels["labels"]:
+            mask = exported_masks[entry["mask_file"]]
+            self.assertTrue(set(np.unique(mask)) <= {0, 255})
+            expected_mask = regions.decode_binary_mask(
+                record_by_id[int(entry["region_id"])]["mask_rle"],
+                self.source_mask.shape,
+            )
+            np.testing.assert_array_equal(mask == 255, expected_mask)
 
     def test_stale_draft_cannot_bind_to_a_different_layout(self):
         loaded_a = demo_module._load_layout_region_context(self.layout_state)
@@ -244,10 +382,10 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             layout_state_b,
             region_state_a,
             retagged_editor,
-            "metal",
             "must_not_save",
         )
-        self.assertIn("Region state layout_id does not match", failed_save[7])
+        self.assertEqual(len(failed_save), 7)
+        self.assertIn("Region state layout_id does not match", failed_save[6])
         self.assertEqual(
             failed_save[1]["client_intent"]["layout_id"],
             layout_id_b,
@@ -452,19 +590,34 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         ]
         self.assertEqual(len(layout_prompt_selectors), 1)
         layout_prompt_selector = layout_prompt_selectors[0]
+        self.assertEqual(layout_prompt_selector["type"], "checkboxgroup")
         self.assertIn(layout_prompt_selector["id"], image_ids)
         self.assertNotIn(layout_prompt_selector["id"], layout_ids)
         self.assertEqual(
             layout_prompt_selector["props"]["value"],
-            demo_module._LAYOUT_PROMPT_SCOPE_FULL,
+            [demo_module._LAYOUT_PROMPT_SCOPE_FULL],
         )
         self.assertFalse(layout_prompt_selector["props"]["interactive"])
 
+        morph_controls = [
+            component
+            for component in config["components"]
+            if component.get("props", {}).get("label")
+            == "膨胀/腐蚀像素（正数膨胀，负数腐蚀）"
+        ]
+        self.assertEqual(len(morph_controls), 1)
+        morph_control = morph_controls[0]
+        self.assertIn(morph_control["id"], layout_ids)
+        self.assertEqual(morph_control["props"]["minimum"], -31)
+        self.assertEqual(morph_control["props"]["maximum"], 31)
+        self.assertEqual(morph_control["props"]["value"], 0)
+
         dependencies = {item.get("api_name"): item for item in config["dependencies"]}
         run_dependency = dependencies["_run_layout_mask_page"]
+        self.assertIn(morph_control["id"], run_dependency["inputs"])
         clear_dependency = dependencies["_clear_current_layout_mask"]
         self.assertIn("_export_layout_regions", dependencies)
-        self.assertEqual((len(run_dependency["inputs"]), len(run_dependency["outputs"])), (9, 8))
+        self.assertEqual((len(run_dependency["inputs"]), len(run_dependency["outputs"])), (10, 8))
         self.assertEqual((len(clear_dependency["inputs"]), len(clear_dependency["outputs"])), (2, 8))
         layout_point_dependency = dependencies["_layout_point_refine"]
         pvs_point_dependency = dependencies["_pvs_point_prompt"]
@@ -512,7 +665,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
                 len(select_prompt_dependency["inputs"]),
                 len(select_prompt_dependency["outputs"]),
             ),
-            (3, 4),
+            (3, 10),
         )
         self.assertEqual(
             (
@@ -591,11 +744,8 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         protected = [
             "_finish_native_polygon",
             "_run_pcs",
-            "_sync_layout_controls_from_editor",
-            "_run_layout_mask_page",
             "_clear_current_layout_mask",
             "_commit_layout_transform",
-            "_update_layout_preview",
             "_create_pvs_from_layout_mask",
         ]
         for name in protected:

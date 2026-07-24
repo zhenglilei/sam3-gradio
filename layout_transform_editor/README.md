@@ -4,6 +4,27 @@
 
 Gradio canvas editor for SAM3 layout-mask transform prompts
 
+## Label group mode
+
+The legacy flat `mask_image + transform` payload remains supported. To edit
+several saved Region labels independently, set `transform_mode` to
+`label_groups` and provide:
+
+- `group_view`: server-owned display data containing the selected groups and
+  their individual mask images.
+- `group_intent`: client-editable state containing the active group and one
+  transform per group.
+
+All group masks are drawn together. Clicking a mask or using the **当前 Label**
+selector activates it; drag, wheel zoom, rotation, reset, center, fit, and
+bring-into-view then affect only that active group. Pointer movement stays
+browser-local, while pointer release dispatches one change event. Switching the
+active group also dispatches a change so external numeric controls can follow
+the selected transform.
+
+The component never adds or removes entries from `group_view`; the backend
+must still treat that object as server-owned and validate `group_intent`.
+
 ## Installation
 
 ```bash

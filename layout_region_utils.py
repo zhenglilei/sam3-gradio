@@ -25,6 +25,7 @@ from pycocotools import mask as coco_mask
 REGIONS_SCHEMA_VERSION = 1
 CATEGORIES_SCHEMA_VERSION = 1
 MAX_LASSO_POINTS = 4096
+MAX_REGION_LABEL_LENGTH = 80
 _SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
@@ -92,6 +93,52 @@ def normalize_region_name(value: Any) -> str:
     if not isinstance(value, str):
         raise RegionValidationError("region name must be a string")
     return value.strip()
+
+
+def normalize_region_label(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RegionValidationError("region label is required")
+    label = value.strip()
+    if len(label) > MAX_REGION_LABEL_LENGTH:
+        raise RegionValidationError(
+            f"region label must contain at most {MAX_REGION_LABEL_LENGTH} characters"
+        )
+    return label
+
+
+def region_label(record: Any) -> str:
+    if not isinstance(record, dict):
+        raise RegionValidationError("region record must be an object")
+    explicit = record.get("label")
+    if explicit is not None:
+        return normalize_region_label(explicit)
+    class_label = record.get("class_label")
+    name = record.get("name")
+    if not isinstance(class_label, str) or not class_label.strip():
+        raise RegionValidationError("persisted class_label is invalid")
+    if not isinstance(name, str):
+        raise RegionValidationError("persisted region name is invalid")
+    category = class_label.strip()
+    module_name = name.strip()
+    if module_name and module_name != category:
+        return f"{category} / {module_name}"
+    return module_name or category
+
+
+def normalize_region_label_selection(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple)):
+        raise RegionValidationError("region labels must be a list")
+    labels: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise RegionValidationError("region labels must be non-empty strings")
+        label = value.strip()
+        if label in seen:
+            raise RegionValidationError(f"duplicate region label: {label}")
+        labels.append(label)
+        seen.add(label)
+    return labels
 
 
 def normalize_lasso_points(
@@ -211,19 +258,24 @@ def region_record_from_mask(
     region_mask: Any,
     *,
     created_at: str | None = None,
+    label: Any = None,
 ) -> dict[str, Any]:
     if int(region_id) <= 0:
         raise RegionValidationError("region_id must be positive")
     metadata = mask_metadata(region_mask)
-    return {
+    record = {
         "region_id": int(region_id),
-        "class_label": str(class_label),
-        "name": str(name),
         "mask_rle": encode_binary_mask(region_mask),
         **metadata,
         "created_at": created_at or utc_now_iso(),
         "deleted_at": None,
     }
+    if label is not None:
+        record["label"] = normalize_region_label(label)
+    else:
+        record["class_label"] = str(class_label)
+        record["name"] = str(name)
+    return record
 
 
 def new_regions_document(session_id: str, layout_id: str, source_mask_hash: str) -> dict[str, Any]:
@@ -278,12 +330,22 @@ def validate_regions_document(
         region_id = raw.get("region_id")
         if not isinstance(region_id, int) or region_id <= 0 or region_id in seen_ids:
             raise RegionValidationError("region_id is invalid or duplicated")
+        canonical_label = region_label(raw)
+        is_canonical = raw.get("label") is not None
         class_label = raw.get("class_label")
         name = raw.get("name")
-        if not isinstance(class_label, str) or not class_label.strip():
-            raise RegionValidationError("persisted class_label is invalid")
-        if not isinstance(name, str):
-            raise RegionValidationError("persisted region name is invalid")
+        if not is_canonical:
+            if not isinstance(class_label, str) or not class_label.strip():
+                raise RegionValidationError("persisted class_label is invalid")
+            if not isinstance(name, str):
+                raise RegionValidationError("persisted region name is invalid")
+        else:
+            if class_label is not None and (
+                not isinstance(class_label, str) or not class_label.strip()
+            ):
+                raise RegionValidationError("persisted class_label is invalid")
+            if name is not None and not isinstance(name, str):
+                raise RegionValidationError("persisted region name is invalid")
         if not isinstance(raw.get("created_at"), str) or not raw.get("created_at"):
             raise RegionValidationError("persisted created_at is invalid")
         if raw.get("deleted_at") is not None and not isinstance(raw.get("deleted_at"), str):
@@ -301,8 +363,15 @@ def validate_regions_document(
         if not _metadata_matches(raw, metadata):
             raise RegionValidationError(f"R{region_id} derived metadata does not match its RLE")
         record = copy.deepcopy(raw)
-        record["class_label"] = class_label.strip()
-        record["name"] = name.strip()
+        record["label"] = canonical_label
+        if not is_canonical:
+            record["class_label"] = class_label.strip()
+            record["name"] = name.strip()
+        else:
+            if class_label is not None:
+                record["class_label"] = class_label.strip()
+            if name is not None:
+                record["name"] = name.strip()
         normalized_regions.append(record)
         seen_ids.add(region_id)
     if seen_ids and next_region_id <= max(seen_ids):
@@ -331,6 +400,28 @@ def active_regions_for_class(
         if record.get("class_label") == target
     ]
     return sorted(matches, key=lambda record: int(record["region_id"]))
+
+
+def active_regions_for_labels(
+    document: dict[str, Any],
+    labels: Any,
+) -> list[dict[str, Any]]:
+    """Return active Regions for selected canonical labels, ordered by Region id."""
+    selected = normalize_region_label_selection(labels)
+    if not selected:
+        return []
+    selected_set = set(selected)
+    active = active_regions(document)
+    available = {region_label(record) for record in active}
+    unknown = [label for label in selected if label not in available]
+    if unknown:
+        raise RegionValidationError(
+            f"active Region label does not exist: {unknown[0]}"
+        )
+    return sorted(
+        (record for record in active if region_label(record) in selected_set),
+        key=lambda record: int(record["region_id"]),
+    )
 
 
 def decode_region_masks(
@@ -362,6 +453,62 @@ def class_region_preview_mask(
     return preview
 
 
+def labels_region_preview_mask(
+    document: dict[str, Any],
+    labels: Any,
+    expected_shape: Sequence[int],
+) -> np.ndarray:
+    """Build a display-only union of active Regions matching selected labels."""
+    if len(expected_shape) < 2:
+        raise RegionValidationError("invalid source mask shape")
+    height, width = int(expected_shape[0]), int(expected_shape[1])
+    if height <= 0 or width <= 0:
+        raise RegionValidationError("invalid source mask dimensions")
+    preview = np.zeros((height, width), dtype=bool)
+    records = active_regions_for_labels(document, labels)
+    for _, mask in decode_region_masks(records, (height, width)):
+        preview = np.logical_or(preview, mask)
+    return preview
+
+
+def region_label_index(
+    document: dict[str, Any],
+    expected_shape: Sequence[int],
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    """Encode active Regions as compact uint16 indices plus a label mapping."""
+    if len(expected_shape) < 2:
+        raise RegionValidationError("invalid source mask shape")
+    height, width = int(expected_shape[0]), int(expected_shape[1])
+    if height <= 0 or width <= 0:
+        raise RegionValidationError("invalid source mask dimensions")
+    records = sorted(
+        active_regions(document),
+        key=lambda record: int(record["region_id"]),
+    )
+    if len(records) > np.iinfo(np.uint16).max:
+        raise RegionValidationError("too many active Regions for uint16 label index")
+    index_mask = np.zeros((height, width), dtype=np.uint16)
+    mapping: list[dict[str, Any]] = []
+    for index, (record, mask) in enumerate(
+        decode_region_masks(records, (height, width)),
+        start=1,
+    ):
+        if np.logical_and(index_mask != 0, mask).any():
+            raise RegionValidationError(
+                f"R{int(record['region_id'])} overlaps another active Region"
+            )
+        index_mask[mask] = index
+        mapping.append(
+            {
+                "index": index,
+                "region_id": int(record["region_id"]),
+                "label": region_label(record),
+                "area": int(mask.sum()),
+            }
+        )
+    return index_mask, mapping
+
+
 def rasterize_uncovered_region_mask(
     source_mask: Any,
     points: Any,
@@ -379,17 +526,47 @@ def rasterize_uncovered_region_mask(
 def append_region(
     document: dict[str, Any],
     *,
-    class_label: Any,
-    name: Any,
+    class_label: Any = None,
+    name: Any = "",
+    label: Any = None,
     region_mask: Any,
-    allowed_categories: Iterable[str],
+    allowed_categories: Iterable[str] | None = None,
     created_at: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     updated = copy.deepcopy(document)
-    category = validate_class_label(class_label, allowed_categories)
-    normalized_name = normalize_region_name(name)
     region_id = int(updated.get("next_region_id") or 0)
-    record = region_record_from_mask(region_id, category, normalized_name, region_mask, created_at=created_at)
+    if label is not None:
+        if not isinstance(label, str):
+            raise RegionValidationError("region label must be a string")
+        active_labels = {
+            region_label(record) for record in active_regions(updated)
+        }
+        if label.strip():
+            canonical_label = normalize_region_label(label)
+        else:
+            automatic_index = region_id
+            canonical_label = f"Label {automatic_index}"
+            while canonical_label in active_labels:
+                automatic_index += 1
+                canonical_label = f"Label {automatic_index}"
+        if canonical_label in active_labels:
+            raise RegionValidationError(
+                f"active Region label already exists: {canonical_label}"
+            )
+        category = None
+        normalized_name = ""
+    else:
+        category = validate_class_label(class_label, allowed_categories or ())
+        normalized_name = normalize_region_name(name)
+        canonical_label = None
+    record = region_record_from_mask(
+        region_id,
+        category,
+        normalized_name,
+        region_mask,
+        label=canonical_label,
+        created_at=created_at,
+    )
     updated.setdefault("regions", []).append(record)
     updated["next_region_id"] = region_id + 1
     updated["regions_revision"] = int(updated.get("regions_revision") or 0) + 1
@@ -471,7 +648,11 @@ def render_saved_region_overlay(
         contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         thickness = 4 if int(record.get("region_id")) == int(selected_region_id or -1) else 2
         cv2.drawContours(canvas, contours, -1, (45, 255, 105, 235), thickness, cv2.LINE_AA)
-        _draw_region_label(canvas, mask, f"R{int(record['region_id'])}", (75, 255, 125, 255))
+        label_text = region_label(record)
+        if not label_text.isascii() or not label_text.isprintable():
+            # OpenCV's Hershey fonts are ASCII-only; the full Unicode Label remains in the UI controls.
+            label_text = f"L{int(record['region_id'])}"
+        _draw_region_label(canvas, mask, label_text, (75, 255, 125, 255))
     return Image.fromarray(canvas, mode="RGBA")
 
 
@@ -609,18 +790,22 @@ class LayoutRegionStore:
         source_mask_hash: str,
         expected_revision: int,
         lasso_polygon: Any,
-        class_label: Any,
-        name: Any,
+        class_label: Any = None,
+        name: Any = "",
+        label: Any = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         with self._layout_write_lock(session_id, layout_id):
             document, source_mask = self.load_document(session_id, layout_id, source_mask_hash)
             self._check_revision(document, expected_revision)
+            categories = None
+            if label is None:
+                categories = load_layout_categories(self.categories_path)
             region_mask = rasterize_uncovered_region_mask(source_mask, lasso_polygon, document)
-            categories = load_layout_categories(self.categories_path)
             updated, record = append_region(
                 document,
                 class_label=class_label,
                 name=name,
+                label=label,
                 region_mask=region_mask,
                 allowed_categories=categories,
             )

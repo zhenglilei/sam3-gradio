@@ -15,6 +15,7 @@ import tempfile
 import json
 import uuid
 import copy
+import hashlib
 
 # 所有运行时文件固定在 /data/zhengqiyuan，避免 Gradio 默认写入 /tmp/gradio。
 current_dir = Path(__file__).resolve().parent
@@ -124,6 +125,9 @@ logger = logging.getLogger("sam3_gradio_demo")
 _LAYOUT_PROMPT_SCOPE_FULL = "full"
 _LAYOUT_PROMPT_SCOPE_REGION_CLASS = "region_class"
 _LAYOUT_PROMPT_CLASS_PREFIX = "region_class:"
+_LAYOUT_PROMPT_SCOPE_REGION_LABELS = "region_labels"
+_LAYOUT_PROMPT_LABEL_PREFIX = "region_label:"
+_LAYOUT_MASK_MORPH_LIMIT_PX = 31
 _PUBLIC_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60
 
 
@@ -1767,6 +1771,11 @@ def _new_layout_state(session_id=None):
         "matrix_2x3": None,
         "prompt_mask_scope": _LAYOUT_PROMPT_SCOPE_FULL,
         "prompt_class_label": None,
+        "prompt_labels": [],
+        "prompt_group_transforms": {},
+        "prompt_active_group_id": None,
+        "prompt_selection_signature": None,
+        "prompt_transform_set_revision": 0,
         "prompt_regions_revision": None,
         "prompt_region_ids": [],
     }
@@ -2201,6 +2210,11 @@ def _is_pvs_pool_mode(mode):
     return _is_pvs_manual_mode(mode) or _is_layout_mask_mode(mode)
 
 
+def _layout_preview_alpha(state):
+    value = (state or {}).get("preview_alpha")
+    return float(0.35 if value is None else value)
+
+
 def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True, show_interaction_prompts=True, show_layout_overlay=False, layout_state=None):
     image = np.array(_workspace(image_state)["image"].convert("RGB"))
     overlay = image.copy()
@@ -2234,10 +2248,50 @@ def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_in
             cached = _layout_cache_get(layout_state)
         except Exception:
             cached = None
-        if cached is not None and cached.get("transformed_mask") is not None:
+        painted_groups = False
+        if (
+            cached is not None
+            and layout_state.get("prompt_mask_scope")
+            == _LAYOUT_PROMPT_SCOPE_REGION_LABELS
+        ):
+            masks = cached.get("prompt_group_transformed_masks")
+            snapshot = cached.get("prompt_group_snapshot")
+            if isinstance(masks, dict) and isinstance(snapshot, dict):
+                active_group_id = snapshot.get("active_group_id")
+                for group_id, transform in (snapshot.get("transforms") or {}).items():
+                    layout_mask = np.asarray(masks.get(group_id), dtype=bool)
+                    if layout_mask.shape != overlay.shape[:2]:
+                        continue
+                    color = (
+                        (0, 255, 130)
+                        if group_id == active_group_id
+                        else (0, 205, 105)
+                    )
+                    paint(
+                        layout_mask,
+                        color,
+                        _layout_preview_alpha(transform),
+                    )
+                    ys, xs = np.where(layout_mask)
+                    if len(xs):
+                        label_text = str(transform.get("label") or group_id)
+                        if not label_text.isascii() or not label_text.isprintable():
+                            label_text = f"L{int(transform['region_id'])}"
+                        queue_label(
+                            label_text,
+                            int(xs.min()),
+                            max(18, int(ys.min()) - 6),
+                            color,
+                        )
+                    painted_groups = True
+        if (
+            not painted_groups
+            and cached is not None
+            and cached.get("transformed_mask") is not None
+        ):
             layout_mask = np.asarray(cached["transformed_mask"], dtype=bool)
             if layout_mask.shape == overlay.shape[:2]:
-                paint(layout_mask, (0, 255, 130), float(layout_state.get("preview_alpha") or 0.35))
+                paint(layout_mask, (0, 255, 130), _layout_preview_alpha(layout_state))
                 ys, xs = np.where(layout_mask)
                 if len(xs):
                     queue_label(f"LAYOUT {layout_id}", int(xs.min()), max(18, int(ys.min()) - 6), (0, 255, 130))
@@ -3283,9 +3337,17 @@ def _reconstruct_frozen_layout_prompt_mask(layout_prompt):
         expected_hash = layout_prompt.get("region_mask_pixel_sha256")
         if not expected_hash or actual_hash != str(expected_hash):
             raise ValueError(f"layout Region R{region_id} mask hash 不匹配")
-        prompt_class = layout_prompt.get("class_label")
-        if prompt_class is not None and record.get("class_label") != prompt_class:
-            raise ValueError(f"layout Region R{region_id} 类别与实例记录不一致")
+        prompt_label = layout_prompt.get("label")
+        if prompt_label is not None:
+            if _layout_regions.region_label(record) != str(prompt_label):
+                raise ValueError(f"layout Region R{region_id} Label 与实例记录不一致")
+        else:
+            prompt_class = layout_prompt.get("class_label")
+            if (
+                prompt_class is not None
+                and record.get("class_label") != prompt_class
+            ):
+                raise ValueError(f"layout Region R{region_id} 历史类别与实例记录不一致")
         details.update(
             {
                 "reconstruction_method": "frozen_region_rle",
@@ -3573,7 +3635,38 @@ def _switch_click_tool(click_tool, mode):
         gr.update(visible=is_pvs and tool == "point"),
         gr.update(visible=is_pvs and tool == "polygon"),
     )
-def _binarize_layout_image(input_image, threshold=12, invert=False, open_kernel=0, close_kernel=0):
+
+
+def _normalize_layout_morph_pixels(value):
+    return int(
+        np.clip(
+            int(value or 0),
+            -_LAYOUT_MASK_MORPH_LIMIT_PX,
+            _LAYOUT_MASK_MORPH_LIMIT_PX,
+        )
+    )
+
+
+def _apply_layout_mask_morphology(mask, morph_pixels=0):
+    mask = np.asarray(mask, dtype=bool)
+    pixels = _normalize_layout_morph_pixels(morph_pixels)
+    if pixels == 0:
+        return mask.copy()
+    radius = abs(pixels)
+    kernel_size = radius * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    operation = cv2.dilate if pixels > 0 else cv2.erode
+    result = operation(
+        mask.astype(np.uint8),
+        kernel,
+        iterations=1,
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    return result.astype(bool)
+
+
+def _binarize_layout_image(input_image, threshold=12, invert=False, open_kernel=0, close_kernel=0, morph_pixels=0):
     image = _pil_image(input_image)
     if image is None:
         raise ValueError("请先上传版图截图")
@@ -3599,6 +3692,7 @@ def _binarize_layout_image(input_image, threshold=12, invert=False, open_kernel=
     if close_kernel > 1:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel, close_kernel))
         work = cv2.morphologyEx(work, cv2.MORPH_CLOSE, k, iterations=1)
+    work = _apply_layout_mask_morphology(work, morph_pixels)
     return image, work.astype(bool)
 
 
@@ -3889,8 +3983,7 @@ def _layout_region_summaries(document):
     return [
         {
             "region_id": int(region["region_id"]),
-            "class_label": str(region.get("class_label") or ""),
-            "name": str(region.get("name") or ""),
+            "label": _layout_regions.region_label(region),
             "area": int(region.get("area") or 0),
         }
         for region in _layout_regions.active_regions(document)
@@ -3942,12 +4035,16 @@ def _advance_layout_prompt_epoch(
         return value
 
 def _reset_layout_prompt_selection_state(layout_state):
-
     state = dict(layout_state or {})
     state.update(
         {
             "prompt_mask_scope": _LAYOUT_PROMPT_SCOPE_FULL,
             "prompt_class_label": None,
+            "prompt_labels": [],
+            "prompt_group_transforms": {},
+            "prompt_active_group_id": None,
+            "prompt_selection_signature": None,
+            "prompt_transform_set_revision": 0,
             "prompt_regions_revision": None,
             "prompt_region_ids": [],
         }
@@ -3955,51 +4052,118 @@ def _reset_layout_prompt_selection_state(layout_state):
     return state
 
 
-def _layout_prompt_selection_token(scope, class_label=None):
+def _layout_prompt_selection_token(scope, region_id=None):
     if scope == _LAYOUT_PROMPT_SCOPE_FULL:
         return _LAYOUT_PROMPT_SCOPE_FULL
-    if scope == _LAYOUT_PROMPT_SCOPE_REGION_CLASS and isinstance(class_label, str) and class_label:
-        return f"{_LAYOUT_PROMPT_CLASS_PREFIX}{class_label}"
+    if scope in {
+        _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
+        _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
+    }:
+        try:
+            value = int(region_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("版图 Label ID 无效") from exc
+        if value <= 0:
+            raise ValueError("版图 Label ID 无效")
+        return f"{_LAYOUT_PROMPT_LABEL_PREFIX}{value}"
     raise ValueError("版图 mask 选择无效")
 
 
 def _parse_layout_prompt_selection(value):
-    text = str(value or "")
-    if text == _LAYOUT_PROMPT_SCOPE_FULL:
-        return _LAYOUT_PROMPT_SCOPE_FULL, None
-    if text.startswith(_LAYOUT_PROMPT_CLASS_PREFIX):
-        class_label = text[len(_LAYOUT_PROMPT_CLASS_PREFIX):].strip()
-        if class_label:
-            return _LAYOUT_PROMPT_SCOPE_REGION_CLASS, class_label
-    raise ValueError("版图 mask 选择无效")
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple)):
+        values = [str(item or "") for item in value]
+    else:
+        raise ValueError("版图 mask 选择无效")
+    values = list(dict.fromkeys(values))
+    if values == [_LAYOUT_PROMPT_SCOPE_FULL]:
+        return _LAYOUT_PROMPT_SCOPE_FULL, []
+    if not values or _LAYOUT_PROMPT_SCOPE_FULL in values:
+        raise ValueError("全部版图 mask 与 label 不能同时选择")
+    region_ids = []
+    for token in values:
+        if not token.startswith(_LAYOUT_PROMPT_LABEL_PREFIX):
+            raise ValueError("版图 mask 选择无效")
+        try:
+            region_id = int(token[len(_LAYOUT_PROMPT_LABEL_PREFIX):])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("版图 Label ID 无效") from exc
+        if region_id <= 0 or region_id in region_ids:
+            raise ValueError("版图 Label ID 重复或无效")
+        region_ids.append(region_id)
+    return _LAYOUT_PROMPT_SCOPE_REGION_LABELS, region_ids
 
 
-def _layout_prompt_class_counts(document):
+def _normalize_layout_prompt_checkbox_selection(value, layout_state):
+    if isinstance(value, str):
+        incoming = [value]
+    elif isinstance(value, (list, tuple)):
+        incoming = list(dict.fromkeys(str(item or "") for item in value))
+    else:
+        incoming = []
+    label_tokens = [
+        token
+        for token in incoming
+        if token.startswith(_LAYOUT_PROMPT_LABEL_PREFIX)
+    ]
+    if not incoming:
+        return [_LAYOUT_PROMPT_SCOPE_FULL]
+    if _LAYOUT_PROMPT_SCOPE_FULL in incoming and label_tokens:
+        if (layout_state or {}).get("prompt_mask_scope") == _LAYOUT_PROMPT_SCOPE_FULL:
+            return label_tokens
+        return [_LAYOUT_PROMPT_SCOPE_FULL]
+    return incoming
+
+
+def _layout_prompt_label_counts(document):
     counts = {}
     for record in sorted(
         _layout_regions.active_regions(document),
         key=lambda item: int(item["region_id"]),
     ):
-        class_label = str(record.get("class_label") or "")
-        if class_label:
-            counts[class_label] = counts.get(class_label, 0) + 1
+        label = _layout_regions.region_label(record)
+        counts[label] = counts.get(label, 0) + 1
     return list(counts.items())
+
+def _layout_label_choice_text(record, label_counts):
+    label = _layout_regions.region_label(record)
+    if int(label_counts.get(label) or 0) > 1:
+        return f"{label} (R{int(record['region_id'])})"
+    return label
+
+
+
+def _layout_prompt_class_counts(document):
+    return _layout_prompt_label_counts(document)
 
 
 def _layout_prompt_choice_update(document=None, selected_value=None):
     choices = [("全部版图 mask", _LAYOUT_PROMPT_SCOPE_FULL)]
-    for class_label, count in _layout_prompt_class_counts(document or {}):
+    label_counts = dict(_layout_prompt_label_counts(document or {}))
+    for record in sorted(
+        _layout_regions.active_regions(document or {}),
+        key=lambda item: int(item["region_id"]),
+    ):
         choices.append(
             (
-                f"类别：{class_label}（{count} 个 Region）",
+                _layout_label_choice_text(record, label_counts),
                 _layout_prompt_selection_token(
-                    _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
-                    class_label,
+                    _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
+                    int(record["region_id"]),
                 ),
             )
         )
     values = {value for _, value in choices}
-    selected = selected_value if selected_value in values else _LAYOUT_PROMPT_SCOPE_FULL
+    if isinstance(selected_value, str):
+        requested = [selected_value]
+    elif isinstance(selected_value, (list, tuple)):
+        requested = list(dict.fromkeys(selected_value))
+    else:
+        requested = [_LAYOUT_PROMPT_SCOPE_FULL]
+    selected = [value for value in requested if value in values]
+    if not selected:
+        selected = [_LAYOUT_PROMPT_SCOPE_FULL]
     return gr.update(
         choices=choices,
         value=selected,
@@ -4021,18 +4185,46 @@ def _load_layout_prompt_region_document(layout_state, expected_revision=None):
             or expected_revision != int(document.get("regions_revision") or 0)
         ):
             raise _layout_regions.StaleRegionsRevisionError(
-                "版图 Region 已变化；请重新加载类别后再创建 PVS 实例"
+                "版图 Region 已变化；请重新加载 Label 后再创建 PVS 实例"
             )
     return document, source_mask
 
 
-def _layout_prompt_class_records(document, class_label):
-    records = _layout_regions.active_regions_for_class(document, class_label)
+def _layout_prompt_label_records(document, labels):
+    records = _layout_regions.active_regions_for_labels(document, labels)
     if not records:
         raise _layout_regions.RegionValidationError(
-            f"类别 {class_label} 没有活动 Region"
+            "所选 label 没有活动 Region"
         )
     return records
+
+
+def _layout_prompt_class_records(document, class_label):
+    return _layout_prompt_label_records(document, [class_label])
+
+
+def _layout_prompt_region_records(document, region_ids):
+    if not isinstance(region_ids, (list, tuple)) or not region_ids:
+        raise _layout_regions.RegionValidationError("请至少选择一个 Label")
+    normalized = []
+    for value in region_ids:
+        try:
+            region_id = int(value)
+        except (TypeError, ValueError) as exc:
+            raise _layout_regions.RegionValidationError("版图 Label ID 无效") from exc
+        if region_id <= 0 or region_id in normalized:
+            raise _layout_regions.RegionValidationError("版图 Label ID 重复或无效")
+        normalized.append(region_id)
+    active_by_id = {
+        int(record["region_id"]): record
+        for record in _layout_regions.active_regions(document)
+    }
+    missing = [region_id for region_id in normalized if region_id not in active_by_id]
+    if missing:
+        raise _layout_regions.RegionValidationError(
+            f"Label 对应的活动 Region R{missing[0]} 不存在"
+        )
+    return [active_by_id[region_id] for region_id in sorted(normalized)]
 
 
 def _layout_prompt_display_mask(layout_state, source_mask):
@@ -4043,9 +4235,11 @@ def _layout_prompt_display_mask(layout_state, source_mask):
     )
     if scope == _LAYOUT_PROMPT_SCOPE_FULL:
         return source, None
-    if scope != _LAYOUT_PROMPT_SCOPE_REGION_CLASS:
+    if scope not in {
+        _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
+        _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
+    }:
         raise _layout_regions.RegionValidationError("未知的版图 prompt mask scope")
-    class_label = str((layout_state or {}).get("prompt_class_label") or "")
     expected_revision = (layout_state or {}).get("prompt_regions_revision")
     document, stored_source = _load_layout_prompt_region_document(
         layout_state,
@@ -4055,41 +4249,37 @@ def _layout_prompt_display_mask(layout_state, source_mask):
         raise _layout_regions.RegionValidationError(
             "Region source mask 尺寸与当前版图不一致"
         )
-    records = _layout_prompt_class_records(document, class_label)
-    region_ids = [int(record["region_id"]) for record in records]
-    expected_ids = (layout_state or {}).get("prompt_region_ids")
-    if not isinstance(expected_ids, list) or region_ids != [
-        int(region_id) for region_id in expected_ids
-    ]:
-        raise _layout_regions.StaleRegionsRevisionError(
-            "版图 Region 列表已变化；请重新加载类别"
-        )
-    preview = _layout_regions.class_region_preview_mask(
+    records = _layout_prompt_region_records(
         document,
-        class_label,
-        source.shape,
+        (layout_state or {}).get("prompt_region_ids"),
     )
+    region_ids = [int(record["region_id"]) for record in records]
+    preview = np.zeros_like(source, dtype=bool)
+    for _, mask in _layout_regions.decode_region_masks(records, source.shape):
+        preview = np.logical_or(preview, mask)
     if not preview.any():
         raise _layout_regions.RegionValidationError(
-            f"类别 {class_label} 的 Region mask 为空"
+            "所选 label 的 Region mask 为空"
         )
     return preview, (
-        f"Canvas 正在预览类别 {class_label} 的 "
-        f"{len(region_ids)} 个 Region 并集；推理仍按每个 Region 独立执行。"
+        f"Canvas 正在预览 {len(region_ids)} 个 Label；"
+        "每个 Label 可独立变换，并各自创建一个 PVS 实例。"
     )
 
 
 def _layout_region_choice_update(document, selected_region_id=None):
+    active = list(_layout_regions.active_regions(document))
+    label_counts = dict(_layout_prompt_label_counts(document))
     choices = []
     active_ids = set()
-    for region in _layout_regions.active_regions(document):
+    for region in active:
         region_id = int(region["region_id"])
         active_ids.add(region_id)
-        label = f"R{region_id} {region.get('class_label') or ''}"
-        if region.get("name"):
-            label += f" | {region['name']}"
-        label += f" | area={int(region.get('area') or 0)}"
-        choices.append((label, region_id))
+        display = (
+            f"{_layout_label_choice_text(region, label_counts)}"
+            f" | area={int(region.get('area') or 0)}"
+        )
+        choices.append((display, region_id))
     selected = int(selected_region_id) if selected_region_id not in (None, "") else None
     if selected not in active_ids:
         selected = None
@@ -4097,8 +4287,13 @@ def _layout_region_choice_update(document, selected_region_id=None):
 
 
 def _layout_region_category_update(value=None):
-    categories = _layout_regions.load_layout_categories(current_dir / "layout_categories.json")
-    return gr.update(choices=categories, value=value if value in categories else categories[0])
+    return _layout_region_label_update(value=value)
+
+
+def _layout_region_label_update(document=None, value=None):
+    del document
+    selected = value.strip() if isinstance(value, str) else ""
+    return gr.update(value=selected)
 
 
 def _layout_region_editor_payload(
@@ -4152,30 +4347,28 @@ def _load_layout_region_context(layout_state):
         document, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
         active = _layout_regions.active_regions(document)
         selected = int(active[0]["region_id"]) if active else None
-        status = f"Region 标注器已加载：active={len(active)}, revision={document['regions_revision']}"
+        status = f"Label 标注器已加载：active={len(active)}, revision={document['regions_revision']}"
         return (
             _layout_region_state_from_document(document, selected),
             _layout_region_editor_payload(
                 layout_state, document, source_mask, status=status, selected_region_id=selected
             ),
-            _layout_region_category_update(),
-            "",
+            _layout_region_label_update(document),
             _layout_region_choice_update(document, selected),
             gr.update(interactive=False),
             gr.update(interactive=selected is not None),
             status,
         )
     except Exception as exc:
-        status = f"Region 标注器加载失败：{exc}"
+        status = f"Label 标注器加载失败：{exc}"
         try:
-            category_update = _layout_region_category_update()
+            label_update = _layout_region_label_update()
         except Exception:
-            category_update = gr.update(choices=[], value=None)
+            label_update = gr.update(value="")
         return (
             _new_layout_region_state(),
             _layout_region_editor_empty(status),
-            category_update,
-            "",
+            label_update,
             gr.update(choices=[], value=None),
             gr.update(interactive=False),
             gr.update(interactive=False),
@@ -4184,16 +4377,15 @@ def _load_layout_region_context(layout_state):
 
 
 def _clear_layout_region_context(_layout_state):
-    status = "当前版图 Region UI 已清空；磁盘 regions.json 未删除"
+    status = "当前版图 Label UI 已清空；磁盘 regions.json 未删除"
     try:
-        category_update = _layout_region_category_update()
+        label_update = _layout_region_label_update()
     except Exception:
-        category_update = gr.update(choices=[], value=None)
+        label_update = gr.update(value="")
     return (
         _new_layout_region_state(),
         _layout_region_editor_empty(status),
-        category_update,
-        "",
+        label_update,
         gr.update(choices=[], value=None),
         gr.update(interactive=False),
         gr.update(interactive=False),
@@ -4216,7 +4408,10 @@ def _preview_layout_region(layout_state, region_state, editor_payload):
             lasso_polygon=intent["lasso_polygon"],
         )
         _, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
-        status = f"Draft 预览完成：area={int(region_mask.sum())}；选择类别后点击保存区域"
+        status = (
+            f"Draft 预览完成：area={int(region_mask.sum())}；"
+            "Label 可选，留空将按序号自动生成"
+        )
         return (
             _layout_region_state_from_document(document, selected),
             _layout_region_editor_payload(
@@ -4259,7 +4454,19 @@ def _select_layout_region(layout_state, region_state, selected_region_id):
         selected = int(selected_region_id) if selected_region_id not in (None, "") else None
         state = _layout_region_state_from_document(document, selected)
         selected = state.get("selected_region_id")
-        status = f"已选择 R{selected}" if selected is not None else "未选择活动 Region"
+        selected_record = next(
+            (
+                record
+                for record in _layout_regions.active_regions(document)
+                if int(record["region_id"]) == int(selected or -1)
+            ),
+            None,
+        )
+        status = (
+            f"已选择 {_layout_regions.region_label(selected_record)}"
+            if selected_record is not None
+            else "未选择活动 Label"
+        )
         return (
             state,
             _layout_region_editor_payload(
@@ -4270,7 +4477,7 @@ def _select_layout_region(layout_state, region_state, selected_region_id):
             status,
         )
     except Exception as exc:
-        status = f"选择 Region 失败：{exc}"
+        status = f"选择 Label 失败：{exc}"
         return (
             region_state or _new_layout_region_state(),
             _layout_region_editor_empty(status),
@@ -4330,7 +4537,7 @@ def _layout_region_latest_values(
     )
 
 
-def _save_layout_region(layout_state, region_state, editor_payload, class_label, name):
+def _save_layout_region(layout_state, region_state, editor_payload, label):
     intent = _layout_region_client_intent(editor_payload)
     previous_selected = (region_state or {}).get("selected_region_id") if isinstance(region_state, dict) else None
     try:
@@ -4343,29 +4550,27 @@ def _save_layout_region(layout_state, region_state, editor_payload, class_label,
             source_mask_hash=source_mask_hash,
             expected_revision=int(intent["expected_regions_revision"]),
             lasso_polygon=intent["lasso_polygon"],
-            class_label=class_label,
-            name=name,
+            label="" if label is None else label,
         )
         _, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
         selected = int(record["region_id"])
-        status = f"已保存 R{selected} {record['class_label']}"
-        if record.get("name"):
-            status += f" | {record['name']}"
-        status += f" | area={record['area']}"
+        status = (
+            f"已保存 Label {_layout_regions.region_label(record)}"
+            f" | area={record['area']}"
+        )
         return (
             _layout_region_state_from_document(document, selected),
             _layout_region_editor_payload(
                 layout_state, document, source_mask, status=status, selected_region_id=selected
             ),
-            _layout_region_category_update(record["class_label"]),
-            "",
+            _layout_region_label_update(document),
             _layout_region_choice_update(document, selected),
             gr.update(interactive=False),
             gr.update(interactive=True),
             status,
         )
     except Exception as exc:
-        status = f"保存 Region 失败：{exc}"
+        status = f"保存 Label 失败：{exc}"
         try:
             state, editor, choices, save_update, delete_update = _layout_region_latest_values(
                 layout_state,
@@ -4382,14 +4587,13 @@ def _save_layout_region(layout_state, region_state, editor_payload, class_label,
             save_update = gr.update(interactive=False)
             delete_update = gr.update(interactive=False)
         try:
-            category_update = _layout_region_category_update(class_label)
+            label_update = _layout_region_label_update(value=label)
         except Exception:
-            category_update = gr.update(choices=[], value=None)
+            label_update = gr.update(value="")
         return (
             state,
             editor,
-            category_update,
-            gr.update(),
+            label_update,
             choices,
             save_update,
             delete_update,
@@ -4405,7 +4609,7 @@ def _delete_layout_region(layout_state, region_state, editor_payload, selected_r
             layout_state, intent, region_state=region_state
         )
         if selected_region_id in (None, ""):
-            raise _layout_regions.RegionValidationError("请先选择活动 Region")
+            raise _layout_regions.RegionValidationError("请先选择活动 Label")
         document, deleted = _LAYOUT_REGION_STORE.delete_region(
             session_id=session_id,
             layout_id=layout_id,
@@ -4416,21 +4620,23 @@ def _delete_layout_region(layout_state, region_state, editor_payload, selected_r
         _, source_mask = _LAYOUT_REGION_STORE.load_document(session_id, layout_id, source_mask_hash)
         active = _layout_regions.active_regions(document)
         selected = int(active[0]["region_id"]) if active else None
-        status = f"已软删除 R{deleted['region_id']}；binary mask 与 Region RLE 历史均保留"
+        status = (
+            f"已软删除 Label {_layout_regions.region_label(deleted)}；"
+            "binary mask 与历史 RLE 均保留"
+        )
         return (
             _layout_region_state_from_document(document, selected),
             _layout_region_editor_payload(
                 layout_state, document, source_mask, status=status, selected_region_id=selected
             ),
-            gr.update(),
-            gr.update(),
+            _layout_region_label_update(document),
             _layout_region_choice_update(document, selected),
             gr.update(interactive=False),
             gr.update(interactive=selected is not None),
             status,
         )
     except Exception as exc:
-        status = f"软删除 Region 失败：{exc}"
+        status = f"软删除 Label 失败：{exc}"
         try:
             state, editor, choices, save_update, delete_update = _layout_region_latest_values(
                 layout_state, previous_selected, status
@@ -4444,7 +4650,6 @@ def _delete_layout_region(layout_state, region_state, editor_payload, selected_r
         return (
             state,
             editor,
-            gr.update(),
             gr.update(),
             choices,
             save_update,
@@ -4484,6 +4689,30 @@ def _export_layout_regions(layout_state, region_state):
 
         records = document.get("regions") or []
         active_count = len(_layout_regions.active_regions(document))
+        label_index, label_mapping = _layout_regions.region_label_index(
+            document,
+            source_mask.shape,
+        )
+        label_mask_payloads = []
+        for entry in label_mapping:
+            mask_file = (
+                "label_masks/"
+                f"label_{int(entry['index']):04d}_R{int(entry['region_id'])}.png"
+            )
+            entry["mask_file"] = mask_file
+            label_mask_payloads.append(
+                (
+                    mask_file,
+                    np.asarray(label_index == int(entry["index"]), dtype=np.uint8)
+                    * 255,
+                )
+            )
+        label_mask_files = [path for path, _ in label_mask_payloads]
+        labels_payload = {
+            "schema_version": 1,
+            "background_or_unlabeled_value": 0,
+            "labels": label_mapping,
+        }
         manifest = {
             "schema_version": 1,
             "export_type": "layout_region_annotations",
@@ -4494,8 +4723,23 @@ def _export_layout_regions(layout_state, region_state):
             "region_count": len(records),
             "active_region_count": active_count,
             "deleted_region_count": len(records) - active_count,
+            "label_mask_count": len(label_mask_files),
             "exported_at": _layout_regions.utc_now_iso(),
-            "files": ["regions.json", "source_mask.png", "manifest.json"],
+            "files": [
+                "regions.json",
+                "source_mask.png",
+                "region_label_index.png",
+                "labels.json",
+                "manifest.json",
+                *label_mask_files,
+            ],
+            "label_mask_files": label_mask_files,
+            "label_index_encoding": (
+                "uint16; 0 means background or unlabeled source-mask foreground"
+            ),
+            "label_mask_encoding": (
+                "8-bit grayscale PNG; 0 means background and 255 means Label foreground"
+            ),
         }
 
         with tempfile.TemporaryDirectory(
@@ -4506,6 +4750,9 @@ def _export_layout_regions(layout_state, region_state):
             with (staging_dir / "regions.json").open("w", encoding="utf-8") as handle:
                 json.dump(document, handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
+            with (staging_dir / "labels.json").open("w", encoding="utf-8") as handle:
+                json.dump(labels_payload, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
             with (staging_dir / "manifest.json").open("w", encoding="utf-8") as handle:
                 json.dump(manifest, handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
@@ -4514,6 +4761,16 @@ def _export_layout_regions(layout_state, region_state):
                 np.asarray(source_mask, dtype=np.uint8) * 255,
             ):
                 raise OSError("cannot write source_mask.png")
+            if not cv2.imwrite(
+                str(staging_dir / "region_label_index.png"),
+                np.asarray(label_index, dtype=np.uint16),
+            ):
+                raise OSError("cannot write region_label_index.png")
+            for mask_file, label_mask in label_mask_payloads:
+                mask_path = staging_dir / mask_file
+                mask_path.parent.mkdir(parents=True, exist_ok=True)
+                if not cv2.imwrite(str(mask_path), label_mask):
+                    raise OSError(f"cannot write {mask_file}")
             _prune_public_downloads()
             archive_path = _public_downloads.publish_zip(
                 public_download_dir,
@@ -4523,12 +4780,239 @@ def _export_layout_regions(layout_state, region_state):
             )
 
         status = (
-            f"\u5df2\u5bfc\u51fa Region \u6807\u6ce8\uff1a"
-            f"active={active_count}, revision={revision}"
+            "已导出版图 mask 与 label 标注："
+            f"active={active_count}, label_masks={len(label_mask_files)}, "
+            f"revision={revision}"
         )
         return str(archive_path), status
     except Exception as exc:
-        return None, f"\u5bfc\u51fa Region \u5931\u8d25\uff1a{exc}"
+        return None, f"导出 Label 标注失败：{exc}"
+
+
+def _layout_prompt_group_id(region_id):
+    return f"region_{int(region_id)}"
+
+
+def _layout_prompt_group_data(layout_state, source_mask):
+    expected_revision = (layout_state or {}).get("prompt_regions_revision")
+    document, stored_source = _load_layout_prompt_region_document(
+        layout_state,
+        expected_revision=expected_revision,
+    )
+    source = np.asarray(source_mask, dtype=bool)
+    if stored_source.shape != source.shape:
+        raise _layout_regions.RegionValidationError(
+            "Region source mask 尺寸与当前版图不一致"
+        )
+    records = _layout_prompt_region_records(
+        document,
+        (layout_state or {}).get("prompt_region_ids"),
+    )
+    decoded = _layout_regions.decode_region_masks(records, source.shape)
+    signature_payload = {
+        "session_id": str((layout_state or {}).get("session_id") or ""),
+        "layout_id": str((layout_state or {}).get("layout_id") or ""),
+        "source_mask_hash": str(
+            (layout_state or {}).get("source_mask_pixel_sha256") or ""
+        ),
+        "target_image_sha256": str(
+            (layout_state or {}).get("target_image_sha256") or ""
+        ),
+        "regions_revision": int(document.get("regions_revision") or 0),
+        "regions": [
+            {
+                "region_id": int(record["region_id"]),
+                "label": _layout_regions.region_label(record),
+                "mask_hash": _layout_regions.mask_pixel_sha256(
+                    mask.astype(np.uint8)
+                ),
+            }
+            for record, mask in decoded
+        ],
+    }
+    encoded = json.dumps(
+        signature_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return document, decoded, hashlib.sha256(encoded).hexdigest()
+
+
+def _layout_group_transform(
+    layout_state,
+    base_transform,
+    record,
+    group_mask,
+    target_size,
+    values=None,
+):
+    mask = np.asarray(group_mask, dtype=bool)
+    region_id = int(record["region_id"])
+    group_id = _layout_prompt_group_id(region_id)
+    group_hash = _layout_regions.mask_pixel_sha256(mask.astype(np.uint8))
+    bbox = _layout_tx.foreground_bbox_xyxy(mask)
+    pivot = _layout_tx.pivot_from_bbox_xyxy(bbox)
+    supplied = values if isinstance(values, dict) else None
+    if supplied is None:
+        base_matrix = _layout_tx.build_layout_affine_matrix(base_transform)
+        center_x, center_y = _layout_tx.apply_affine_to_point(
+            pivot,
+            base_matrix,
+        )
+        scale = float(base_transform.get("scale") or 1.0)
+        rotation = float(base_transform.get("rotation_deg") or 0.0)
+        alpha = _layout_preview_alpha(base_transform)
+        revision = int(base_transform.get("revision") or 0)
+    else:
+        for field, expected in {
+            "session_id": layout_state.get("session_id"),
+            "layout_id": layout_state.get("layout_id"),
+            "image_id": base_transform.get("image_id"),
+            "source_mask_pixel_sha256": layout_state.get(
+                "source_mask_pixel_sha256"
+            ),
+            "target_image_sha256": base_transform.get(
+                "target_image_sha256"
+            ),
+            "group_id": group_id,
+            "group_mask_pixel_sha256": group_hash,
+        }.items():
+            actual = supplied.get(field)
+            if actual is not None and str(actual) != str(expected):
+                raise ValueError(f"Label transform {field} 不匹配")
+        numeric = [
+            supplied.get("center_x"),
+            supplied.get("center_y"),
+            supplied.get("scale"),
+            supplied.get("rotation_deg", 0.0),
+            supplied.get("preview_alpha", 0.35),
+        ]
+        try:
+            numeric = [float(value) for value in numeric]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Label transform 数值无效") from exc
+        if not np.isfinite(numeric).all():
+            raise ValueError("Label transform 包含非有限数值")
+        center_x, center_y, scale, rotation, alpha = numeric
+        scale = float(np.clip(scale, 0.01, 20.0))
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        revision_value = supplied.get("revision", 0)
+        if (
+            isinstance(revision_value, bool)
+            or not isinstance(revision_value, (int, float))
+            or int(revision_value) < 0
+        ):
+            raise ValueError("Label transform revision 无效")
+        revision = int(revision_value)
+    transform = _layout_tx.make_layout_transform_v2(
+        session_id=str(layout_state.get("session_id") or ""),
+        layout_id=str(layout_state.get("layout_id") or ""),
+        image_id=str(base_transform.get("image_id") or ""),
+        target_size=target_size,
+        source_mask=mask,
+        center_x=center_x,
+        center_y=center_y,
+        pivot_xy=pivot,
+        scale=scale,
+        rotation_deg=rotation,
+        preview_alpha=alpha,
+        revision=revision,
+        source_mask_pixel_sha256=layout_state.get(
+            "source_mask_pixel_sha256"
+        ),
+        target_image_sha256=base_transform.get("target_image_sha256"),
+    )
+    transform = _layout_tx.transform_with_derived_fields(
+        transform,
+        target_size,
+    )
+    transform.update(
+        {
+            "group_id": group_id,
+            "region_id": region_id,
+            "label": _layout_regions.region_label(record),
+            "group_mask_pixel_sha256": group_hash,
+        }
+    )
+    return transform, bbox
+
+
+def _layout_prompt_group_payload(
+    layout_state,
+    source_mask,
+    base_transform,
+    target_size,
+):
+    document, decoded, signature = _layout_prompt_group_data(
+        layout_state,
+        source_mask,
+    )
+    previous = (layout_state or {}).get("prompt_group_transforms")
+    if not isinstance(previous, dict):
+        previous = {}
+    groups = []
+    transforms = []
+    for record, mask in decoded:
+        group_id = _layout_prompt_group_id(record["region_id"])
+        try:
+            values = previous.get(group_id)
+            transform, bbox = _layout_group_transform(
+                layout_state,
+                base_transform,
+                record,
+                mask,
+                target_size,
+                values=values,
+            )
+        except Exception:
+            transform, bbox = _layout_group_transform(
+                layout_state,
+                base_transform,
+                record,
+                mask,
+                target_size,
+            )
+        groups.append(
+            {
+                "group_id": group_id,
+                "label": _layout_regions.region_label(record),
+                "region_ids": [int(record["region_id"])],
+                "mask_image": _data_url(_layout_mask_to_editor_image(mask)),
+                "foreground_bbox_xyxy": [float(value) for value in bbox],
+                "group_mask_pixel_sha256": transform[
+                    "group_mask_pixel_sha256"
+                ],
+            }
+        )
+        transforms.append(
+            {
+                "group_id": group_id,
+                "transform": copy.deepcopy(transform),
+            }
+        )
+    group_ids = [group["group_id"] for group in groups]
+    active_group_id = (layout_state or {}).get("prompt_active_group_id")
+    if active_group_id not in group_ids:
+        active_group_id = group_ids[0]
+    return {
+        "transform_mode": "label_groups",
+        "group_view": {
+            "selection_signature": signature,
+            "regions_revision": int(document.get("regions_revision") or 0),
+            "groups": groups,
+        },
+        "group_intent": {
+            "selection_signature": signature,
+            "transform_set_revision": int(
+                (layout_state or {}).get("prompt_transform_set_revision")
+                or 0
+            ),
+            "active_group_id": active_group_id,
+            "transforms": transforms,
+        },
+    }
+
 
 
 def _layout_editor_empty(image_state=None, status="请先加载或生成版图 mask"):
@@ -4585,9 +5069,12 @@ def _layout_editor_payload(image_state, layout_state, status=None):
                 source_mask,
             )
         except Exception as exc:
-            if state.get("prompt_mask_scope") == _LAYOUT_PROMPT_SCOPE_REGION_CLASS:
+            if state.get("prompt_mask_scope") in {
+                _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
+                _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
+            }:
                 display_mask = np.zeros_like(source_mask, dtype=bool)
-                prompt_display_status = f"类别 mask 预览不可用：{exc}"
+                prompt_display_status = f"Label mask 预览不可用：{exc}"
         if all(k in state and state.get(k) is not None for k in ("center_x", "center_y", "pivot_x", "pivot_y")):
             center_x = float(state.get("center_x"))
             center_y = float(state.get("center_y"))
@@ -4607,7 +5094,7 @@ def _layout_editor_payload(image_state, layout_state, status=None):
             pivot_xy=pivot_xy,
             scale=float(state.get("scale") or 1.0),
             rotation_deg=float(state.get("rotation_deg") or 0.0),
-            preview_alpha=float(state.get("preview_alpha") or 0.35),
+            preview_alpha=_layout_preview_alpha(state),
             revision=int(state.get("revision") or cached.get("committed_revision") or 0),
             source_mask_pixel_sha256=cached.get("source_mask_pixel_sha256"),
             target_image_sha256=target_hash,
@@ -4619,7 +5106,7 @@ def _layout_editor_payload(image_state, layout_state, status=None):
                 f"{editor_status}\n{prompt_display_status}"
                 if status else prompt_display_status
             )
-        return {
+        payload = {
             "enabled": bool(state.get("enabled", True)),
             "base_image": base_url,
             "mask_image": _data_url(_layout_mask_to_editor_image(display_mask)),
@@ -4631,6 +5118,24 @@ def _layout_editor_payload(image_state, layout_state, status=None):
             "foreground_bbox_xyxy": copy.deepcopy(cached.get("foreground_bbox_xyxy")),
             "status": editor_status,
         }
+        if state.get("prompt_mask_scope") == _LAYOUT_PROMPT_SCOPE_REGION_LABELS:
+            group_payload = _layout_prompt_group_payload(
+                state,
+                source_mask,
+                transform,
+                (target_width, target_height),
+            )
+            payload.update(group_payload)
+            active_group_id = group_payload["group_intent"][
+                "active_group_id"
+            ]
+            active_item = next(
+                item
+                for item in group_payload["group_intent"]["transforms"]
+                if item["group_id"] == active_group_id
+            )
+            payload["transform"] = copy.deepcopy(active_item["transform"])
+        return payload
     except Exception as exc:
         return _layout_editor_empty(image_state, status or f"版图编辑器不可用：{exc}")
 
@@ -4640,6 +5145,259 @@ def _layout_editor_transform(editor_payload):
         return None
     transform = editor_payload.get("transform")
     return transform if isinstance(transform, dict) else None
+
+
+def _layout_group_control_values(transform, target_size):
+    tx, ty = _layout_tx.derive_legacy_tx_ty(transform, target_size)
+    return (
+        float(tx),
+        float(ty),
+        float(transform.get("scale") or 1.0),
+        float(transform.get("rotation_deg") or 0.0),
+        _layout_preview_alpha(transform),
+    )
+
+
+def _commit_layout_group_transforms(
+    image_state,
+    layout_state,
+    editor_payload,
+    *,
+    numeric_override=None,
+    reset_active=False,
+):
+    state = dict(layout_state or {})
+    if state.get("prompt_mask_scope") != _LAYOUT_PROMPT_SCOPE_REGION_LABELS:
+        raise ValueError("当前不是 Label 独立变换模式")
+    cached = _layout_cache_get(state)
+    source_mask = np.asarray(cached.get("source_mask"), dtype=bool)
+    if source_mask.ndim != 2:
+        raise ValueError("layout source_mask must be a 2D binary mask")
+    base_state = dict(state)
+    base_state["prompt_mask_scope"] = _LAYOUT_PROMPT_SCOPE_FULL
+    base_payload = _layout_editor_payload(image_state, base_state)
+    base_transform = _layout_editor_transform(base_payload)
+    if not base_transform:
+        raise ValueError("完整 mask transform 不可用")
+    target_size = (
+        int(base_payload.get("target_width") or 0),
+        int(base_payload.get("target_height") or 0),
+    )
+    if target_size[0] <= 0 or target_size[1] <= 0:
+        raise ValueError("目标图像尺寸无效")
+    state["image_id"] = base_transform.get("image_id")
+    state["target_image_sha256"] = base_transform.get(
+        "target_image_sha256"
+    )
+    document, decoded, signature = _layout_prompt_group_data(
+        state,
+        source_mask,
+    )
+    intent = (
+        editor_payload.get("group_intent")
+        if isinstance(editor_payload, dict)
+        else None
+    )
+    if not isinstance(intent, dict):
+        raise ValueError("Canvas 缺少 Label group_intent")
+    if intent.get("selection_signature") != signature:
+        raise ValueError("Canvas Label 选择签名已过期")
+    active_group_id = str(intent.get("active_group_id") or "")
+    expected_group_ids = [
+        _layout_prompt_group_id(record["region_id"])
+        for record, _ in decoded
+    ]
+    if active_group_id not in expected_group_ids:
+        raise ValueError("Canvas active Label 无效")
+    changed_group_values = intent.get("changed_group_ids")
+    if changed_group_values is None:
+        changed_group_values = []
+    if not isinstance(changed_group_values, list):
+        raise ValueError("Canvas changed Label 集合无效")
+    changed_group_ids = [str(value) for value in changed_group_values]
+    if (
+        len(set(changed_group_ids)) != len(changed_group_ids)
+        or not set(changed_group_ids).issubset(expected_group_ids)
+    ):
+        raise ValueError("Canvas changed Label 集合重复或无效")
+    incoming_items = intent.get("transforms")
+    if not isinstance(incoming_items, list):
+        raise ValueError("Canvas Label transforms 无效")
+    incoming_by_id = {}
+    for item in incoming_items:
+        if not isinstance(item, dict):
+            raise ValueError("Canvas Label transform item 无效")
+        group_id = str(item.get("group_id") or "")
+        transform = item.get("transform")
+        if (
+            group_id in incoming_by_id
+            or not isinstance(transform, dict)
+        ):
+            raise ValueError("Canvas Label transform 重复或无效")
+        incoming_by_id[group_id] = transform
+    if set(incoming_by_id) != set(expected_group_ids):
+        raise ValueError("Canvas Label transform 集合与服务端不一致")
+    set_revision = intent.get("transform_set_revision")
+    if (
+        isinstance(set_revision, bool)
+        or not isinstance(set_revision, (int, float))
+        or int(set_revision) < int(
+            state.get("prompt_transform_set_revision") or 0
+        )
+    ):
+        raise ValueError("Canvas Label transform set revision 已过期")
+    previous = state.get("prompt_group_transforms")
+    if not isinstance(previous, dict):
+        previous = {}
+    backend_updates_active = numeric_override is not None or reset_active
+    authoritative = {}
+    transformed_groups = {}
+    transformed_union = np.zeros(
+        (target_size[1], target_size[0]),
+        dtype=bool,
+    )
+    for record, group_mask in decoded:
+        group_id = _layout_prompt_group_id(record["region_id"])
+        incoming = copy.deepcopy(incoming_by_id[group_id])
+        previous_transform = previous.get(group_id)
+        previous_revision = (
+            int(previous_transform.get("revision") or 0)
+            if isinstance(previous_transform, dict)
+            else 0
+        )
+        incoming_revision = incoming.get("revision", 0)
+        if (
+            isinstance(incoming_revision, bool)
+            or not isinstance(incoming_revision, (int, float))
+            or not float(incoming_revision).is_integer()
+            or int(incoming_revision) < 0
+        ):
+            raise ValueError(f"{group_id} transform revision 无效")
+        if int(incoming_revision) < previous_revision:
+            if group_id != active_group_id and isinstance(previous_transform, dict):
+                incoming = copy.deepcopy(previous_transform)
+                incoming_revision = previous_revision
+            else:
+                raise ValueError(f"{group_id} transform revision 已过期")
+        accepts_changed_non_active = (
+            group_id != active_group_id
+            and group_id in changed_group_ids
+            and int(incoming_revision) > previous_revision
+        )
+        if (
+            group_id != active_group_id
+            and isinstance(previous_transform, dict)
+            and not accepts_changed_non_active
+        ):
+            incoming = copy.deepcopy(previous_transform)
+            incoming_revision = previous_revision
+        if reset_active and group_id == active_group_id:
+            incoming = None
+        elif (
+            numeric_override is not None
+            and group_id == active_group_id
+        ):
+            tx, ty, scale, rotation, alpha = numeric_override
+            incoming.update(
+                {
+                    "center_x": target_size[0] / 2.0 + float(tx),
+                    "center_y": target_size[1] / 2.0 + float(ty),
+                    "scale": float(scale),
+                    "rotation_deg": float(rotation),
+                    "preview_alpha": float(alpha),
+                }
+            )
+        transform, _ = _layout_group_transform(
+            state,
+            base_transform,
+            record,
+            group_mask,
+            target_size,
+            values=incoming,
+        )
+        if group_id == active_group_id and backend_updates_active:
+            transform["revision"] = max(
+                int(transform.get("revision") or 0),
+                previous_revision,
+            ) + 1
+        elif (
+            group_id != active_group_id
+            and isinstance(previous_transform, dict)
+            and not accepts_changed_non_active
+        ):
+            transform["revision"] = previous_revision
+        else:
+            transform["revision"] = int(transform.get("revision") or 0)
+        authoritative[group_id] = transform
+        transformed = _layout_tx.warp_layout_mask(
+            group_mask,
+            transform["matrix_2x3"],
+            target_size,
+        )
+        transformed_groups[group_id] = transformed
+        transformed_union = np.logical_or(
+            transformed_union,
+            transformed,
+        )
+    next_set_revision = max(
+        int(set_revision),
+        int(state.get("prompt_transform_set_revision") or 0),
+    ) + (1 if backend_updates_active else 0)
+    labels = [
+        _layout_regions.region_label(record)
+        for record, _ in decoded
+    ]
+    region_ids = [
+        int(record["region_id"])
+        for record, _ in decoded
+    ]
+    snapshot = {
+        "selection_signature": signature,
+        "regions_revision": int(document.get("regions_revision") or 0),
+        "transform_set_revision": next_set_revision,
+        "active_group_id": active_group_id,
+        "region_ids": region_ids,
+        "labels": labels,
+        "target_image_sha256": base_transform.get(
+            "target_image_sha256"
+        ),
+        "transforms": copy.deepcopy(authoritative),
+    }
+    with _LAYOUT_CACHE_LOCK:
+        cached["prompt_group_snapshot"] = copy.deepcopy(snapshot)
+        cached["prompt_group_transformed_masks"] = {
+            group_id: mask.copy()
+            for group_id, mask in transformed_groups.items()
+        }
+        cached["prompt_group_transformed_union"] = (
+            transformed_union.copy()
+        )
+    state.update(
+        {
+            "prompt_labels": labels,
+            "prompt_region_ids": region_ids,
+            "prompt_group_transforms": copy.deepcopy(authoritative),
+            "prompt_active_group_id": active_group_id,
+            "prompt_selection_signature": signature,
+            "prompt_transform_set_revision": next_set_revision,
+        }
+    )
+    return (
+        state,
+        decoded,
+        snapshot,
+        transformed_union,
+        authoritative[active_group_id],
+    )
+
+
+def _validate_layout_group_transform_snapshot(layout_state, snapshot):
+    with _LAYOUT_CACHE_LOCK:
+        cached = _layout_cache_get(layout_state)
+        current = copy.deepcopy(cached.get("prompt_group_snapshot"))
+    if not isinstance(current, dict) or current != snapshot:
+        raise ValueError("Label transform 在批量预测期间发生变化")
+
 
 
 def _sync_layout_controls_from_editor(layout_state, editor_payload):
@@ -4674,7 +5432,17 @@ def _sync_layout_controls_from_editor(layout_state, editor_payload):
             "pivot_y": float(transform.get("pivot_y", state.get("pivot_y") or 0.0)),
             "scale": float(np.clip(float(transform.get("scale", state.get("scale") or 1.0)), 0.01, 20.0)),
             "rotation_deg": float(_layout_tx.normalize_rotation_deg(float(transform.get("rotation_deg", state.get("rotation_deg") or 0.0)))),
-            "preview_alpha": float(np.clip(float(transform.get("preview_alpha", state.get("preview_alpha") or 0.35)), 0.0, 1.0)),
+            "preview_alpha": float(
+                np.clip(
+                    _layout_preview_alpha(
+                        transform
+                        if transform.get("preview_alpha") is not None
+                        else state
+                    ),
+                    0.0,
+                    1.0,
+                )
+            ),
             "revision": int(float(transform.get("revision", state.get("revision") or 0))),
             "source_mask_pixel_sha256": transform.get("source_mask_pixel_sha256") or state.get("source_mask_pixel_sha256"),
             "target_image_sha256": transform.get("target_image_sha256") or state.get("target_image_sha256"),
@@ -4682,7 +5450,7 @@ def _sync_layout_controls_from_editor(layout_state, editor_payload):
             "ty": float(ty),
         })
         info = f"Canvas 变换已同步到数值控件：tx={tx:.1f}, ty={ty:.1f}, 缩放={state['scale']:.3f}, 旋转={state['rotation_deg']:.1f}"
-        return state, bool(state.get("enabled", True)), float(tx), float(ty), float(state.get("scale") or 1.0), float(state.get("rotation_deg") or 0.0), float(state.get("preview_alpha") or 0.35), info
+        return state, bool(state.get("enabled", True)), float(tx), float(ty), float(state.get("scale") or 1.0), float(state.get("rotation_deg") or 0.0), _layout_preview_alpha(state), info
     except Exception as exc:
         return state, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"Canvas 变换同步失败：{exc}"
 
@@ -4692,12 +5460,48 @@ def _sync_layout_controls_from_editor_with_prompt_epoch(
     editor_payload,
 ):
     _advance_layout_prompt_epoch(layout_state=layout_state)
+    if (
+        isinstance(layout_state, dict)
+        and layout_state.get("prompt_mask_scope")
+        == _LAYOUT_PROMPT_SCOPE_REGION_LABELS
+    ):
+        state = dict(layout_state)
+        try:
+            transform = _layout_editor_transform(editor_payload) or {}
+            image_state = {
+                "image_id": transform.get("image_id")
+                or state.get("image_id"),
+                "session_id": state.get("session_id"),
+                "width": int((editor_payload or {}).get("target_width") or 0),
+                "height": int((editor_payload or {}).get("target_height") or 0),
+                "target_image_sha256": transform.get(
+                    "target_image_sha256"
+                ),
+            }
+            state, _, _, _, active_transform = (
+                _commit_layout_group_transforms(
+                    image_state,
+                    state,
+                    editor_payload,
+                )
+            )
+            tx, ty, scale, rotation, alpha = (
+                _layout_group_control_values(
+                    active_transform,
+                    (image_state["width"], image_state["height"]),
+                )
+            )
+            label = active_transform.get("label") or "Label"
+            info = f"已激活 {label}；下方数值控件仅修改该 Label"
+            return state, True, tx, ty, scale, rotation, alpha, info
+        except Exception as exc:
+            return state, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"Label Canvas 同步失败：{exc}"
     return _sync_layout_controls_from_editor(layout_state, editor_payload)
 
 
-def _run_layout_mask_page(session_state, image_state, input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode):
+def _run_layout_mask_page(session_state, image_state, input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode, morph_pixels=0):
     try:
-        image, mask = _binarize_layout_image(input_image, threshold, invert, open_kernel, close_kernel)
+        image, mask = _binarize_layout_image(input_image, threshold, invert, open_kernel, close_kernel, morph_pixels)
         mask = _filter_layout_components(mask, min_component_area, region_mode)
         if not mask.any():
             raise ValueError("Binary mask is empty; lower threshold or check invert")
@@ -4707,6 +5511,7 @@ def _run_layout_mask_page(session_state, image_state, input_image, threshold, in
             "invert": bool(invert),
             "open_kernel": int(open_kernel or 0),
             "close_kernel": int(close_kernel or 0),
+            "morph_pixels": _normalize_layout_morph_pixels(morph_pixels),
             "min_component_area": int(min_component_area or 0),
             "region_mode": str(region_mode or "all"),
         }
@@ -4738,6 +5543,7 @@ def _run_layout_mask_page_with_downloads(
     close_kernel,
     min_component_area,
     region_mode,
+    morph_pixels=0,
 ):
     _advance_layout_prompt_epoch(
         image_state=image_state,
@@ -4754,6 +5560,7 @@ def _run_layout_mask_page_with_downloads(
             close_kernel,
             min_component_area,
             region_mode,
+            morph_pixels,
         )
     )
     internal_mask_path, internal_contour_path = result[5], result[6]
@@ -4961,10 +5768,108 @@ def _update_layout_preview(image_state, pcs_state, pvs_state, mode, layout_state
         )
         workspace = _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None, layout_state=state)
         editor = _layout_editor_payload(image_state, state, "后端权威 overlay 已返回，Canvas 变换已校正。")
-        return state, workspace, editor, bool(state.get("enabled")), float(state.get("tx") or 0.0), float(state.get("ty") or 0.0), float(state.get("scale") or 1.0), float(state.get("rotation_deg") or 0.0), float(state.get("preview_alpha") or 0.35), info
+        return state, workspace, editor, bool(state.get("enabled")), float(state.get("tx") or 0.0), float(state.get("ty") or 0.0), float(state.get("scale") or 1.0), float(state.get("rotation_deg") or 0.0), _layout_preview_alpha(state), info
     except Exception as exc:
         state = layout_state or _new_layout_state(image_state.get("session_id") if isinstance(image_state, dict) else None)
         return state, gr.update(), _layout_editor_payload(image_state, state, f"版图预览更新失败：{exc}"), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"版图预览更新失败：{exc}"
+
+
+def _update_layout_preview_with_groups(
+    image_state,
+    pcs_state,
+    pvs_state,
+    mode,
+    layout_state,
+    enabled,
+    tx,
+    ty,
+    scale,
+    rotation_deg,
+    preview_alpha,
+    editor_payload,
+):
+    if (
+        not isinstance(layout_state, dict)
+        or layout_state.get("prompt_mask_scope")
+        != _LAYOUT_PROMPT_SCOPE_REGION_LABELS
+    ):
+        return _update_layout_preview(
+            image_state,
+            pcs_state,
+            pvs_state,
+            mode,
+            layout_state,
+            enabled,
+            tx,
+            ty,
+            scale,
+            rotation_deg,
+            preview_alpha,
+            editor_payload,
+        )
+    state = dict(layout_state)
+    try:
+        if not _is_layout_mask_mode(mode):
+            raise ValueError("版图 overlay 只在版图 mask 提示分割模式可用")
+        _advance_layout_prompt_epoch(image_state, state)
+        state, _, _, transformed, active_transform = (
+            _commit_layout_group_transforms(
+                image_state,
+                state,
+                editor_payload,
+                numeric_override=(
+                    tx,
+                    ty,
+                    scale,
+                    rotation_deg,
+                    preview_alpha,
+                ),
+            )
+        )
+        state["enabled"] = bool(enabled)
+        active_label = active_transform.get("label") or "Label"
+        values = _layout_group_control_values(
+            active_transform,
+            (
+                int(image_state.get("width") or 0),
+                int(image_state.get("height") or 0),
+            ),
+        )
+        info = (
+            f"已更新 {active_label}；其他 Label transform 保持不变。\n"
+            f"selected Label union foreground={int(transformed.sum())}"
+        )
+        workspace = _workspace_image(
+            image_state,
+            pcs_state,
+            pvs_state,
+            mode,
+            prompt_state=None,
+            layout_state=state,
+        )
+        editor = _layout_editor_payload(image_state, state, info)
+        return (
+            state,
+            workspace,
+            editor,
+            bool(state.get("enabled")),
+            *values,
+            info,
+        )
+    except Exception as exc:
+        info = f"Label 预览更新失败：{exc}"
+        return (
+            state,
+            gr.update(),
+            _layout_editor_payload(image_state, state, info),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            info,
+        )
 
 
 def _mask_to_lowres_logits(mask):
@@ -5033,7 +5938,7 @@ def _layout_prompt_metadata(image_state, layout_state):
         "transform": transform,
         "matrix_2x3": copy.deepcopy(cached.get("matrix_2x3")),
         "revision": int(cached.get("committed_revision") or transform.get("revision") or 0),
-        "preview_alpha": float(layout_state.get("preview_alpha") or 0.35),
+        "preview_alpha": _layout_preview_alpha(layout_state),
         "binarize_params": copy.deepcopy(cached.get("binarize_params", {})),
     }
 
@@ -5082,7 +5987,7 @@ def _layout_state_summary(layout_state):
         f"source: {int(layout_state.get('source_width') or 0)}x{int(layout_state.get('source_height') or 0)}\n"
         f"revision={int(layout_state.get('revision') or 0)}, tx={float(layout_state.get('tx') or 0):.1f}, ty={float(layout_state.get('ty') or 0):.1f}, "
         f"scale={float(layout_state.get('scale') or 1):.3f}, rotation={float(layout_state.get('rotation_deg') or 0):.1f}, "
-        f"alpha={float(layout_state.get('preview_alpha') or 0.35):.2f}\n"
+        f"alpha={_layout_preview_alpha(layout_state):.2f}\n"
         f"source_mask_pixel_sha256: {layout_state.get('source_mask_pixel_sha256') or ''}\n"
         f"target_image_sha256: {layout_state.get('target_image_sha256') or ''}"
     )
@@ -5209,6 +6114,7 @@ def _layout_prompt_region_fingerprint(decoded_records):
     return tuple(
         (
             int(record["region_id"]),
+            _layout_regions.region_label(record),
             _layout_regions.mask_pixel_sha256(mask.astype(np.uint8)),
         )
         for record, mask in decoded_records
@@ -5253,10 +6159,10 @@ def _load_layout_prompt_choices(image_state, layout_state):
         )
     try:
         document, _ = _load_layout_prompt_region_document(state)
-        class_counts = _layout_prompt_class_counts(document)
+        label_count = len(_layout_regions.active_regions(document))
         info = (
             f"当前已保存版图 mask 已加载；可选择完整 mask 或 "
-            f"{len(class_counts)} 个 Region 类别。"
+            f"{label_count} 个独立 Label。"
         )
         return (
             state,
@@ -5266,7 +6172,7 @@ def _load_layout_prompt_choices(image_state, layout_state):
         )
     except Exception as exc:
         info = (
-            "当前已保存版图 mask 已加载；Region 类别不可用，"
+            "当前已保存版图 mask 已加载；Region Label 不可用，"
             f"仍可使用完整 mask：{exc}"
         )
         return (
@@ -5281,78 +6187,140 @@ def _select_layout_prompt_mask(image_state, layout_state, selection):
     _advance_layout_prompt_epoch(image_state, layout_state)
     state = dict(layout_state or {})
     try:
-        scope, class_label = _parse_layout_prompt_selection(selection)
+        normalized_selection = _normalize_layout_prompt_checkbox_selection(
+            selection,
+            state,
+        )
+        scope, selected_region_ids = _parse_layout_prompt_selection(
+            normalized_selection
+        )
         if scope == _LAYOUT_PROMPT_SCOPE_FULL:
             state = _reset_layout_prompt_selection_state(state)
             info = "已选择全部版图 mask；将保持原有单实例创建行为。"
             return (
                 state,
                 _layout_editor_payload(image_state, state, info),
-                gr.update(value=_LAYOUT_PROMPT_SCOPE_FULL),
+                gr.update(value=[_LAYOUT_PROMPT_SCOPE_FULL]),
                 info,
+                bool(state.get("enabled", True)),
+                float(state.get("tx") or 0.0),
+                float(state.get("ty") or 0.0),
+                float(state.get("scale") or 1.0),
+                float(state.get("rotation_deg") or 0.0),
+                _layout_preview_alpha(state),
             )
 
         document, source_mask = _load_layout_prompt_region_document(state)
-        records = _layout_prompt_class_records(document, class_label)
-        region_ids = [int(record["region_id"]) for record in records]
-        preview = _layout_regions.class_region_preview_mask(
+        records = _layout_prompt_region_records(
             document,
-            class_label,
-            source_mask.shape,
+            selected_region_ids,
         )
+        region_ids = [int(record["region_id"]) for record in records]
+        preview = np.zeros_like(source_mask, dtype=bool)
+        for _, mask in _layout_regions.decode_region_masks(
+            records,
+            source_mask.shape,
+        ):
+            preview = np.logical_or(preview, mask)
         if not preview.any():
             raise _layout_regions.RegionValidationError(
-                f"类别 {class_label} 的 Region mask 为空"
+                "所选 Label 的 Region mask 为空"
             )
+        labels = [
+            _layout_regions.region_label(record)
+            for record in records
+        ]
         state.update(
             {
-                "prompt_mask_scope": _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
-                "prompt_class_label": class_label,
+                "prompt_mask_scope": _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
+                "prompt_class_label": None,
+                "prompt_labels": labels,
                 "prompt_regions_revision": int(
                     document.get("regions_revision") or 0
                 ),
                 "prompt_region_ids": region_ids,
+                "image_id": image_state.get("image_id"),
+                "target_image_sha256": image_state.get(
+                    "target_image_sha256"
+                ),
             }
         )
-        selected_token = _layout_prompt_selection_token(
-            _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
-            class_label,
+        editor = _layout_editor_payload(
+            image_state,
+            state,
+            "正在初始化独立 Label 图层。",
+        )
+        state, _, _, _, active_transform = (
+            _commit_layout_group_transforms(
+                image_state,
+                state,
+                editor,
+            )
+        )
+        editor = _layout_editor_payload(image_state, state)
+        selected_tokens = [
+            _layout_prompt_selection_token(
+                _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
+                region_id,
+            )
+            for region_id in region_ids
+        ]
+        tx, ty, group_scale, group_rotation, group_alpha = (
+            _layout_group_control_values(
+                active_transform,
+                (
+                    int(image_state.get("width") or 0),
+                    int(image_state.get("height") or 0),
+                ),
+            )
         )
         info = (
-            f"已选择类别 {class_label}：Canvas 显示 {len(region_ids)} 个 "
-            "Region 的预览并集；创建时每个 Region 单独生成一个 PVS instance。"
+            f"已选择 {len(region_ids)} 个 Label；每个 Label 可独立拖动，"
+            "并各自生成一个 PVS instance。"
         )
+        editor["status"] = info
         return (
             state,
-            _layout_editor_payload(image_state, state, info),
-            gr.update(value=selected_token),
+            editor,
+            gr.update(value=selected_tokens),
             info,
+            True,
+            tx,
+            ty,
+            group_scale,
+            group_rotation,
+            group_alpha,
         )
     except Exception as exc:
-        current_scope = str(
-            state.get("prompt_mask_scope") or _LAYOUT_PROMPT_SCOPE_FULL
-        )
-        current_class = state.get("prompt_class_label")
-        try:
-            current_token = _layout_prompt_selection_token(
-                current_scope,
-                current_class,
-            )
-        except ValueError:
-            current_token = _LAYOUT_PROMPT_SCOPE_FULL
-        info = f"版图 mask 类别选择失败，已保留原选择：{exc}"
+        if state.get("prompt_mask_scope") == _LAYOUT_PROMPT_SCOPE_REGION_LABELS:
+            current_value = [
+                _layout_prompt_selection_token(
+                    _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
+                    region_id,
+                )
+                for region_id in state.get("prompt_region_ids") or []
+            ]
+        else:
+            current_value = [_LAYOUT_PROMPT_SCOPE_FULL]
+        info = f"版图 mask Label 选择失败，已保留原选择：{exc}"
         return (
             state,
             _layout_editor_payload(image_state, state, info),
-            gr.update(value=current_token),
+            gr.update(value=current_value),
             info,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
         )
 
 
 def _reset_layout_prompt_selection(image_state, layout_state):
     _advance_layout_prompt_epoch(image_state, layout_state)
     state = _reset_layout_prompt_selection_state(layout_state)
-    info = "版图 mask 选择已重置；点击‘使用当前已保存版图 mask’加载类别。"
+    info = "版图 mask 选择已重置；点击‘使用当前已保存版图 mask’加载 Label。"
     return (
         state,
         _layout_editor_payload(image_state, state, info),
@@ -5378,7 +6346,7 @@ def _create_pvs_from_layout_selection(
 ):
     state = dict(layout_state or _new_layout_state())
     try:
-        scope, class_label = _parse_layout_prompt_selection(prompt_selection)
+        scope, selected_region_ids = _parse_layout_prompt_selection(prompt_selection)
         state_scope = str(
             state.get("prompt_mask_scope") or _LAYOUT_PROMPT_SCOPE_FULL
         )
@@ -5423,10 +6391,12 @@ def _create_pvs_from_layout_selection(
     try:
         if not _is_layout_mask_mode(mode):
             raise ValueError("版图 Region prompt 只支持在版图 mask 提示分割模式使用")
-        if state.get("prompt_mask_scope") != _LAYOUT_PROMPT_SCOPE_REGION_CLASS:
-            raise ValueError("请先在版图 mask 选择中确认一个类别")
-        if state.get("prompt_class_label") != class_label:
-            raise ValueError("版图类别选择状态不一致，请重新选择")
+        if state.get("prompt_mask_scope") != _LAYOUT_PROMPT_SCOPE_REGION_LABELS:
+            raise ValueError("请先在版图 mask 选择中确认至少一个 Label")
+        if sorted(selected_region_ids) != [
+            int(value) for value in state.get("prompt_region_ids") or []
+        ]:
+            raise ValueError("版图 Label 选择状态不一致，请重新选择")
         expected_revision = state.get("prompt_regions_revision")
         prompt_epoch_key, prompt_epoch = _layout_prompt_epoch_snapshot(
             image_state,
@@ -5436,11 +6406,14 @@ def _create_pvs_from_layout_selection(
             state,
             expected_revision=expected_revision,
         )
-        records = _layout_prompt_class_records(document, class_label)
+        records = _layout_prompt_region_records(
+            document,
+            selected_region_ids,
+        )
         region_ids = [int(record["region_id"]) for record in records]
         if region_ids != [int(value) for value in state.get("prompt_region_ids") or []]:
             raise _layout_regions.StaleRegionsRevisionError(
-                "版图 Region 列表已变化，请重新加载类别"
+                "版图 Region 列表已变化，请重新加载 Label"
             )
         decoded_records = _layout_regions.decode_region_masks(
             records,
@@ -5466,38 +6439,55 @@ def _create_pvs_from_layout_selection(
         if planned_instance_ids.intersection(existing_instance_ids):
             raise ValueError("Region 批次计划的 PVS instance ID 已存在")
 
-        _pvs_progress(progress, 0.04, "提交并冻结完整版图 transform")
-        state, _, transform = _commit_layout_transform(
+        _pvs_progress(progress, 0.04, "提交并冻结各 Label transform")
+        (
+            state,
+            committed_decoded,
+            frozen_group_snapshot,
+            _,
+            _,
+        ) = _commit_layout_group_transforms(
             image_state,
             state,
-            enabled,
-            tx,
-            ty,
-            scale,
-            rotation_deg,
-            preview_alpha,
-            transform_payload=editor_payload,
+            editor_payload,
+            numeric_override=(
+                tx,
+                ty,
+                scale,
+                rotation_deg,
+                preview_alpha,
+            ),
         )
+        if (
+            [int(record["region_id"]) for record, _ in committed_decoded]
+            != region_ids
+            or _layout_prompt_region_fingerprint(committed_decoded)
+            != frozen_region_fingerprint
+        ):
+            raise _layout_regions.StaleRegionsRevisionError(
+                "版图 Region 在冻结 Label transform 前发生变化"
+            )
+        decoded_records = committed_decoded
         target_width = int(image_state.get("width") or 0)
         target_height = int(image_state.get("height") or 0)
         if target_width <= 0 or target_height <= 0:
             raise ValueError("目标图像尺寸无效")
         target_shape = (target_height, target_width)
-        frozen_transform = copy.deepcopy(transform)
-        frozen_matrix = copy.deepcopy(frozen_transform.get("matrix_2x3"))
-        if frozen_matrix is None:
-            raise ValueError("版图 affine matrix 缺失")
-
         base_prompt = _layout_prompt_metadata(image_state, state)
-        base_prompt["transform"] = copy.deepcopy(frozen_transform)
-        base_prompt["matrix_2x3"] = copy.deepcopy(frozen_matrix)
-        base_prompt["revision"] = int(frozen_transform.get("revision") or 0)
         base_prompt["mask_scope"] = "region"
-        base_prompt["class_label"] = class_label
         base_prompt["regions_revision"] = int(
             document.get("regions_revision") or 0
         )
         base_prompt["batch_region_ids"] = list(region_ids)
+        base_prompt["batch_labels"] = list(
+            frozen_group_snapshot["labels"]
+        )
+        base_prompt["selection_signature"] = (
+            frozen_group_snapshot["selection_signature"]
+        )
+        base_prompt["transform_set_revision"] = int(
+            frozen_group_snapshot["transform_set_revision"]
+        )
 
         staged_instances = {}
         batch_size = len(decoded_records)
@@ -5505,18 +6495,24 @@ def _create_pvs_from_layout_selection(
             decoded_records,
             start=1,
         ):
+            label = _layout_regions.region_label(record)
+            group_id = _layout_prompt_group_id(record["region_id"])
+            group_transform = copy.deepcopy(
+                frozen_group_snapshot["transforms"][group_id]
+            )
+            group_matrix = group_transform["matrix_2x3"]
             _pvs_progress(
                 progress,
                 0.14 + 0.68 * (batch_index - 1) / max(1, batch_size),
                 (
-                    f"SAM3 正在处理类别 {class_label} 的 "
+                    f"SAM3 正在处理 Label {label} 的 "
                     f"R{record['region_id']}（{batch_index}/{batch_size}）"
                 ),
                 delay=0.0,
             )
             transformed_region = _layout_tx.warp_layout_mask(
                 region_mask,
-                frozen_matrix,
+                group_matrix,
                 (target_width, target_height),
             )
             transformed_region = _validate_layout_prompt_mask(
@@ -5539,6 +6535,17 @@ def _create_pvs_from_layout_selection(
             prompt.update(
                 {
                     "region_id": int(record["region_id"]),
+                    "label": label,
+                    "group_id": group_id,
+                    "group_transform_revision": int(
+                        group_transform.get("revision") or 0
+                    ),
+                    "revision": int(group_transform.get("revision") or 0),
+                    "preview_alpha": float(
+                        _layout_preview_alpha(group_transform)
+                    ),
+                    "transform": group_transform,
+                    "matrix_2x3": copy.deepcopy(group_matrix),
                     "batch_index": batch_index,
                     "batch_size": batch_size,
                     "region_mask_pixel_sha256": (
@@ -5575,10 +6582,7 @@ def _create_pvs_from_layout_selection(
             f"R{region_id}→PVS#{instance_id}"
             for region_id, instance_id in zip(region_ids, created_ids)
         )
-        info = (
-            f"已按类别 {class_label} 原子创建 {batch_size} 个 PVS 实例："
-            f"{mapping}"
-        )
+        info = f"已按选中 Label 原子创建 {batch_size} 个 PVS 实例：{mapping}"
         editor = _layout_editor_payload(image_state, state, info)
         view = _view(
             image_state,
@@ -5604,9 +6608,9 @@ def _create_pvs_from_layout_selection(
                     ),
                 )
             )
-            latest_records = _layout_prompt_class_records(
+            latest_records = _layout_prompt_region_records(
                 latest_document,
-                class_label,
+                region_ids,
             )
             latest_decoded = _layout_regions.decode_region_masks(
                 latest_records,
@@ -5629,14 +6633,17 @@ def _create_pvs_from_layout_selection(
                 or current_epoch != prompt_epoch
             ):
                 raise ValueError(
-                    "版图 identity、类别选择或模式在批量预测期间发生变化"
+                    "版图 identity、Label 选择或模式在批量预测期间发生变化"
                 )
-            _validate_layout_transform_snapshot(state, frozen_transform)
+            _validate_layout_group_transform_snapshot(
+                state,
+                frozen_group_snapshot,
+            )
             workspace_image = _workspace(image_state)["image"]
             workspace_hash = _layout_tx.image_pixel_sha256(
                 workspace_image
             )
-            if workspace_hash != frozen_transform.get(
+            if workspace_hash != frozen_group_snapshot.get(
                 "target_image_sha256"
             ):
                 raise ValueError("目标图像在批量预测期间发生变化")
@@ -5649,7 +6656,7 @@ def _create_pvs_from_layout_selection(
 
         return candidate_state, state, editor, info, *view
     except Exception as exc:
-        info = f"按类别逐 Region 创建 PVS 失败，整批未提交：{exc}"
+        info = f"按 Label 创建 PVS 失败，整批未提交：{exc}"
         if isinstance(exc, _LayoutPromptConflictError):
             return (
                 gr.skip(),
@@ -5707,6 +6714,51 @@ def _reset_layout_controls(image_state, layout_state):
 
 def _reset_layout_controls_with_prompt_epoch(image_state, layout_state):
     _advance_layout_prompt_epoch(image_state, layout_state)
+    if (
+        isinstance(layout_state, dict)
+        and layout_state.get("prompt_mask_scope")
+        == _LAYOUT_PROMPT_SCOPE_REGION_LABELS
+    ):
+        state = dict(layout_state)
+        try:
+            editor = _layout_editor_payload(image_state, state)
+            state, _, _, _, active_transform = (
+                _commit_layout_group_transforms(
+                    image_state,
+                    state,
+                    editor,
+                    reset_active=True,
+                )
+            )
+            values = _layout_group_control_values(
+                active_transform,
+                (
+                    int(image_state.get("width") or 0),
+                    int(image_state.get("height") or 0),
+                ),
+            )
+            label = active_transform.get("label") or "Label"
+            info = f"已重置 {label}；其他 Label transform 保持不变。"
+            return (
+                state,
+                bool(state.get("enabled", True)),
+                *values,
+                _layout_editor_payload(image_state, state, info),
+                info,
+            )
+        except Exception as exc:
+            info = f"Label transform 重置失败：{exc}"
+            return (
+                state,
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                _layout_editor_payload(image_state, state, info),
+                info,
+            )
     return _reset_layout_controls(image_state, layout_state)
 
 
@@ -5867,15 +6919,14 @@ def create_demo():
 
                                 with gr.Group(visible=False) as pvs_layout_panel:
                                     gr.Markdown("### PVS 版图 mask 提示")
-                                    gr.Markdown("上传或选择二值版图 mask；右侧编辑器支持拖动、滚轮缩放、旋转手柄，并由后端生成最终权威 mask。")
+                                    gr.Markdown("上传或选择二值版图 mask；多选 Label 后，每个 Label 可在右侧独立拖动、缩放和旋转。")
                                     with gr.Row():
                                         use_current_layout_btn = gr.Button("使用当前已保存版图 mask", variant="secondary")
                                         load_layout_binary_btn = gr.Button("载入二值 mask PNG", variant="secondary")
-                                    layout_prompt_mask_selector = gr.Dropdown(
+                                    layout_prompt_mask_selector = gr.CheckboxGroup(
                                         choices=[("全部版图 mask", _LAYOUT_PROMPT_SCOPE_FULL)],
-                                        value=_LAYOUT_PROMPT_SCOPE_FULL,
-                                        label="版图 mask 选择",
-                                        allow_custom_value=False,
+                                        value=[_LAYOUT_PROMPT_SCOPE_FULL],
+                                        label="版图 mask 选择（可多选 Label）",
                                         interactive=False,
                                         elem_id="layout_prompt_mask_selector",
                                     )
@@ -5901,6 +6952,7 @@ def create_demo():
                                     gr.Markdown(f"版图 Canvas 编辑器组件不可用；仍可使用数值控件。错误：{_layout_editor_import_error}")
                                     layout_editor = gr.JSON(value=_layout_editor_empty(), label="layout transform payload", visible=False)
                                 layout_enabled = gr.Checkbox(value=False, label="显示/启用版图 overlay")
+                                gr.Markdown("多选 Label 时，下方数值只对应 Canvas 中当前激活的 Label。")
                                 with gr.Row():
                                     layout_tx = gr.Number(value=0.0, label="水平偏移 tx")
                                     layout_ty = gr.Number(value=0.0, label="垂直偏移 ty")
@@ -5911,7 +6963,7 @@ def create_demo():
                                 with gr.Row():
                                     reset_layout_btn = gr.Button("重置", variant="secondary")
                                     update_layout_preview_btn = gr.Button("更新预览", variant="primary")
-                                create_from_layout_btn = gr.Button("用版图创建实例", variant="primary")
+                                create_from_layout_btn = gr.Button("用所选版图 mask / Label 创建实例", variant="primary")
                                 layout_pvs_info = gr.Textbox(label="版图提示状态", lines=5, interactive=False)
                             with gr.Group(visible=True) as pvs_action_panel:
                                 gr.Markdown("### PVS 实例操作")
@@ -5938,16 +6990,23 @@ def create_demo():
 
                 with gr.TabItem("版图截图转掩码", id="tab_layout_mask"):
                     gr.Markdown("### 版图截图转二值 mask")
-                    gr.Markdown("binary mask 是唯一权威数据；contour 仅用于预览和导出。")
+                    gr.Markdown("binary mask 是唯一权威数据；contour 仅用于预览和导出。左右两侧预览使用相同高度。")
                     with gr.Row():
                         with gr.Column(scale=1):
                             gr.Markdown("#### 上传版图截图")
-                            layout_input = gr.Image(type="numpy", label="上传版图截图", show_label=False, sources=["upload", "clipboard"])
+                            layout_input = gr.Image(type="numpy", label="上传版图截图", show_label=False, sources=["upload", "clipboard"], height=430)
                             layout_threshold = gr.Slider(minimum=0, maximum=255, value=12, step=1, label="threshold（色彩/饱和度阈值）")
                             layout_invert = gr.Checkbox(value=False, label="invert（反转前景/背景）")
                             with gr.Row():
                                 layout_open_kernel = gr.Slider(minimum=0, maximum=31, value=0, step=1, label="open kernel")
                                 layout_close_kernel = gr.Slider(minimum=0, maximum=31, value=0, step=1, label="close kernel")
+                            layout_morph_pixels = gr.Slider(
+                                minimum=-_LAYOUT_MASK_MORPH_LIMIT_PX,
+                                maximum=_LAYOUT_MASK_MORPH_LIMIT_PX,
+                                value=0,
+                                step=1,
+                                label="膨胀/腐蚀像素（正数膨胀，负数腐蚀）",
+                            )
                             layout_min_area = gr.Number(value=0, precision=0, label="min component area")
                             layout_region_mode = gr.Radio(
                                 choices=[("全部区域", "all"), ("最大连通区域", "largest")],
@@ -5964,60 +7023,53 @@ def create_demo():
                                 layout_contour_file = gr.File(label="下载 contour JSON", interactive=False)
                         with gr.Column(scale=1):
                             layout_source_preview = gr.Image(type="pil", label="原图预览", show_label=False, visible=False)
-                            gr.Markdown("### mask 与 contour 预览")
-                            gr.Markdown("左右滑动或拖动下方滚动条切换预览。")
+                            gr.Markdown("#### mask 与 contour 预览")
                             with gr.Row(elem_classes="layout-preview-pager"):
                                 with gr.Column(elem_classes="layout-preview-page"):
-                                    gr.Markdown("#### binary mask 预览")
-                                    layout_mask_preview = gr.Image(type="pil", label="binary mask 预览", show_label=False)
+                                    layout_mask_preview = gr.Image(type="pil", label="binary mask 预览", show_label=False, height=430)
+                                    gr.Markdown("**binary mask 预览**")
                                 with gr.Column(elem_classes="layout-preview-page"):
-                                    gr.Markdown("#### contour overlay")
-                                    layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=False)
-                            gr.Markdown("### Region Annotation Layer")
-                            gr.Markdown("黄色表示未保存 Draft；绿色表示已保存 Region。标注管理只在本页；智能图像分割的 Layout Mask 模式可按类别将每个活动 Region 独立作为 mask prompt。")
+                                    layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=False, height=430)
+                                    gr.Markdown("**contour overlay**")
+                            gr.Markdown("左右滑动或拖动下方滚动条切换预览。")
+                            gr.Markdown("### Label Annotation Layer")
+                            gr.Markdown("黄色表示未保存 Draft；绿色表示已保存 Label。一个套索对应一个独立 Label；Label 可选留空并自动按序号命名。")
                             if LayoutRegionAnnotator is not None:
                                 layout_region_annotator = LayoutRegionAnnotator(
                                     value=_layout_region_editor_empty(),
-                                    label="版图 Region 套索标注器",
+                                    label="版图 Label 套索标注器",
                                     show_label=False,
                                     height=520,
                                     elem_id="layout_region_annotator",
                                 )
                             else:
-                                gr.Markdown(f"Region 套索组件不可用。错误：{_layout_region_annotator_import_error}")
+                                gr.Markdown(f"Label 套索组件不可用。错误：{_layout_region_annotator_import_error}")
                                 layout_region_annotator = gr.JSON(
                                     value=_layout_region_editor_empty(),
                                     label="layout Region payload",
                                     visible=False,
                                 )
-                            with gr.Row():
-                                layout_region_category = gr.Dropdown(
-                                    choices=_layout_regions.load_layout_categories(current_dir / "layout_categories.json"),
-                                    value=_layout_regions.load_layout_categories(current_dir / "layout_categories.json")[0],
-                                    label="类别（必填）",
-                                    allow_custom_value=False,
-                                    interactive=True,
-                                )
-                                layout_region_name = gr.Textbox(
-                                    label="区域/模块名称（可选）",
-                                    placeholder="例如：M1_power",
-                                    max_lines=1,
-                                )
-                            save_layout_region_btn = gr.Button("保存当前 Draft Region", variant="primary", interactive=False)
+                            layout_region_label = gr.Textbox(
+                                label="Label（可选）",
+                                value="",
+                                placeholder="留空将自动命名为 Label 1、Label 2……",
+                                max_lines=1,
+                            )
+                            save_layout_region_btn = gr.Button("保存当前 Draft Label", variant="primary", interactive=False)
                             layout_region_selector = gr.Dropdown(
                                 choices=[],
                                 value=None,
-                                label="活动 Region",
+                                label="活动 Label",
                                 interactive=True,
                             )
-                            delete_layout_region_btn = gr.Button("软删除选中 Region", variant="secondary", interactive=False)
-                            layout_region_status = gr.Textbox(label="Region 状态", lines=4, interactive=False)
+                            delete_layout_region_btn = gr.Button("软删除选中 Label", variant="secondary", interactive=False)
+                            layout_region_status = gr.Textbox(label="Label 状态", lines=4, interactive=False)
                             export_layout_regions_btn = gr.Button(
-                                "\u5bfc\u51fa\u5f53\u524d Region \u6807\u6ce8",
+                                "导出当前 Label 标注",
                                 variant="secondary",
                             )
                             layout_region_export_file = gr.File(
-                                label="\u4e0b\u8f7d Region \u6807\u6ce8\u5305",
+                                label="下载 Label 标注包",
                                 interactive=False,
                             )
                 with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
@@ -6025,7 +7077,7 @@ def create_demo():
 
             run_layout_mask_event = run_layout_mask_btn.click(
                 fn=_run_layout_mask_page_with_downloads,
-                inputs=[session_state, image_state, layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode],
+                inputs=[session_state, image_state, layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode, layout_morph_pixels],
                 outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
                 api_name="_run_layout_mask_page",
@@ -6033,7 +7085,7 @@ def create_demo():
             run_layout_region_event = run_layout_mask_event.then(
                 fn=_load_layout_region_context,
                 inputs=[layout_state],
-                outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                outputs=[layout_region_state, layout_region_annotator, layout_region_label, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
                 concurrency_limit=1,
             )
             run_layout_region_event.then(
@@ -6058,7 +7110,7 @@ def create_demo():
             clear_layout_region_event = clear_layout_mask_event.then(
                 fn=_clear_layout_region_context,
                 inputs=[layout_state],
-                outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                outputs=[layout_region_state, layout_region_annotator, layout_region_label, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
                 concurrency_limit=1,
             )
             clear_layout_region_event.then(
@@ -6075,8 +7127,8 @@ def create_demo():
             )
             save_layout_region_event = save_layout_region_btn.click(
                 fn=_save_layout_region,
-                inputs=[layout_state, layout_region_state, layout_region_annotator, layout_region_category, layout_region_name],
-                outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                inputs=[layout_state, layout_region_state, layout_region_annotator, layout_region_label],
+                outputs=[layout_region_state, layout_region_annotator, layout_region_label, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
                 concurrency_limit=1,
             )
             save_layout_region_event.then(
@@ -6094,7 +7146,7 @@ def create_demo():
             delete_layout_region_event = delete_layout_region_btn.click(
                 fn=_delete_layout_region,
                 inputs=[layout_state, layout_region_state, layout_region_annotator, layout_region_selector],
-                outputs=[layout_region_state, layout_region_annotator, layout_region_category, layout_region_name, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
+                outputs=[layout_region_state, layout_region_annotator, layout_region_label, layout_region_selector, save_layout_region_btn, delete_layout_region_btn, layout_region_status],
                 concurrency_limit=1,
             )
             delete_layout_region_event.then(
@@ -6139,11 +7191,11 @@ def create_demo():
             layout_prompt_mask_selector.input(
                 fn=_select_layout_prompt_mask,
                 inputs=[image_state, layout_state, layout_prompt_mask_selector],
-                outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info],
+                outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha],
                 concurrency_limit=1,
             )
             update_layout_preview_btn.click(
-                fn=_update_layout_preview,
+                fn=_update_layout_preview_with_groups,
                 inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor],
                 outputs=[layout_state, image_upload, layout_editor, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
                 concurrency_limit=1,

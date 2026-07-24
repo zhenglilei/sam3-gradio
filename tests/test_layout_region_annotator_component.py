@@ -61,7 +61,7 @@ class LayoutRegionAnnotatorComponentTest(unittest.TestCase):
         self.assertIn("MAX_LASSO_POINTS = 4096", source)
         self.assertIn("SAMPLE_DISTANCE_CSS_PX = 3", source)
         self.assertIn("黄色：Draft", source)
-        self.assertIn("绿色：Saved Region", source)
+        self.assertIn("绿色：Saved Label", source)
 
     def test_frontend_supports_mixed_freehand_and_straight_segments(self):
         source = (
@@ -100,6 +100,45 @@ class LayoutRegionAnnotatorComponentTest(unittest.TestCase):
             2,
         )
         self.assertIn("Layout 已切换，Draft 已清除", source)
+
+    def test_frontend_publishes_only_small_client_intent(self):
+        source = (
+            ROOT / "layout_region_annotator" / "frontend" / "Index.svelte"
+        ).read_text(encoding="utf-8")
+        body = source.split(
+            "function updateBrowserValue",
+            1,
+        )[1].split("function setToolMode", 1)[0]
+
+        self.assertIn("const outbound: LayoutRegionAnnotatorValue", body)
+        self.assertIn("client_intent:", body)
+        self.assertIn("gradio.props.value = outbound", body)
+        self.assertNotIn("gradio.props.value = localValue", body)
+        for server_only_field in (
+            "server_view:",
+            "source_image:",
+            "source_mask_image:",
+            "saved_region_overlay_image:",
+            "draft_region_overlay_image:",
+            "data:image",
+        ):
+            self.assertNotIn(server_only_field, body)
+
+    def test_frontend_canonicalizes_region_summaries_to_label(self):
+        types_source = (
+            ROOT / "layout_region_annotator" / "frontend" / "types.ts"
+        ).read_text(encoding="utf-8")
+        index_source = (
+            ROOT / "layout_region_annotator" / "frontend" / "Index.svelte"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("label?: string;", types_source)
+        self.assertIn("class_label?: string;", types_source)
+        self.assertIn("name?: string;", types_source)
+        self.assertIn("function regionSummaryLabel", types_source)
+        self.assertIn("${classLabel} / ${name}", types_source)
+        self.assertIn("name || classLabel || `R${region.region_id}`", types_source)
+        self.assertIn("label: regionSummaryLabel(region)", index_source)
 
 
 if __name__ == "__main__":

@@ -52,8 +52,69 @@ class LayoutTransformEditor(Component):
             value=value,
         )
 
-    def preprocess(self, payload: dict | list | None) -> dict | list | None:
-        return payload
+    @staticmethod
+    def _unwrap(payload: Any) -> Any:
+        return payload.root if isinstance(payload, JsonData) else payload
+
+    @staticmethod
+    def _sanitize_transform(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        return {
+            key: value[key]
+            for key in _TRANSFORM_INTENT_FIELDS
+            if key in value
+        }
+
+    def preprocess(self, payload: Any) -> dict[str, Any]:
+        raw = self._unwrap(payload)
+        if not isinstance(raw, dict):
+            return {}
+
+        result: dict[str, Any] = {}
+        for field in ("enabled", "target_width", "target_height"):
+            if field in raw:
+                result[field] = raw[field]
+        transform = self._sanitize_transform(raw.get("transform"))
+        if transform is not None:
+            result["transform"] = transform
+
+        if raw.get("transform_mode") != "label_groups":
+            return result
+        result["transform_mode"] = "label_groups"
+        intent = raw.get("group_intent")
+        if not isinstance(intent, dict):
+            return result
+        transforms = []
+        for item in intent.get("transforms") or []:
+            if not isinstance(item, dict) or "group_id" not in item:
+                continue
+            sanitized = self._sanitize_transform(item.get("transform"))
+            if sanitized is None:
+                continue
+            transforms.append(
+                {
+                    "group_id": item["group_id"],
+                    "transform": sanitized,
+                }
+            )
+        sanitized_intent = {
+            "selection_signature": intent.get("selection_signature"),
+            "transform_set_revision": intent.get("transform_set_revision"),
+            "active_group_id": intent.get("active_group_id"),
+            "transforms": transforms,
+        }
+        changed_group_ids = intent.get("changed_group_ids")
+        if isinstance(changed_group_ids, list):
+            sanitized_intent["changed_group_ids"] = [
+                value
+                for value in changed_group_ids
+                if isinstance(value, (str, int))
+                and not isinstance(value, bool)
+                and value != ""
+            ]
+        result["group_intent"] = sanitized_intent
+        return result
 
     def postprocess(self, value: dict | list | str | None) -> JsonData | None:
         if value is None:

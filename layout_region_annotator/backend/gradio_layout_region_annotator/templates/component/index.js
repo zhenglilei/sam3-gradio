@@ -537,8 +537,8 @@ function on(e, t, r, n, i, a = null) {
     }
     if (h === 0 && a && !u && (v ? u = Ke(() => a(o)) : (u = Ke(() => a(sn ??= Qe())), u.f |= Re)), h > m.size && Ni(), !v)
       if (d.set(p, m), b) {
-        for (const [D, L] of s)
-          m.has(D) || p.skip_effect(L.e);
+        for (const [k, L] of s)
+          m.has(k) || p.skip_effect(L.e);
         p.oncommit(w), p.ondiscard(g);
       } else
         w(p);
@@ -726,8 +726,7 @@ function Ra() {
 function Da(e) {
   return typeof e == "object" ? Ra(e) : e ?? "";
 }
-const ln = [...` \t
-\r\f \v\uFEFF`];
+const ln = [...`\x20\t\n\r\f\u00A0\v\uFEFF`];
 function ka(e, t, r) {
   var n = e == null ? "" : "" + e;
   if (t && (n = n ? n + " " + t : t), r) {
@@ -906,10 +905,10 @@ function Xa(e, t, r, n, i = !1, a = !1) {
           if (h)
             Fn(B, e, y), Zt([B]);
           else if (y != null) {
-            let D = function(L) {
+            let k = function(L) {
               l[b].call(this, L);
             };
-            l[P] = Ji(B, e, D, A);
+            l[P] = Ji(B, e, k, A);
           }
         } else if (b === "style")
           at(e, b, y);
@@ -1240,7 +1239,7 @@ ha();
 var Ka = /* @__PURE__ */ zn('<svg class="resize-handle svelte-1stq1b1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="1" y1="9" x2="9" y2="1" stroke="gray" stroke-width="0.5" class="svelte-1stq1b1"></line><line x1="5" y1="9" x2="9" y2="5" stroke="gray" stroke-width="0.5" class="svelte-1stq1b1"></line></svg>'), dn = /* @__PURE__ */ se("<!> <!>", 1), $a = /* @__PURE__ */ se('<div class="placeholder svelte-1stq1b1"></div>');
 function es(e, t) {
   Jt(t, !1);
-  let r = I(t, "height", 8, void 0), n = I(t, "min_height", 8, void 0), i = I(t, "max_height", 8, void 0), a = I(t, "width", 8, void 0), o = I(t, "elem_id", 8, ""), s = I(t, "elem_classes", 24, () => []), u = I(t, "variant", 8, "solid"), l = I(t, "border_mode", 8, "base"), c = I(t, "padding", 8, !0), d = I(t, "type", 8, "normal"), v = I(t, "test_id", 8, void 0), w = I(t, "explicit_call", 8, !1), g = I(t, "container", 8, !0), x = I(t, "visible", 8, !0), H = I(t, "allow_overflow", 8, !0), h = I(t, "overflow_behavior", 8, "auto"), m = I(t, "scale", 8, null), p = I(t, "min_width", 8, 0), b = I(t, "flex", 12, !1), y = I(t, "resizable", 8, !1), A = I(t, "rtl", 8, !1), P = I(t, "fullscreen", 12, !1), B = I(t, "label", 8, void 0), D = Ye(P()), L = Ye(), Z = d() === "fieldset" ? "fieldset" : "div", ne = Ye(0), K = Ye(0), G = Ye(null);
+  let r = I(t, "height", 8, void 0), n = I(t, "min_height", 8, void 0), i = I(t, "max_height", 8, void 0), a = I(t, "width", 8, void 0), o = I(t, "elem_id", 8, ""), s = I(t, "elem_classes", 24, () => []), u = I(t, "variant", 8, "solid"), l = I(t, "border_mode", 8, "base"), c = I(t, "padding", 8, !0), d = I(t, "type", 8, "normal"), v = I(t, "test_id", 8, void 0), w = I(t, "explicit_call", 8, !1), g = I(t, "container", 8, !0), x = I(t, "visible", 8, !0), H = I(t, "allow_overflow", 8, !0), h = I(t, "overflow_behavior", 8, "auto"), m = I(t, "scale", 8, null), p = I(t, "min_width", 8, 0), b = I(t, "flex", 12, !1), y = I(t, "resizable", 8, !1), A = I(t, "rtl", 8, !1), P = I(t, "fullscreen", 12, !1), B = I(t, "label", 8, void 0), k = Ye(P()), L = Ye(), Z = d() === "fieldset" ? "fieldset" : "div", ne = Ye(0), K = Ye(0), G = Ye(null);
   function ke(J) {
     P() && J.key === "Escape" && P(!1);
   }
@@ -1262,9 +1261,9 @@ function es(e, t) {
     window.addEventListener("mousemove", ve), window.addEventListener("mouseup", me);
   };
   rn(
-    () => (xe(P()), f(D), f(L)),
+    () => (xe(P()), f(k), f(L)),
     () => {
-      P() !== f(D) && (E(D, P()), P() ? (E(G, f(L).getBoundingClientRect()), E(ne, f(L).offsetHeight), E(K, f(L).offsetWidth), window.addEventListener("keydown", ke)) : (E(G, null), window.removeEventListener("keydown", ke)));
+      P() !== f(k) && (E(k, P()), P() ? (E(G, f(L).getBoundingClientRect()), E(ne, f(L).offsetHeight), E(K, f(L).offsetWidth), window.addEventListener("keydown", ke)) : (E(G, null), window.removeEventListener("keydown", ke)));
     }
   ), rn(() => xe(x()), () => {
     x() || b(!1);
@@ -1360,28 +1359,28 @@ function pn(e, t) {
   let H, h;
   var m = te(x);
   {
-    var p = (D) => {
+    var p = (k) => {
       var L = ts(), Z = te(L);
-      Q(() => ue(Z, r())), C(D, L);
+      Q(() => ue(Z, r())), C(k, L);
     };
-    Y(m, (D) => {
-      n() && D(p);
+    Y(m, (k) => {
+      n() && k(p);
     });
   }
   var b = j(m, 2);
   let y;
   var A = te(b);
-  Oa(A, () => t.Icon, (D, L) => {
-    L(D, {});
+  Oa(A, () => t.Icon, (k, L) => {
+    L(k, {});
   });
   var P = j(A, 2);
   {
-    var B = (D) => {
+    var B = (k) => {
       var L = it(), Z = fe(L);
-      Ha(Z, () => t.children), C(D, L);
+      Ha(Z, () => t.children), C(k, L);
     };
-    Y(P, (D) => {
-      t.children && D(B);
+    Y(P, (k) => {
+      t.children && k(B);
     });
   }
   Q(() => {
@@ -1400,8 +1399,8 @@ function pn(e, t) {
       large: a() === "large",
       medium: a() === "medium"
     });
-  }), Fn("click", x, function(...D) {
-    t.onclick?.apply(this, D);
+  }), Fn("click", x, function(...k) {
+    t.onclick?.apply(this, k);
   }), C(e, x);
 }
 Zt(["click"]);
@@ -1818,14 +1817,14 @@ function Kt(e, t) {
   }
   e.prototype = t === null ? Object.create(t) : (r.prototype = t.prototype, new r());
 }
-var k = function() {
-  return k = Object.assign || function(t) {
+var U = function() {
+  return U = Object.assign || function(t) {
     for (var r, n = 1, i = arguments.length; n < i; n++) {
       r = arguments[n];
       for (var a in r) Object.prototype.hasOwnProperty.call(r, a) && (t[a] = r[a]);
     }
     return t;
-  }, k.apply(this, arguments);
+  }, U.apply(this, arguments);
 };
 function us(e, t) {
   var r = {};
@@ -2164,13 +2163,13 @@ function As(e) {
         t.notation = "compact", t.compactDisplay = "long";
         continue;
       case "scientific":
-        t = k(k(k({}, t), { notation: "scientific" }), i.options.reduce(function(u, l) {
-          return k(k({}, u), xn(l));
+        t = U(U(U({}, t), { notation: "scientific" }), i.options.reduce(function(u, l) {
+          return U(U({}, u), xn(l));
         }, {}));
         continue;
       case "engineering":
-        t = k(k(k({}, t), { notation: "engineering" }), i.options.reduce(function(u, l) {
-          return k(k({}, u), xn(l));
+        t = U(U(U({}, t), { notation: "engineering" }), i.options.reduce(function(u, l) {
+          return U(U({}, u), xn(l));
         }, {}));
         continue;
       case "notation-simple":
@@ -2241,17 +2240,17 @@ function As(e) {
         return c === "*" ? t.minimumFractionDigits = l.length : d && d[0] === "#" ? t.maximumFractionDigits = d.length : v && w ? (t.minimumFractionDigits = v.length, t.maximumFractionDigits = v.length + w.length) : (t.minimumFractionDigits = l.length, t.maximumFractionDigits = l.length), "";
       });
       var a = i.options[0];
-      a === "w" ? t = k(k({}, t), { trailingZeroDisplay: "stripIfInteger" }) : a && (t = k(k({}, t), yn(a)));
+      a === "w" ? t = U(U({}, t), { trailingZeroDisplay: "stripIfInteger" }) : a && (t = U(U({}, t), yn(a)));
       continue;
     }
     if (oi.test(i.stem)) {
-      t = k(k({}, t), yn(i.stem));
+      t = U(U({}, t), yn(i.stem));
       continue;
     }
     var o = ui(i.stem);
-    o && (t = k(k({}, t), o));
+    o && (t = U(U({}, t), o));
     var s = Ss(i.stem);
-    s && (t = k(k({}, t), s));
+    s && (t = U(U({}, t), s));
   }
   return t;
 }
@@ -3708,7 +3707,7 @@ function Ps(e) {
   return i[0];
 }
 var vr, Is = new RegExp("^".concat(si.source, "*")), Bs = new RegExp("".concat(si.source, "*$"));
-function R(e, t) {
+function D(e, t) {
   return { start: e, end: t };
 }
 var Os = !!String.prototype.startsWith && "_a".startsWith("a", 1), Ls = !!String.fromCodePoint, Ns = !!Object.fromEntries, Ms = !!String.prototype.codePointAt, Cs = !!String.prototype.trimStart, Rs = !!String.prototype.trimEnd, Ds = !!Number.isSafeInteger, ks = Ds ? Number.isSafeInteger : function(e) {
@@ -3836,12 +3835,12 @@ var js = (
             var s = this.clonePosition();
             this.bump(), i.push({
               type: X.pound,
-              location: R(s, this.clonePosition())
+              location: D(s, this.clonePosition())
             });
           } else if (a === 60 && !this.ignoreTag && this.peek() === 47) {
             if (n)
               break;
-            return this.error(M.UNMATCHED_CLOSING_TAG, R(this.clonePosition(), this.clonePosition()));
+            return this.error(M.UNMATCHED_CLOSING_TAG, D(this.clonePosition(), this.clonePosition()));
           } else if (a === 60 && !this.ignoreTag && Lr(this.peek() || 0)) {
             var o = this.parseTag(t, r);
             if (o.err)
@@ -3865,7 +3864,7 @@ var js = (
           val: {
             type: X.literal,
             value: "<".concat(i, "/>"),
-            location: R(n, this.clonePosition())
+            location: D(n, this.clonePosition())
           },
           err: null
         };
@@ -3876,21 +3875,21 @@ var js = (
         var o = a.val, s = this.clonePosition();
         if (this.bumpIf("</")) {
           if (this.isEOF() || !Lr(this.char()))
-            return this.error(M.INVALID_TAG, R(s, this.clonePosition()));
+            return this.error(M.INVALID_TAG, D(s, this.clonePosition()));
           var u = this.clonePosition(), l = this.parseTagName();
-          return i !== l ? this.error(M.UNMATCHED_CLOSING_TAG, R(u, this.clonePosition())) : (this.bumpSpace(), this.bumpIf(">") ? {
+          return i !== l ? this.error(M.UNMATCHED_CLOSING_TAG, D(u, this.clonePosition())) : (this.bumpSpace(), this.bumpIf(">") ? {
             val: {
               type: X.tag,
               value: i,
               children: o,
-              location: R(n, this.clonePosition())
+              location: D(n, this.clonePosition())
             },
             err: null
-          } : this.error(M.INVALID_TAG, R(s, this.clonePosition())));
+          } : this.error(M.INVALID_TAG, D(s, this.clonePosition())));
         } else
-          return this.error(M.UNCLOSED_TAG, R(n, this.clonePosition()));
+          return this.error(M.UNCLOSED_TAG, D(n, this.clonePosition()));
       } else
-        return this.error(M.INVALID_TAG, R(n, this.clonePosition()));
+        return this.error(M.INVALID_TAG, D(n, this.clonePosition()));
     }, e.prototype.parseTagName = function() {
       var t = this.offset();
       for (this.bump(); !this.isEOF() && zs(this.char()); )
@@ -3915,7 +3914,7 @@ var js = (
         }
         break;
       }
-      var u = R(n, this.clonePosition());
+      var u = D(n, this.clonePosition());
       return {
         val: { type: X.literal, value: i, location: u },
         err: null
@@ -3966,14 +3965,14 @@ var js = (
     }, e.prototype.parseArgument = function(t, r) {
       var n = this.clonePosition();
       if (this.bump(), this.bumpSpace(), this.isEOF())
-        return this.error(M.EXPECT_ARGUMENT_CLOSING_BRACE, R(n, this.clonePosition()));
+        return this.error(M.EXPECT_ARGUMENT_CLOSING_BRACE, D(n, this.clonePosition()));
       if (this.char() === 125)
-        return this.bump(), this.error(M.EMPTY_ARGUMENT, R(n, this.clonePosition()));
+        return this.bump(), this.error(M.EMPTY_ARGUMENT, D(n, this.clonePosition()));
       var i = this.parseIdentifierIfPossible().value;
       if (!i)
-        return this.error(M.MALFORMED_ARGUMENT, R(n, this.clonePosition()));
+        return this.error(M.MALFORMED_ARGUMENT, D(n, this.clonePosition()));
       if (this.bumpSpace(), this.isEOF())
-        return this.error(M.EXPECT_ARGUMENT_CLOSING_BRACE, R(n, this.clonePosition()));
+        return this.error(M.EXPECT_ARGUMENT_CLOSING_BRACE, D(n, this.clonePosition()));
       switch (this.char()) {
         // Simple argument: `{name}`
         case 125:
@@ -3982,26 +3981,26 @@ var js = (
               type: X.argument,
               // value does not include the opening and closing braces.
               value: i,
-              location: R(n, this.clonePosition())
+              location: D(n, this.clonePosition())
             },
             err: null
           };
         // Argument with options: `{name, format, ...}`
         case 44:
-          return this.bump(), this.bumpSpace(), this.isEOF() ? this.error(M.EXPECT_ARGUMENT_CLOSING_BRACE, R(n, this.clonePosition())) : this.parseArgumentOptions(t, r, i, n);
+          return this.bump(), this.bumpSpace(), this.isEOF() ? this.error(M.EXPECT_ARGUMENT_CLOSING_BRACE, D(n, this.clonePosition())) : this.parseArgumentOptions(t, r, i, n);
         default:
-          return this.error(M.MALFORMED_ARGUMENT, R(n, this.clonePosition()));
+          return this.error(M.MALFORMED_ARGUMENT, D(n, this.clonePosition()));
       }
     }, e.prototype.parseIdentifierIfPossible = function() {
       var t = this.clonePosition(), r = this.offset(), n = Or(this.message, r), i = r + n.length;
       this.bumpTo(i);
-      var a = this.clonePosition(), o = R(t, a);
+      var a = this.clonePosition(), o = D(t, a);
       return { value: n, location: o };
     }, e.prototype.parseArgumentOptions = function(t, r, n, i) {
       var a, o = this.clonePosition(), s = this.parseIdentifierIfPossible().value, u = this.clonePosition();
       switch (s) {
         case "":
-          return this.error(M.EXPECT_ARGUMENT_TYPE, R(o, u));
+          return this.error(M.EXPECT_ARGUMENT_TYPE, D(o, u));
         case "number":
         case "date":
         case "time": {
@@ -4014,14 +4013,14 @@ var js = (
               return d;
             var v = Gs(d.val);
             if (v.length === 0)
-              return this.error(M.EXPECT_ARGUMENT_STYLE, R(this.clonePosition(), this.clonePosition()));
-            var w = R(c, this.clonePosition());
+              return this.error(M.EXPECT_ARGUMENT_STYLE, D(this.clonePosition(), this.clonePosition()));
+            var w = D(c, this.clonePosition());
             l = { style: v, styleLocation: w };
           }
           var g = this.tryParseArgumentClose(i);
           if (g.err)
             return g;
-          var x = R(i, this.clonePosition());
+          var x = D(i, this.clonePosition());
           if (l && En(l?.style, "::", 0)) {
             var H = Fs(l.style.slice(2));
             if (s === "number") {
@@ -4062,12 +4061,12 @@ var js = (
         case "select": {
           var p = this.clonePosition();
           if (this.bumpSpace(), !this.bumpIf(","))
-            return this.error(M.EXPECT_SELECT_ARGUMENT_OPTIONS, R(p, k({}, p)));
+            return this.error(M.EXPECT_SELECT_ARGUMENT_OPTIONS, D(p, U({}, p)));
           this.bumpSpace();
           var b = this.parseIdentifierIfPossible(), y = 0;
           if (s !== "select" && b.value === "offset") {
             if (!this.bumpIf(":"))
-              return this.error(M.EXPECT_PLURAL_ARGUMENT_OFFSET_VALUE, R(this.clonePosition(), this.clonePosition()));
+              return this.error(M.EXPECT_PLURAL_ARGUMENT_OFFSET_VALUE, D(this.clonePosition(), this.clonePosition()));
             this.bumpSpace();
             var d = this.tryParseDecimalInteger(M.EXPECT_PLURAL_ARGUMENT_OFFSET_VALUE, M.INVALID_PLURAL_ARGUMENT_OFFSET_VALUE);
             if (d.err)
@@ -4080,7 +4079,7 @@ var js = (
           var g = this.tryParseArgumentClose(i);
           if (g.err)
             return g;
-          var P = R(i, this.clonePosition());
+          var P = D(i, this.clonePosition());
           return s === "select" ? {
             val: {
               type: X.select,
@@ -4102,10 +4101,10 @@ var js = (
           };
         }
         default:
-          return this.error(M.INVALID_ARGUMENT_TYPE, R(o, u));
+          return this.error(M.INVALID_ARGUMENT_TYPE, D(o, u));
       }
     }, e.prototype.tryParseArgumentClose = function(t) {
-      return this.isEOF() || this.char() !== 125 ? this.error(M.EXPECT_ARGUMENT_CLOSING_BRACE, R(t, this.clonePosition())) : (this.bump(), { val: !0, err: null });
+      return this.isEOF() || this.char() !== 125 ? this.error(M.EXPECT_ARGUMENT_CLOSING_BRACE, D(t, this.clonePosition())) : (this.bump(), { val: !0, err: null });
     }, e.prototype.parseSimpleArgStyleIfPossible = function() {
       for (var t = 0, r = this.clonePosition(); !this.isEOF(); ) {
         var n = this.char();
@@ -4114,7 +4113,7 @@ var js = (
             this.bump();
             var i = this.clonePosition();
             if (!this.bumpUntil("'"))
-              return this.error(M.UNCLOSED_QUOTE_IN_ARGUMENT_STYLE, R(i, this.clonePosition()));
+              return this.error(M.UNCLOSED_QUOTE_IN_ARGUMENT_STYLE, D(i, this.clonePosition()));
             this.bump();
             break;
           }
@@ -4165,7 +4164,7 @@ var js = (
             var v = this.tryParseDecimalInteger(M.EXPECT_PLURAL_ARGUMENT_SELECTOR, M.INVALID_PLURAL_ARGUMENT_SELECTOR);
             if (v.err)
               return v;
-            c = R(d, this.clonePosition()), l = this.message.slice(d.offset, this.offset());
+            c = D(d, this.clonePosition()), l = this.message.slice(d.offset, this.offset());
           } else
             break;
         }
@@ -4174,7 +4173,7 @@ var js = (
         l === "other" && (o = !0), this.bumpSpace();
         var w = this.clonePosition();
         if (!this.bumpIf("{"))
-          return this.error(r === "select" ? M.EXPECT_SELECT_ARGUMENT_SELECTOR_FRAGMENT : M.EXPECT_PLURAL_ARGUMENT_SELECTOR_FRAGMENT, R(this.clonePosition(), this.clonePosition()));
+          return this.error(r === "select" ? M.EXPECT_SELECT_ARGUMENT_SELECTOR_FRAGMENT : M.EXPECT_PLURAL_ARGUMENT_SELECTOR_FRAGMENT, D(this.clonePosition(), this.clonePosition()));
         var g = this.parseMessage(t + 1, r, n);
         if (g.err)
           return g;
@@ -4185,11 +4184,11 @@ var js = (
           l,
           {
             value: g.val,
-            location: R(w, this.clonePosition())
+            location: D(w, this.clonePosition())
           }
         ]), u.add(l), this.bumpSpace(), a = this.parseIdentifierIfPossible(), l = a.value, c = a.location;
       }
-      return s.length === 0 ? this.error(r === "select" ? M.EXPECT_SELECT_ARGUMENT_SELECTOR : M.EXPECT_PLURAL_ARGUMENT_SELECTOR, R(this.clonePosition(), this.clonePosition())) : this.requiresOtherClause && !o ? this.error(M.MISSING_OTHER_CLAUSE, R(this.clonePosition(), this.clonePosition())) : { val: s, err: null };
+      return s.length === 0 ? this.error(r === "select" ? M.EXPECT_SELECT_ARGUMENT_SELECTOR : M.EXPECT_PLURAL_ARGUMENT_SELECTOR, D(this.clonePosition(), this.clonePosition())) : this.requiresOtherClause && !o ? this.error(M.MISSING_OTHER_CLAUSE, D(this.clonePosition(), this.clonePosition())) : { val: s, err: null };
     }, e.prototype.tryParseDecimalInteger = function(t, r) {
       var n = 1, i = this.clonePosition();
       this.bumpIf("+") || this.bumpIf("-") && (n = -1);
@@ -4200,7 +4199,7 @@ var js = (
         else
           break;
       }
-      var u = R(i, this.clonePosition());
+      var u = D(i, this.clonePosition());
       return a ? (o *= n, ks(o) ? { val: o, err: null } : this.error(r, u)) : this.error(t, u);
     }, e.prototype.offset = function() {
       return this.position.offset;
@@ -4291,7 +4290,7 @@ function Nr(e) {
   });
 }
 function qs(e, t) {
-  t === void 0 && (t = {}), t = k({ shouldParseSkeletons: !0, requiresOtherClause: !0 }, t);
+  t === void 0 && (t = {}), t = U({ shouldParseSkeletons: !0, requiresOtherClause: !0 }, t);
   var r = new js(e, t).parse();
   if (r.err) {
     var n = SyntaxError(M[r.err.kind]);
@@ -4454,14 +4453,14 @@ Try polyfilling it using "@formatjs/intl-pluralrules"
   return Ys(s);
 }
 function Qs(e, t) {
-  return t ? k(k(k({}, e || {}), t || {}), Object.keys(e).reduce(function(r, n) {
-    return r[n] = k(k({}, e[n]), t[n] || {}), r;
+  return t ? U(U(U({}, e || {}), t || {}), Object.keys(e).reduce(function(r, n) {
+    return r[n] = U(U({}, e[n]), t[n] || {}), r;
   }, {})) : e;
 }
 function Ks(e, t) {
   return t ? Object.keys(e).reduce(function(r, n) {
     return r[n] = Qs(e[n], t[n]), r;
-  }, k({}, e)) : e;
+  }, U({}, e)) : e;
 }
 function mr(e) {
   return {
@@ -4542,7 +4541,7 @@ var eo = (
         var o = i || {};
         o.formatters;
         var s = us(o, ["formatters"]);
-        this.ast = e.__parse(t, k(k({}, s), { locale: this.resolvedLocale }));
+        this.ast = e.__parse(t, U(U({}, s), { locale: this.resolvedLocale }));
       } else
         this.ast = t;
       if (!Array.isArray(this.ast))
@@ -5162,23 +5161,23 @@ function Go(e, t) {
   const r = () => nn(u, "$top", i), n = () => nn(l, "$bottom", i), [i, a] = xa();
   var o = this && this.__awaiter || function(p, b, y, A) {
     function P(B) {
-      return B instanceof y ? B : new y(function(D) {
-        D(B);
+      return B instanceof y ? B : new y(function(k) {
+        k(B);
       });
     }
-    return new (y || (y = Promise))(function(B, D) {
+    return new (y || (y = Promise))(function(B, k) {
       function L(K) {
         try {
           ne(A.next(K));
         } catch (G) {
-          D(G);
+          k(G);
         }
       }
       function Z(K) {
         try {
           ne(A.throw(K));
         } catch (G) {
-          D(G);
+          k(G);
         }
       }
       function ne(K) {
@@ -5264,7 +5263,7 @@ function zo(e) {
 var Xo = /* @__PURE__ */ se('<div class="validation-error svelte-124hqw6"> <button class="svelte-124hqw6"><!></button></div>'), qo = /* @__PURE__ */ se('<div class="eta-bar svelte-124hqw6"></div>'), Wo = /* @__PURE__ */ se("<!> ", 1), Zo = /* @__PURE__ */ se("<!> <!> <!> <!>", 1), Yo = /* @__PURE__ */ se('<div class="progress-level svelte-124hqw6"><div class="progress-level-inner svelte-124hqw6"><!></div> <div class="progress-bar-wrap svelte-124hqw6"><div class="progress-bar svelte-124hqw6"></div></div></div>'), Jo = /* @__PURE__ */ se('<p class="loading svelte-124hqw6"> </p> <!>', 1), Qo = /* @__PURE__ */ se("<!> <div><!> <!></div> <!> <!>", 1), Ko = /* @__PURE__ */ se('<div class="clear-status svelte-124hqw6"><!></div> <span class="error svelte-124hqw6"> </span> <!>', 1), $o = /* @__PURE__ */ se("<div> <!> </div>"), el = /* @__PURE__ */ se('<div data-testid="status-tracker"><!> <!></div> <!>', 1);
 function tl(e, t) {
   Jt(t, !0);
-  let r = I(t, "eta", 3, null), n = I(t, "scroll_to_output", 3, !1), i = I(t, "timer", 3, !0), a = I(t, "show_progress", 3, "full"), o = I(t, "message", 3, null), s = I(t, "progress", 3, null), u = I(t, "variant", 3, "default"), l = I(t, "loading_text", 3, "Loading..."), c = I(t, "absolute", 3, !0), d = I(t, "translucent", 3, !1), v = I(t, "border", 3, !1), w = I(t, "validation_error", 7, null), g = I(t, "show_validation_error", 3, !0), x = I(t, "type", 3, null), H = I(t, "used_cache", 3, null), h = I(t, "cache_duration", 3, null), m = I(t, "avg_time", 3, null), p, b = !1, y = q(0), A = q(null), P = q(null), B = q(!1), D = q(null), L = q(!1), Z = q(!1), ne = q(null), K = q(null), G = q("from cache"), ke = q(!1), He = null, Ue = null;
+  let r = I(t, "eta", 3, null), n = I(t, "scroll_to_output", 3, !1), i = I(t, "timer", 3, !0), a = I(t, "show_progress", 3, "full"), o = I(t, "message", 3, null), s = I(t, "progress", 3, null), u = I(t, "variant", 3, "default"), l = I(t, "loading_text", 3, "Loading..."), c = I(t, "absolute", 3, !0), d = I(t, "translucent", 3, !1), v = I(t, "border", 3, !1), w = I(t, "validation_error", 7, null), g = I(t, "show_validation_error", 3, !0), x = I(t, "type", 3, null), H = I(t, "used_cache", 3, null), h = I(t, "cache_duration", 3, null), m = I(t, "avg_time", 3, null), p, b = !1, y = q(0), A = q(null), P = q(null), B = q(!1), k = q(null), L = q(!1), Z = q(!1), ne = q(null), K = q(null), G = q("from cache"), ke = q(!1), He = null, Ue = null;
   const pe = we(() => !(g() && w()) && (x() === "input" || !t.status || t.status === "complete" || a() === "hidden" || t.status == "streaming"));
   let Pe = q(0);
   const dt = we(() => f(P) === null || f(P) <= 0 || !f(Pe) ? 0 : Math.min(f(Pe) / f(P), 1)), J = we(() => f(Pe).toFixed(1));
@@ -5290,10 +5289,10 @@ function tl(e, t) {
     };
   });
   function ge() {
-    b || (E(A, E(D, null), !0), E(y, performance.now(), !0), b = !0, me());
+    b || (E(A, E(k, null), !0), E(y, performance.now(), !0), b = !0, me());
   }
   function Fe() {
-    E(A, E(D, null), !0), b && (b = !1);
+    E(A, E(k, null), !0), b && (b = !1);
   }
   Te(() => {
     t.status === "pending" ? ge() : ae(() => {
@@ -5302,7 +5301,7 @@ function tl(e, t) {
   }), Te(() => {
     p && n() && (t.status === "pending" || t.status === "complete") && zo(p, t.autoscroll);
   }), Te(() => {
-    f(ve) != null && f(A) !== f(ve) && (E(P, (performance.now() - f(y)) / 1e3 + f(ve)), E(D, f(P).toFixed(1), !0), E(A, f(ve), !0));
+    f(ve) != null && f(A) !== f(ve) && (E(P, (performance.now() - f(y)) / 1e3 + f(ve)), E(k, f(P).toFixed(1), !0), E(A, f(ve), !0));
   });
   function he() {
     E(B, !1);
@@ -5373,7 +5372,7 @@ function tl(e, t) {
       let O;
       var S = te(T);
       {
-        var U = (N) => {
+        var R = (N) => {
           var W = it(), _e = fe(W);
           on(_e, 17, s, an, (Ne, ye) => {
             var Nt = it(), ar = fe(Nt);
@@ -5412,14 +5411,14 @@ function tl(e, t) {
           C(N, W);
         };
         Y(S, (N) => {
-          s() ? N(U) : t.queue_position !== null && t.queue_size !== void 0 && t.queue_position >= 0 ? N(ee, 1) : t.queue_position === 0 && N(ie, 2);
+          s() ? N(R) : t.queue_position !== null && t.queue_size !== void 0 && t.queue_position >= 0 ? N(ee, 1) : t.queue_position === 0 && N(ie, 2);
         });
       }
       var z = j(S, 2);
       {
         var oe = (N) => {
           var W = Be();
-          Q(() => ue(W, `${f(J) ?? ""}${r() ? `/${f(D)}` : ""}s`)), C(N, W);
+          Q(() => ue(W, `${f(J) ?? ""}${r() ? `/${f(k)}` : ""}s`)), C(N, W);
         };
         Y(z, (N) => {
           i() && N(oe);
@@ -5528,13 +5527,13 @@ function tl(e, t) {
     }, rr = (V) => {
       var $ = Ko(), F = fe($), _ = te(F);
       {
-        let U = we(() => t.i18n("common.clear"));
+        let R = we(() => t.i18n("common.clear"));
         pn(_, {
           get Icon() {
             return vn;
           },
           get label() {
-            return f(U);
+            return f(R);
           },
           disabled: !1,
           $$events: {
@@ -5545,7 +5544,7 @@ function tl(e, t) {
         });
       }
       var T = j(F, 2), O = te(T), S = j(T, 2);
-      Sr(S, t, "error", {}), Q((U) => ue(O, U), [() => t.i18n("common.error")]), C(V, $);
+      Sr(S, t, "error", {}), Q((R) => ue(O, R), [() => t.i18n("common.error")]), C(V, $);
     };
     Y(It, (V) => {
       t.status === "pending" ? V(Bt) : t.status === "error" && V(rr, 1);
@@ -5568,9 +5567,9 @@ function tl(e, t) {
           f(ke) && ee(S);
         });
       }
-      var U = j(O);
+      var R = j(O);
       Q(() => {
-        F = De($, 1, "cache-indicator svelte-124hqw6", null, F, { "fade-out": f(Z) }), _ = Ae($, "", _, { position: c() ? "absolute" : "static" }), ue(T, `⚡ ${f(G) ?? ""}: `), ue(U, `${f(ne) ?? ""}s`);
+        F = De($, 1, "cache-indicator svelte-124hqw6", null, F, { "fade-out": f(Z) }), _ = Ae($, "", _, { position: c() ? "absolute" : "static" }), ue(T, `⚡ ${f(G) ?? ""}: `), ue(R, `${f(ne) ?? ""}s`);
       }), C(V, $);
     };
     Y(nr, (V) => {
@@ -6052,13 +6051,21 @@ rl([
   Object.fromEntries(al.map((e) => [e, ["math:*"]]))
 ]);
 Zt(["touchstart", "touchmove", "touchend", "click", "keydown"]);
-var sl = /* @__PURE__ */ new Set(["$$slots", "$$events", "$$legacy"]), ol = /* @__PURE__ */ se('<!> <div class="region-annotator svelte-r41nsf"><div class="toolbar svelte-r41nsf" role="group" aria-label="Region annotation tool"><button type="button">浏览</button> <button type="button">套索选择</button> <button type="button" class="finish svelte-r41nsf">完成套索</button> <button type="button" class="clear svelte-r41nsf">清除 Draft</button></div> <div class="legend svelte-r41nsf"><span class="svelte-r41nsf"><i class="draft svelte-r41nsf"></i>黄色：Draft</span> <span class="svelte-r41nsf"><i class="saved svelte-r41nsf"></i>绿色：Saved Region</span></div> <div class="canvas-wrap svelte-r41nsf"><canvas class="svelte-r41nsf"></canvas></div> <div class="status svelte-r41nsf"> </div></div>', 1);
-function ul(e, t) {
+function sl(e) {
+  const t = String(e.label || "").trim();
+  if (t) return t;
+  const r = String(e.class_label || "").trim(), n = String(e.name || "").trim();
+  return r && n && r !== n ? `${r} / ${n}` : n || r || `R${e.region_id}`;
+}
+var ol = /* @__PURE__ */ new Set(["$$slots", "$$events", "$$legacy"]), ll = /* @__PURE__ */ se('<!> <div class="region-annotator svelte-r41nsf"><div class="toolbar svelte-r41nsf" role="group" aria-label="Label annotation tool"><button type="button">浏览</button> <button type="button">套索选择</button> <button type="button" class="finish svelte-r41nsf">完成套索</button> <button type="button" class="clear svelte-r41nsf">清除 Draft</button></div> <div class="legend svelte-r41nsf"><span class="svelte-r41nsf"><i class="draft svelte-r41nsf"></i>黄色：Draft</span> <span class="svelte-r41nsf"><i class="saved svelte-r41nsf"></i>绿色：Saved Label</span></div> <div class="canvas-wrap svelte-r41nsf"><canvas class="svelte-r41nsf"></canvas></div> <div class="status svelte-r41nsf"> </div></div>', 1);
+function fl(e, t) {
   Jt(t, !0);
-  const r = /* @__PURE__ */ Ya(t, sl), n = new Uo(r), i = 2048, a = 4096, o = 3;
-  let s, u = null, l = null, c = null, d = null, v = null, w = q(wt({})), g = q("browse"), x = q("请先生成版图 binary mask"), H = q(!1), h = q(!1), m = q(!1), p = q(wt([])), b = null, y = null, A = null, P = !1, B = "", D = 0, L = "", Z = null, ne = !1, K = !1, G = q(!1);
+  const r = /* @__PURE__ */ Ya(t, ol), n = new Uo(r), i = 2048, a = 4096, o = 3;
+  let s, u = null, l = null, c = null, d = null, v = null, w = q(wt({})), g = q("browse"), x = q("请先生成版图 binary mask"), H = q(!1), h = q(!1), m = q(!1), p = q(wt([])), b = null, y = null, A = null, P = !1, B = "", k = 0, L = "", Z = null, ne = !1, K = !1, G = q(!1);
   function ke(_) {
-    return JSON.parse(JSON.stringify(_ || {}));
+    var T;
+    const O = JSON.parse(JSON.stringify(_ || {})), S = (T = O.server_view) === null || T === void 0 ? void 0 : T.regions;
+    return Array.isArray(S) && (O.server_view.regions = S.map((R) => Object.assign(Object.assign({}, R), { label: sl(R) }))), O;
   }
   function He(_) {
     return typeof _ == "number" ? `${_}px` : _ || "520px";
@@ -6093,17 +6100,17 @@ function ul(e, t) {
   }
   function me(_, T, O) {
     const S = (ee) => {
-      T === D && O(ee);
+      T === k && O(ee);
     };
     if (!_) {
       S(null);
       return;
     }
-    const U = new Image();
-    U.onload = () => S(U), U.onerror = () => S(null), U.src = _;
+    const R = new Image();
+    R.onload = () => S(R), R.onerror = () => S(null), R.src = _;
   }
   function re(_, T) {
-    _ === D && (E(G, ne && K && u !== null && l !== null, !0), ne && K && E(x, f(G) ? T : "当前 Layout 图像加载失败，套索已禁用", !0), F());
+    _ === k && (E(G, ne && K && u !== null && l !== null, !0), ne && K && E(x, f(G) ? T : "当前 Layout 图像加载失败，套索已禁用", !0), F());
   }
   function ge() {
     if (!l) {
@@ -6115,21 +6122,21 @@ function ul(e, t) {
     const S = O.getContext("2d", { willReadFrequently: !0 });
     if (!S) return;
     S.imageSmoothingEnabled = !1, S.drawImage(l, 0, 0, _, T);
-    const U = S.getImageData(0, 0, _, T), ee = document.createElement("canvas");
+    const R = S.getImageData(0, 0, _, T), ee = document.createElement("canvas");
     ee.width = _, ee.height = T;
     const ie = ee.getContext("2d");
     if (!ie) return;
     const z = ie.createImageData(_, T);
-    for (let oe = 0; oe < U.data.length; oe += 4) {
-      const je = Math.max(U.data[oe], U.data[oe + 1], U.data[oe + 2]);
-      U.data[oe + 3] > 0 && je >= 128 && (z.data[oe] = 45, z.data[oe + 1] = 160, z.data[oe + 2] = 255, z.data[oe + 3] = 80);
+    for (let oe = 0; oe < R.data.length; oe += 4) {
+      const je = Math.max(R.data[oe], R.data[oe + 1], R.data[oe + 2]);
+      R.data[oe + 3] > 0 && je >= 128 && (z.data[oe] = 45, z.data[oe + 1] = 160, z.data[oe + 2] = 255, z.data[oe + 3] = 80);
     }
     ie.putImageData(z, 0, 0), c = ee;
   }
   function Fe(_) {
     E(w, ke(_), !0);
-    const T = Pe(), O = pe(), S = ++D, U = dt(T), ee = U !== L;
-    L = U;
+    const T = Pe(), O = pe(), S = ++k, R = dt(T), ee = R !== L;
+    L = R;
     const ie = O.status || "Region 标注器已加载";
     if (E(g, T.tool_mode === "lasso" ? "lasso" : "browse", !0), E(
       p,
@@ -6159,11 +6166,15 @@ function ul(e, t) {
       Object.assign(Object.assign({}, f(w)), {
         client_intent: Object.assign(Object.assign({}, Pe()), {
           tool_mode: f(g),
-          lasso_polygon: f(p).map((T) => [T.x, T.y])
+          lasso_polygon: f(p).map((O) => [O.x, O.y])
         })
       }),
       !0
-    ), n.props.value = f(w), B = JSON.stringify(f(w)), _ && n.dispatch("input");
+    );
+    const T = {
+      client_intent: JSON.parse(JSON.stringify(f(w).client_intent || {}))
+    };
+    n.props.value = T, B = JSON.stringify(T), _ && n.dispatch("input");
   }
   function Ge(_) {
     (f(H) || f(h)) && Ie("绘制已取消"), E(g, _, !0), E(
@@ -6281,12 +6292,12 @@ function ul(e, t) {
     const S = s.getContext("2d");
     if (S && (S.setTransform(O, 0, 0, O, 0, 0), S.clearRect(0, 0, _, T), u ? (S.imageSmoothingEnabled = !0, S.drawImage(u, 0, 0, _, T)) : (S.fillStyle = "#f8fafc", S.fillRect(0, 0, _, T), S.fillStyle = "#64748b", S.font = "18px sans-serif", S.fillText(pe().enabled === !0 ? "正在加载当前 Layout 图像…" : "请先生成版图 binary mask", 24, 42)), S.imageSmoothingEnabled = !1, c && S.drawImage(c, 0, 0, _, T), d && S.drawImage(d, 0, 0, _, T), v && S.drawImage(v, 0, 0, _, T), f(p).length > 0)) {
       S.save(), S.beginPath(), S.moveTo(f(p)[0].x, f(p)[0].y);
-      for (let U = 1; U < f(p).length; U += 1) S.lineTo(f(p)[U].x, f(p)[U].y);
+      for (let R = 1; R < f(p).length; R += 1) S.lineTo(f(p)[R].x, f(p)[R].y);
       if (!f(H) && !f(h) && f(p).length >= 3 && S.closePath(), S.setLineDash([8, 5]), S.lineWidth = Math.max(2, _ / 700), S.strokeStyle = "rgba(255, 220, 0, 0.98)", S.stroke(), f(h)) {
         S.setLineDash([]), S.fillStyle = "rgba(255, 220, 0, 0.98)";
-        const U = Math.max(2.5, _ / 500);
+        const R = Math.max(2.5, _ / 500);
         for (const ee of f(p))
-          S.beginPath(), S.arc(ee.x, ee.y, U, 0, Math.PI * 2), S.fill();
+          S.beginPath(), S.arc(ee.x, ee.y, R, 0, Math.PI * 2), S.fill();
       }
       S.restore();
     }
@@ -6320,8 +6331,8 @@ function ul(e, t) {
         return n.shared.min_width;
       },
       children: (T, O) => {
-        var S = ol(), U = fe(S);
-        tl(U, Qa(
+        var S = ll(), R = fe(S);
+        tl(R, Qa(
           {
             get autoscroll() {
               return n.shared.autoscroll;
@@ -6335,7 +6346,7 @@ function ul(e, t) {
             on_clear_status: () => n.dispatch("clear_status", n.shared.loading_status)
           }
         ));
-        var ee = j(U, 2), ie = te(ee), z = te(ie);
+        var ee = j(R, 2), ie = te(ee), z = te(ie);
         let oe;
         var je = j(z, 2);
         let Ot;
@@ -6358,5 +6369,5 @@ function ul(e, t) {
   Yt();
 }
 export {
-  ul as default
+  fl as default
 };
