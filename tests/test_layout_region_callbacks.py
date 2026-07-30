@@ -776,6 +776,18 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
                 ROOT / "sam3_demo" / "pcs_pvs_callbacks.py",
                 "_run_pcs_impl",
             ),
+            "_clear_current_layout_mask": (
+                ROOT / "sam3_demo" / "layout" / "mask_callbacks.py",
+                "_clear_current_layout_mask_impl",
+            ),
+            "_commit_layout_transform": (
+                ROOT / "sam3_demo" / "layout" / "mask_callbacks.py",
+                "_commit_layout_transform_impl",
+            ),
+            "_create_pvs_from_layout_mask": (
+                ROOT / "sam3_demo" / "layout" / "prompt_callbacks.py",
+                "_create_pvs_from_layout_mask_impl",
+            ),
         }
         for name in protected:
             with self.subTest(name=name):
