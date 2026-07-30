@@ -15,28 +15,14 @@ import numpy as np
 import public_download_utils as _public_downloads
 
 
-_CURRENT_DIR = Path(__file__).resolve().parents[1]
-_RUNTIME_DIR = _CURRENT_DIR / ".runtime"
-runtime_export_dir = _RUNTIME_DIR / "exports"
-public_download_dir = _CURRENT_DIR / "public_downloads"
-_PUBLIC_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60
-
-ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
-o3_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/O3_coco")
-coco_eval_scope_overlap = "只评估与预测相交的GT"
-ge1_category_display_order = ["Block", "MainLine1", "MainLine2", "MainLine3"]
-default_coco_dataset = "GE1_coco"
-coco_dataset_configs = {
-    "GE1_coco": {
-        "path": ge1_coco_dir,
-        "category_display_order": ge1_category_display_order,
-        "strip_prefixes": ["GE1-"],
-    },
-    "O3_coco/GE1_coco": {"path": o3_coco_dir / "GE1_coco"},
-    "O3_coco/GE2_coco": {"path": o3_coco_dir / "GE2_coco"},
-    "O3_coco/ACT_coco": {"path": o3_coco_dir / "ACT_coco"},
-    "O3_coco/BSM_coco": {"path": o3_coco_dir / "BSM_coco"},
-}
+from sam3_demo.config import (
+    _PUBLIC_DOWNLOAD_TTL_SECONDS,
+    coco_dataset_configs,
+    coco_eval_scope_overlap,
+    default_coco_dataset,
+    public_download_dir,
+    runtime_export_dir,
+)
 
 
 def _publish_segmentation_zip(export_dir, zip_name):

@@ -4,12 +4,8 @@ SAM3 Interactive Vision Studio
 基于 SAM3 的交互式图像分割系统
 """
 
-import os
-import sys
 import time
 import io
-import gc
-import logging
 from pathlib import Path
 import tempfile
 import json
@@ -17,73 +13,43 @@ import uuid
 import copy
 import hashlib
 
-# 所有运行时文件固定在 /data/zhengqiyuan，避免 Gradio 默认写入 /tmp/gradio。
-current_dir = Path(__file__).resolve().parent
-runtime_dir = current_dir / ".runtime"
-runtime_tmp_dir = runtime_dir / "tmp"
-runtime_gradio_dir = runtime_dir / "gradio"
-runtime_export_dir = runtime_dir / "exports"
-runtime_feedback_dir = runtime_dir / "feedback"
-runtime_layout_dir = runtime_dir / "layout_masks"
-runtime_layout_region_dir = runtime_dir / "layout_regions"
-runtime_log_dir = runtime_dir / "logs"
-public_download_dir = current_dir / "public_downloads"
-qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
-ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
-o3_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/O3_coco")
-coco_eval_scope_overlap = "只评估与预测相交的GT"
-coco_eval_scope_full = "评估整图全部GT"
-ge1_category_display_order = ["Block", "MainLine1", "MainLine2", "MainLine3"]
-default_coco_dataset = "GE1_coco"
-coco_dataset_configs = {
-    "GE1_coco": {
-        "path": ge1_coco_dir,
-        "category_display_order": ge1_category_display_order,
-        "strip_prefixes": ["GE1-"],
-    },
-    "O3_coco/GE1_coco": {"path": o3_coco_dir / "GE1_coco"},
-    "O3_coco/GE2_coco": {"path": o3_coco_dir / "GE2_coco"},
-    "O3_coco/ACT_coco": {"path": o3_coco_dir / "ACT_coco"},
-    "O3_coco/BSM_coco": {"path": o3_coco_dir / "BSM_coco"},
-}
-coco_dataset_choices = list(coco_dataset_configs.keys())
-
-for path in (
-    runtime_tmp_dir,
-    runtime_gradio_dir,
+from sam3_demo.config import (
+    MODE_LAYOUT,
+    MODE_PCS,
+    MODE_PVS,
+    _LAYOUT_MASK_MORPH_LIMIT_PX,
+    _LAYOUT_PROMPT_CLASS_PREFIX,
+    _LAYOUT_PROMPT_LABEL_PREFIX,
+    _LAYOUT_PROMPT_SCOPE_FULL,
+    _LAYOUT_PROMPT_SCOPE_REGION_CLASS,
+    _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
+    _MAX_PROMPT_HISTORY_ENTRIES,
+    _PUBLIC_DOWNLOAD_TTL_SECONDS,
+    _SOURCE_IMAGE_CACHE_MAX_ENTRIES,
+    _SOURCE_IMAGE_CACHE_TTL_SECONDS,
+    _WORKSPACE_CACHE_MAX_ENTRIES,
+    _WORKSPACE_CACHE_TTL_SECONDS,
+    coco_dataset_choices,
+    coco_dataset_configs,
+    coco_eval_scope_full,
+    coco_eval_scope_overlap,
+    current_dir,
+    default_coco_dataset,
+    ge1_category_display_order,
+    ge1_coco_dir,
+    logger,
+    o3_coco_dir,
+    public_download_dir,
+    qiyuan_cache_dir,
+    runtime_dir,
     runtime_export_dir,
     runtime_feedback_dir,
-    runtime_feedback_dir / "samples",
+    runtime_gradio_dir,
     runtime_layout_dir,
     runtime_layout_region_dir,
     runtime_log_dir,
-    public_download_dir,
-    current_dir / ".gradio",
-    qiyuan_cache_dir,
-    qiyuan_cache_dir / "huggingface",
-    qiyuan_cache_dir / "huggingface" / "hub",
-    qiyuan_cache_dir / "modelscope",
-):
-    path.mkdir(parents=True, exist_ok=True)
-
-os.environ["TMPDIR"] = str(runtime_tmp_dir)
-os.environ["TEMP"] = str(runtime_tmp_dir)
-os.environ["TMP"] = str(runtime_tmp_dir)
-os.environ["GRADIO_TEMP_DIR"] = str(runtime_gradio_dir)
-os.environ["XDG_CACHE_HOME"] = str(qiyuan_cache_dir)
-os.environ["HF_HOME"] = str(qiyuan_cache_dir / "huggingface")
-os.environ["HUGGINGFACE_HUB_CACHE"] = str(qiyuan_cache_dir / "huggingface" / "hub")
-os.environ["MODELSCOPE_CACHE"] = str(qiyuan_cache_dir / "modelscope")
-sys.path.insert(0, str(current_dir))
-component_backend_dir = current_dir / 'layout_transform_editor' / 'backend'
-if component_backend_dir.exists():
-    sys.path.insert(0, str(component_backend_dir))
-region_component_backend_dir = current_dir / "layout_region_annotator" / "backend"
-if region_component_backend_dir.exists():
-    sys.path.insert(0, str(region_component_backend_dir))
-gesture_component_backend_dir = current_dir / "image_gesture_overlay" / "backend"
-if gesture_component_backend_dir.exists():
-    sys.path.insert(0, str(gesture_component_backend_dir))
+    runtime_tmp_dir,
+)
 
 import numpy as np
 import torch
@@ -126,21 +92,6 @@ try:
 except Exception as exc:
     _layout_extract_mask = None
     _layout_extract_mask_import_error = exc
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-logger = logging.getLogger("sam3_gradio_demo")
-
-_LAYOUT_PROMPT_SCOPE_FULL = "full"
-_LAYOUT_PROMPT_SCOPE_REGION_CLASS = "region_class"
-_LAYOUT_PROMPT_CLASS_PREFIX = "region_class:"
-_LAYOUT_PROMPT_SCOPE_REGION_LABELS = "region_labels"
-_LAYOUT_PROMPT_LABEL_PREFIX = "region_label:"
-_LAYOUT_MASK_MORPH_LIMIT_PX = 31
-_PUBLIC_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60
-
 
 def _gradio_allowed_paths():
     return [str(public_download_dir.resolve())]
@@ -200,79 +151,13 @@ def _publish_segmentation_zip(export_dir, zip_name):
     )
 
 
-# 导入SAM3相关模块
-try:
-    from sam3.model_builder import build_sam3_image_model
-    from sam3.model.sam3_image_processor import Sam3Processor
-    from sam3.model.data_misc import FindStage
-    from sam3.model import box_ops
-except ImportError as e:
-    print(f"导入SAM3模块失败: {e}")
-    print("请确保已正确安装SAM3依赖")
-    sys.exit(1)
-
-# 全局变量
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"使用设备: {DEVICE}")
-
-
-# 初始化模型
-def initialize_models():
-    """初始化 SAM3 图像预测器。"""
-    try:
-        # 检查模型文件是否存在
-        model_dir = current_dir / "models"
-        checkpoint_path = model_dir / "sam3.pt"
-        bpe_path = current_dir / "assets" / "bpe_simple_vocab_16e6.txt.gz"
-
-        if not checkpoint_path.exists():
-            print(f"模型文件不存在: {checkpoint_path}")
-            print("请下载SAM3模型文件到目录")
-            return None
-
-        if not bpe_path.exists():
-            print(f"BPE文件不存在: {bpe_path}")
-            return None
-
-        # 初始化图像模型
-        image_model = build_sam3_image_model(
-            checkpoint_path=str(checkpoint_path),
-            bpe_path=str(bpe_path),
-            device=DEVICE,
-            enable_inst_interactivity=True,
-        )
-
-        # 创建图像处理器
-        image_predictor = Sam3Processor(image_model, device=DEVICE)
-
-        print("模型初始化成功")
-        return image_predictor
-
-    except Exception as e:
-        print(f"模型初始化失败: {e}")
-        return None
-
-
-# 全局预测器实例
-image_predictor = initialize_models()
-
-
-def _disable_legacy_predict_mask_prompt():
-    if image_predictor is None or not hasattr(image_predictor, "predict_mask_prompt"):
-        return
-
-    def _deprecated_predict_mask_prompt(*args, **kwargs):
-        raise RuntimeError(
-            "predict_mask_prompt() is deprecated in this demo. "
-            "Use _predict_inst(..., mask_input_lowres_logits=...) so multimask "
-            "candidates and low-res logits are preserved."
-        )
-
-    image_predictor.predict_mask_prompt = _deprecated_predict_mask_prompt
-
-
-_disable_legacy_predict_mask_prompt()
-
+from sam3_demo.model_runtime import (
+    DEVICE,
+    FindStage,
+    box_ops,
+    image_predictor,
+    initialize_models,
+)
 
 from sam3_demo.segmentation_evaluation import (
     parse_polygon_prompt,
@@ -351,14 +236,6 @@ import threading as _sam3_threading
 
 _PVS_PREDICT_LOCK = _sam3_threading.Lock()
 _FEEDBACK_WRITE_LOCK = _sam3_threading.Lock()
-_WORKSPACE_CACHE = {}
-_WORKSPACE_CACHE_LOCK = _sam3_threading.RLock()
-_WORKSPACE_CACHE_MAX_ENTRIES = 4
-_WORKSPACE_CACHE_TTL_SECONDS = 3600.0
-_SOURCE_IMAGE_CACHE = {}
-_SOURCE_IMAGE_CACHE_LOCK = _sam3_threading.RLock()
-_SOURCE_IMAGE_CACHE_MAX_ENTRIES = 4
-_SOURCE_IMAGE_CACHE_TTL_SECONDS = 3600.0
 _LAYOUT_CACHE = {}
 _LAYOUT_CACHE_LOCK = _sam3_threading.RLock()
 _LAYOUT_PROMPT_EPOCHS = {}
@@ -370,254 +247,101 @@ _LAYOUT_REGION_STORE = _layout_regions.LayoutRegionStore(
 )
 
 
-def _release_workspace_memory():
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+from sam3_demo.workspace import (
+    _WORKSPACE_CACHE,
+    _WORKSPACE_CACHE_LOCK,
+    _SOURCE_IMAGE_CACHE,
+    _SOURCE_IMAGE_CACHE_LOCK,
+    _release_workspace_memory,
+    _prune_workspace_cache,
+    _clear_workspace_cache,
+    _prune_source_image_cache,
+    _clear_source_image_cache,
+    _source_image_cache_put,
+    _source_image_cache_get,
+    _image_gesture_payload,
+    _source_gesture_payload,
+    _validate_gesture_intent,
+    _pil_image,
+    _data_url,
+    _workspace,
+    _fresh_state,
+)
 
 
-def _prune_workspace_cache(now=None, protected_image_id=None):
-    now = time.monotonic() if now is None else float(now)
-    protected = str(protected_image_id) if protected_image_id else None
-    removed = 0
-    expired = [
-        image_id
-        for image_id, workspace in _WORKSPACE_CACHE.items()
-        if now - float(workspace.get("last_accessed_at", now))
-        > _WORKSPACE_CACHE_TTL_SECONDS
-    ]
-    for image_id in expired:
-        removed += _WORKSPACE_CACHE.pop(image_id, None) is not None
-
-    while len(_WORKSPACE_CACHE) > _WORKSPACE_CACHE_MAX_ENTRIES:
-        candidates = [
-            (image_id, workspace)
-            for image_id, workspace in _WORKSPACE_CACHE.items()
-            if image_id != protected
-        ]
-        if not candidates:
-            break
-        oldest_id, _ = min(
-            candidates,
-            key=lambda item: (
-                float(item[1].get("last_accessed_at", now)),
-                item[0],
-            ),
-        )
-        removed += _WORKSPACE_CACHE.pop(oldest_id, None) is not None
-    return removed
 
 
-def _clear_workspace_cache(session_id=None):
-    with _WORKSPACE_CACHE_LOCK:
-        if session_id is None:
-            removed = bool(_WORKSPACE_CACHE)
-            _WORKSPACE_CACHE.clear()
-        else:
-            session_id = str(session_id)
-            keys = [
-                image_id
-                for image_id, workspace in _WORKSPACE_CACHE.items()
-                if workspace.get("session_id") == session_id
-            ]
-            removed = bool(keys)
-            for image_id in keys:
-                _WORKSPACE_CACHE.pop(image_id, None)
-    if not removed:
-        return
-    _release_workspace_memory()
 
 
-def _new_source_image_state(session_id=None):
-    return {
-        "session_id": str(session_id or ""),
-        "source_image_id": None,
-        "source_image_sha256": None,
-        "source_width": 0,
-        "source_height": 0,
-        "source_revision": 0,
-        "crop_bbox_xyxy": None,
-        "pending_crop_bbox_xyxy": None,
-        "workspace_image_id": None,
-        "workspace_hash": None,
-    }
+
+from sam3_demo.state import (
+    _new_source_image_state,
+    _new_template_match_state,
+    _new_pcs_state,
+    _new_pvs_state,
+    _new_session_state,
+    _session_id_from_state,
+    _new_layout_state,
+    _norm_box,
+    _bbox_from_payload,
+    _xyxy_to_cxcywh_norm,
+    _polygon_from_payload,
+    _point_from_payload,
+    _combine_logits,
+    _polygon_action_key,
+    _polygon_combine_key,
+    _mask_box,
+    _pvs_progress,
+    _best,
+    _make_inst,
+    _snapshot,
+    _restore,
+    _history_snapshot,
+    _append_prompt_history,
+    _active_instances,
+    _is_pcs_mode,
+    _is_pvs_manual_mode,
+    _is_layout_mask_mode,
+    _is_pvs_pool_mode,
+    _new_prompt_state,
+)
 
 
-def _new_template_match_state():
-    return {
-        "schema_version": 1,
-        "source_image_id": None,
-        "workspace_image_id": None,
-        "active_instance_id": None,
-        "result": None,
-    }
+# Kept as source-level compatibility shims for the overlay contract test.
+def _active_instances(state):
+    return [inst for inst in state.get("instances", {}).values() if inst.get("status") != "deleted"]
 
 
-def _prune_source_image_cache(now=None, protected_source_id=None):
-    now = time.monotonic() if now is None else float(now)
-    protected = str(protected_source_id) if protected_source_id else None
-    expired = [
-        source_id
-        for source_id, item in _SOURCE_IMAGE_CACHE.items()
-        if now - float(item.get("last_accessed_at", now)) > _SOURCE_IMAGE_CACHE_TTL_SECONDS
-    ]
-    for source_id in expired:
-        _SOURCE_IMAGE_CACHE.pop(source_id, None)
-    while len(_SOURCE_IMAGE_CACHE) > _SOURCE_IMAGE_CACHE_MAX_ENTRIES:
-        candidates = [
-            (source_id, item)
-            for source_id, item in _SOURCE_IMAGE_CACHE.items()
-            if source_id != protected
-        ]
-        if not candidates:
-            break
-        oldest_id, _ = min(
-            candidates,
-            key=lambda item: (float(item[1].get("last_accessed_at", now)), item[0]),
-        )
-        _SOURCE_IMAGE_CACHE.pop(oldest_id, None)
+def _is_pcs_mode(mode):
+    return str(mode or "") == MODE_PCS
 
 
-def _clear_source_image_cache(session_id=None):
-    with _SOURCE_IMAGE_CACHE_LOCK:
-        if session_id is None:
-            _SOURCE_IMAGE_CACHE.clear()
-            return
-        session_id = str(session_id)
-        for source_id in [
-            key
-            for key, item in _SOURCE_IMAGE_CACHE.items()
-            if item.get("session_id") == session_id
-        ]:
-            _SOURCE_IMAGE_CACHE.pop(source_id, None)
+def _is_pvs_manual_mode(mode):
+    return str(mode or "") == MODE_PVS
 
 
-def _source_image_cache_put(session_id, image):
-    session_id = str(session_id)
-    source = _pil_image(image)
-    if source is None:
-        raise ValueError("Upload a source image first")
-    source_id = uuid.uuid4().hex
-    source_hash = _layout_tx.image_pixel_sha256(source)
-    now = time.monotonic()
-    with _SOURCE_IMAGE_CACHE_LOCK:
-        for old_id in [
-            key
-            for key, item in _SOURCE_IMAGE_CACHE.items()
-            if item.get("session_id") == session_id
-        ]:
-            _SOURCE_IMAGE_CACHE.pop(old_id, None)
-        _SOURCE_IMAGE_CACHE[source_id] = {
-            "image": source.copy(),
-            "session_id": session_id,
-            "source_image_sha256": source_hash,
-            "created_at": now,
-            "last_accessed_at": now,
-        }
-        _prune_source_image_cache(now, protected_source_id=source_id)
-    whole = list(_image_crop.whole_image_crop_box(source.width, source.height))
-    return {
-        "session_id": session_id,
-        "source_image_id": source_id,
-        "source_image_sha256": source_hash,
-        "source_width": source.width,
-        "source_height": source.height,
-        "source_revision": 1,
-        "crop_bbox_xyxy": whole,
-        "pending_crop_bbox_xyxy": None,
-        "workspace_image_id": None,
-        "workspace_hash": None,
-    }
+def _is_layout_mask_mode(mode):
+    return str(mode or "") == MODE_LAYOUT
 
 
-def _source_image_cache_get(source_state):
-    if not isinstance(source_state, dict) or not source_state.get("source_image_id"):
-        raise ValueError("请先上传完整原图")
-    source_id = str(source_state["source_image_id"])
-    session_id = str(source_state.get("session_id") or "")
-    source_hash = str(source_state.get("source_image_sha256") or "")
-    now = time.monotonic()
-    with _SOURCE_IMAGE_CACHE_LOCK:
-        _prune_source_image_cache(now, protected_source_id=source_id)
-        cached = _SOURCE_IMAGE_CACHE.get(source_id)
-        if cached is not None:
-            cached["last_accessed_at"] = now
-    if cached is None:
-        raise ValueError("完整原图缓存已过期，请重新上传")
-    if cached.get("session_id") != session_id:
-        raise ValueError("完整原图不属于当前会话")
-    if not source_hash or cached.get("source_image_sha256") != source_hash:
-        raise ValueError("完整原图 hash 不匹配，请重新上传")
-    image = cached["image"]
-    if image.width != int(source_state.get("source_width") or 0) or image.height != int(source_state.get("source_height") or 0):
-        raise ValueError("完整原图尺寸不匹配，请重新上传")
-    return image.copy()
+def _is_pvs_pool_mode(mode):
+    return _is_pvs_manual_mode(mode) or _is_layout_mask_mode(mode)
 
 
-def _image_gesture_payload(*, enabled, width, height, image_id, image_sha256, revision, interaction, crop_bbox_xyxy=None, selection_state="", status=""):
-    payload = {
-        "server_view": {
-            "enabled": bool(enabled),
-            "natural_width": int(width or 0),
-            "natural_height": int(height or 0),
-            "image_id": str(image_id or ""),
-            "image_sha256": str(image_sha256 or ""),
-            "revision": int(revision or 0),
-            "interaction": str(interaction or "disabled"),
-            "selection_state": str(selection_state or ""),
-            "status": str(status or ""),
-        },
-        "client_intent": {},
-    }
-    if crop_bbox_xyxy and len(crop_bbox_xyxy) == 4:
-        payload["client_intent"] = {
-            "gesture": "drag",
-            "start_xy": [float(crop_bbox_xyxy[0]), float(crop_bbox_xyxy[1])],
-            "end_xy": [float(crop_bbox_xyxy[2]), float(crop_bbox_xyxy[3])],
-            "expected_revision": int(revision or 0),
-            "image_id": str(image_id or ""),
-            "image_sha256": str(image_sha256 or ""),
-        }
-    return payload
 
 
-def _source_gesture_payload(source_state, status="", retain_selection=True):
-    state = source_state if isinstance(source_state, dict) else {}
-    enabled = bool(state.get("source_image_id"))
-    selection = None
-    selection_state = ""
-    if enabled and retain_selection:
-        pending = state.get("pending_crop_bbox_xyxy")
-        if isinstance(pending, (list, tuple)) and len(pending) == 4:
-            selection = pending
-            selection_state = "draft"
-        else:
-            applied = state.get("crop_bbox_xyxy")
-            whole = list(
-                _image_crop.whole_image_crop_box(
-                    int(state.get("source_width") or 0),
-                    int(state.get("source_height") or 0),
-                )
-            )
-            if (
-                isinstance(applied, (list, tuple))
-                and len(applied) == 4
-                and list(applied) != whole
-            ):
-                selection = applied
-                selection_state = "applied"
-    return _image_gesture_payload(
-        enabled=enabled,
-        width=state.get("source_width"),
-        height=state.get("source_height"),
-        image_id=state.get("source_image_id"),
-        image_sha256=state.get("source_image_sha256"),
-        revision=state.get("source_revision"),
-        interaction="crop" if enabled else "disabled",
-        crop_bbox_xyxy=selection,
-        selection_state=selection_state,
-        status=status,
-    )
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _workspace_gesture_payload(image_state, mode=None, click_tool=None, status=""):
@@ -640,124 +364,21 @@ def _workspace_gesture_payload(image_state, mode=None, click_tool=None, status="
     )
 
 
-def _validate_gesture_intent(payload, identity_state, *, allowed_gestures):
-    if not isinstance(payload, dict):
-        raise ValueError("交互 payload 无效")
-    gesture = str(payload.get("gesture") or "")
-    if gesture not in set(allowed_gestures):
-        raise ValueError("当前交互手势无效")
-    expected_revision = payload.get("expected_revision")
-    actual_revision = int(identity_state.get("interaction_revision") or identity_state.get("source_revision") or 0)
-    if isinstance(expected_revision, bool) or expected_revision != actual_revision:
-        raise ValueError("交互 revision 已过期，请重试")
-    expected_id = str(identity_state.get("image_id") or identity_state.get("source_image_id") or "")
-    expected_hash = str(identity_state.get("target_image_sha256") or identity_state.get("source_image_sha256") or "")
-    if str(payload.get("image_id") or "") != expected_id:
-        raise ValueError("交互图像 identity 已过期，请重试")
-    if str(payload.get("image_sha256") or "") != expected_hash:
-        raise ValueError("交互图像 hash 已过期，请重试")
-    start = payload.get("start_xy")
-    end = payload.get("end_xy")
-    if not isinstance(start, (list, tuple)) or len(start) != 2:
-        raise ValueError("交互起点无效")
-    if not isinstance(end, (list, tuple)) or len(end) != 2:
-        raise ValueError("交互终点无效")
-    values = np.asarray([*start, *end], dtype=np.float64)
-    if values.shape != (4,) or not np.isfinite(values).all():
-        raise ValueError("交互坐标必须是有限数值")
-    return gesture, values[:2].tolist(), values[2:].tolist()
-
-
-def _pil_image(image):
-    if image is None:
-        return None
-    if isinstance(image, Image.Image):
-        return image.convert("RGB")
-    if isinstance(image, np.ndarray):
-        if image.dtype != np.uint8:
-            image = np.clip(image, 0, 255).astype(np.uint8)
-        return Image.fromarray(image).convert("RGB")
-    return Image.open(image).convert("RGB")
-
-
-def _data_url(image):
-    image = _pil_image(image)
-    if image is None:
-        return ""
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    return "data:image/png;base64," + _sam3_base64.b64encode(buf.getvalue()).decode("ascii")
-
-
-def _new_pcs_state():
-    return {
-        "text_prompt": "",
-        "positive_boxes": [],
-        "negative_boxes": [],
-        "bbox_history": [],
-        "bbox_records": [],
-        "next_bbox_id": 1,
-        "instances": {},
-        "next_instance_id": 1,
-    }
-
-
-def _new_pvs_state():
-    return {
-        "instances": {},
-        "active_instance_id": None,
-        "next_instance_id": 1,
-        "pending_boxes": [],
-        "pending_bbox_records": [],
-        "next_pending_bbox_id": 1,
-    }
 
 
 
-def _new_session_state():
-    return {"session_id": uuid.uuid4().hex}
 
 
-def _session_id_from_state(session_state=None):
-    if isinstance(session_state, dict) and session_state.get("session_id"):
-        return str(session_state["session_id"])
-    return uuid.uuid4().hex
 
 
-def _new_layout_state(session_id=None):
-    return {
-        "transform_version": 2,
-        "session_id": str(session_id or uuid.uuid4().hex),
-        "layout_id": None,
-        "image_id": None,
-        "enabled": False,
-        "region_mode": "all",
-        "revision": 0,
-        "center_x": None,
-        "center_y": None,
-        "pivot_x": None,
-        "pivot_y": None,
-        "tx": 0.0,
-        "ty": 0.0,
-        "scale": 1.0,
-        "rotation_deg": 0.0,
-        "preview_alpha": 0.35,
-        "source_width": 0,
-        "source_height": 0,
-        "source_mask_pixel_sha256": None,
-        "source_mask_file_sha256": None,
-        "target_image_sha256": None,
-        "matrix_2x3": None,
-        "prompt_mask_scope": _LAYOUT_PROMPT_SCOPE_FULL,
-        "prompt_class_label": None,
-        "prompt_labels": [],
-        "prompt_group_transforms": {},
-        "prompt_active_group_id": None,
-        "prompt_selection_signature": None,
-        "prompt_transform_set_revision": 0,
-        "prompt_regions_revision": None,
-        "prompt_region_ids": [],
-    }
+
+
+
+
+
+
+
+
 
 
 def _layout_cache_key(session_id, layout_id):
@@ -908,95 +529,18 @@ def _clear_layout_cache(layout_state=None):
         else:
             _LAYOUT_CACHE.clear()
 
-def _workspace(image_state):
-    if not image_state or not image_state.get("image_id"):
-        raise ValueError("Load an image first")
-    image_id = str(image_state["image_id"])
-    session_id = str(image_state.get("session_id") or "")
-    if not session_id:
-        raise ValueError("Image state session is missing; reload the image")
-    now = time.monotonic()
-    with _WORKSPACE_CACHE_LOCK:
-        removed = _prune_workspace_cache(now, protected_image_id=image_id)
-        ws = _WORKSPACE_CACHE.get(image_id)
-        if ws is not None:
-            ws["last_accessed_at"] = now
-    if removed:
-        _release_workspace_memory()
-    if ws is None:
-        raise ValueError("Image state expired; reload the image")
-    if ws.get("session_id") != session_id:
-        raise ValueError("Image state does not belong to the current session")
-    expected_hash = str(image_state.get("target_image_sha256") or "")
-    if not expected_hash or ws.get("target_image_sha256") != expected_hash:
-        raise ValueError("Image state hash does not match the cached image")
-    return ws
 
 
-def _fresh_state(image_state):
-    base = _workspace(image_state)["base_state"]
-    return {"original_height": base["original_height"], "original_width": base["original_width"], "backbone_out": dict(base["backbone_out"])}
 
 
-def _norm_box(box, width, height):
-    x1, y1, x2, y2 = [float(v) for v in box]
-    x1, x2 = sorted((max(0.0, min(x1, width - 1)), max(0.0, min(x2, width - 1))))
-    y1, y2 = sorted((max(0.0, min(y1, height - 1)), max(0.0, min(y2, height - 1))))
-    if x2 <= x1:
-        x2 = min(width - 1, x1 + 1)
-    if y2 <= y1:
-        y2 = min(height - 1, y1 + 1)
-    return [x1, y1, x2, y2]
 
 
-def _bbox_from_payload(payload, image_state):
-    if not payload:
-        raise ValueError("Draw a bbox first")
-    data = json.loads(payload)
-    box = data.get("box_xyxy_px")
-    if not isinstance(box, list) or len(box) != 4:
-        raise ValueError("bbox payload is missing box_xyxy_px")
-    width = int(image_state.get("width") or data.get("image_width") or 0)
-    height = int(image_state.get("height") or data.get("image_height") or 0)
-    box = _norm_box(box, width, height)
-    if box[2] - box[0] < 2 or box[3] - box[1] < 2:
-        raise ValueError("bbox is too small")
-    return box
 
 
-def _xyxy_to_cxcywh_norm(box, width, height):
-    x1, y1, x2, y2 = _norm_box(box, width, height)
-    return [((x1 + x2) / 2) / width, ((y1 + y2) / 2) / height, max(1.0, x2 - x1) / width, max(1.0, y2 - y1) / height]
 
 
-def _polygon_from_payload(payload, image_state):
-    if not payload:
-        raise ValueError("Draw a positive polygon first")
-    data = json.loads(payload)
-    points = data.get("points")
-    if not isinstance(points, list) or len(points) < 3:
-        raise ValueError("polygon needs at least 3 points")
-    width = int(image_state.get("width") or data.get("image_width") or 0)
-    height = int(image_state.get("height") or data.get("image_height") or 0)
-    parsed = []
-    for point in points:
-        if isinstance(point, (list, tuple)) and len(point) == 2:
-            parsed.append([max(0.0, min(float(point[0]), width - 1)), max(0.0, min(float(point[1]), height - 1))])
-    if len(parsed) < 3:
-        raise ValueError("polygon needs at least 3 valid points")
-    return parsed
 
 
-def _point_from_payload(payload, image_state):
-    if not payload:
-        raise ValueError("Click a positive point first")
-    data = json.loads(payload)
-    point = data.get("point_xy_px")
-    if not isinstance(point, list) or len(point) != 2:
-        raise ValueError("point payload is missing point_xy_px")
-    width = int(image_state.get("width") or data.get("image_width") or 0)
-    height = int(image_state.get("height") or data.get("image_height") or 0)
-    return [max(0.0, min(float(point[0]), width - 1)), max(0.0, min(float(point[1]), height - 1))]
 
 
 def _prompt_mask_size():
@@ -1010,55 +554,12 @@ def _polygon_lowres_logits(polygon, width, height):
     return ((np.clip(lowres, 0.0, 1.0) * 2.0 - 1.0) * 10.0).astype(np.float32)
 
 
-def _combine_logits(active_logits, polygon_logits, mode="replace", alpha=0.35, max_logit=10.0):
-    polygon = np.asarray(polygon_logits, dtype=np.float32)
-    if polygon.ndim == 3:
-        polygon = polygon[0]
-    if active_logits is None:
-        return np.clip(polygon, -max_logit, max_logit).astype(np.float32)
-
-    active = np.asarray(active_logits, dtype=np.float32)
-    if active.ndim == 3:
-        active = active[0]
-
-    if mode == "replace":
-        out = polygon
-    elif mode == "blend":
-        out = alpha * active + (1.0 - alpha) * polygon
-    elif mode == "union":
-        out = np.maximum(active, polygon)
-    elif mode == "intersect":
-        out = np.minimum(active, polygon)
-    else:
-        raise ValueError(f"Unknown polygon combine mode: {mode}")
-    return np.clip(out, -max_logit, max_logit).astype(np.float32)
 
 
-def _polygon_action_key(value):
-    text = str(value or "")
-    if text == "create" or "create" in text.lower() or "\u521b\u5efa" in text:
-        return "create"
-    return "refine"
 
 
-def _polygon_combine_key(value):
-    text = str(value or "replace")
-    if text in {"replace", "blend", "union", "intersect"}:
-        return text
-    if "blend" in text.lower() or "\u878d\u5408" in text:
-        return "blend"
-    if "union" in text.lower() or "\u8865\u5145" in text:
-        return "union"
-    if "intersect" in text.lower() or "\u9650\u5236" in text:
-        return "intersect"
-    return "replace"
 
 
-def _mask_box(mask):
-    ys, xs = np.where(np.asarray(mask).astype(bool))
-    if len(xs) == 0 or len(ys) == 0:
-        return [0.0, 0.0, 1.0, 1.0]
-    return [float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)]
 
 def _predict_inst(base_state, box_xyxy_px=None, mask_input_lowres_logits=None, point_coords_px=None, point_labels=None):
     if image_predictor is None:
@@ -1097,101 +598,39 @@ def _predict_inst(base_state, box_xyxy_px=None, mask_input_lowres_logits=None, p
     }
 
 
-def _pvs_progress(progress, value, desc, delay=0.08):
-    if progress is None:
-        return
-    progress(float(value), desc=desc)
-    if delay:
-        time.sleep(delay)
 
 
-def _best(pred):
-    if len(pred["scores"]) == 0:
-        raise ValueError("predict_inst returned no masks")
-    return int(np.argmax(pred["scores"]))
 
 
-def _make_inst(inst_id, source, mask, box, score, pvs_logits=None, pcs_prob=None, history=None):
-    return {
-        "id": int(inst_id),
-        "source": source,
-        "mask_fullres_bool": np.asarray(mask).astype(bool),
-        "box_xyxy_px": [float(v) for v in box],
-        "score": float(score),
-        "pvs_lowres_logits": None if pvs_logits is None else np.asarray(pvs_logits, dtype=np.float32),
-        "pcs_fullres_prob": None if pcs_prob is None else np.asarray(pcs_prob, dtype=np.float16),
-        "status": "draft",
-        "prompt_history": history or [],
-    }
 
 
-def _snapshot(inst):
-    return {
-        "mask_fullres_bool": np.asarray(inst["mask_fullres_bool"]).copy(),
-        "pvs_lowres_logits": None if inst.get("pvs_lowres_logits") is None else np.asarray(inst["pvs_lowres_logits"]).copy(),
-        "box_xyxy_px": list(inst.get("box_xyxy_px") or []),
-        "score": float(inst.get("score", 0.0)),
-        "status": inst.get("status", "draft"),
-    }
 
 
-def _restore(inst, snap):
-    inst["mask_fullres_bool"] = np.asarray(snap["mask_fullres_bool"]).copy()
-    inst["pvs_lowres_logits"] = None if snap.get("pvs_lowres_logits") is None else np.asarray(snap["pvs_lowres_logits"]).copy()
-    inst["box_xyxy_px"] = list(snap.get("box_xyxy_px") or [])
-    inst["score"] = float(snap.get("score", 0.0))
-    inst["status"] = snap.get("status", inst.get("status", "draft"))
 
 
-_MAX_PROMPT_HISTORY_ENTRIES = 64
 
 
-def _history_snapshot(inst):
-    return {
-        "box_xyxy_px": list(inst.get("box_xyxy_px") or []),
-        "score": float(inst.get("score", 0.0)),
-        "status": inst.get("status", "draft"),
-    }
 
 
-def _append_prompt_history(inst, event):
-    history = inst.setdefault("prompt_history", [])
-    history.append(event)
-    if len(history) > _MAX_PROMPT_HISTORY_ENTRIES:
-        history[:] = [
-            history[0],
-            *history[-(_MAX_PROMPT_HISTORY_ENTRIES - 1) :],
-        ]
 
 
-def _active_instances(state):
-    return [inst for inst in state.get("instances", {}).values() if inst.get("status") != "deleted"]
 
 
-MODE_PCS = "PCS Auto"
-MODE_PVS = "PVS Manual"
-MODE_LAYOUT = "Layout Mask"
 
 
-def _is_pcs_mode(mode):
-    return str(mode or "") == MODE_PCS
 
 
-def _is_pvs_manual_mode(mode):
-    return str(mode or "") == MODE_PVS
 
 
-def _is_layout_mask_mode(mode):
-    return str(mode or "") == MODE_LAYOUT
 
 
-def _is_pvs_pool_mode(mode):
-    return _is_pvs_manual_mode(mode) or _is_layout_mask_mode(mode)
 
 
-def _layout_preview_alpha(state):
-    value = (state or {}).get("preview_alpha")
-    return float(0.35 if value is None else value)
+from sam3_demo.rendering import (
+    _layout_preview_alpha,
+    _result_placeholder,
+)
+
 
 
 def _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True, show_interaction_prompts=True, show_layout_overlay=False, layout_state=None):
@@ -1377,12 +816,6 @@ def _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None,
     )
 
 
-def _result_placeholder(image_state):
-    if not image_state or not image_state.get("image_id"):
-        return None
-    width = max(1, int(image_state.get("width") or 1))
-    height = max(1, int(image_state.get("height") or 1))
-    return Image.new("RGB", (width, height), (248, 250, 252))
 
 
 def _result_image(image_state, pcs_state, pvs_state, mode):
@@ -1392,8 +825,6 @@ def _result_image(image_state, pcs_state, pvs_state, mode):
         return _result_placeholder(image_state)
     return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True, show_interaction_prompts=False, show_layout_overlay=False)
 
-def _new_prompt_state():
-    return {"bbox_start": None, "last_bbox": None, "last_point": None, "polygon_points": [], "bbox_role": "positive"}
 
 
 def _event_point(evt, image_state):
