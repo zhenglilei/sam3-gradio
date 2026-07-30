@@ -157,6 +157,10 @@ from sam3_demo.model_runtime import (
     box_ops,
     image_predictor,
     initialize_models,
+    _PVS_PREDICT_LOCK,
+    _predict_inst,
+    _prompt_mask_size,
+    _polygon_lowres_logits,
 )
 
 from sam3_demo.segmentation_evaluation import (
@@ -234,7 +238,6 @@ def create_segmentation_export(
 import base64 as _sam3_base64
 import threading as _sam3_threading
 
-_PVS_PREDICT_LOCK = _sam3_threading.Lock()
 _FEEDBACK_WRITE_LOCK = _sam3_threading.Lock()
 _LAYOUT_CACHE = {}
 _LAYOUT_CACHE_LOCK = _sam3_threading.RLock()
@@ -344,23 +347,38 @@ def _is_pvs_pool_mode(mode):
 
 
 
+from sam3_demo.pcs_pvs_callbacks import (
+    _workspace_gesture_payload_impl,
+    _workspace_select_impl,
+    _workspace_gesture_input_impl,
+    _apply_polygon_to_pvs_impl,
+    _finish_native_polygon_impl,
+    _clear_prompt_selection_impl,
+    _delete_selected_pcs_bbox_impl,
+    _run_pcs_impl,
+    _create_pvs_from_pending_boxes_impl,
+    _delete_selected_pending_pvs_bbox_impl,
+    _clear_pending_pvs_boxes_impl,
+    _set_active_pvs_impl,
+    _refine_active_pvs_with_point_impl,
+    _pvs_point_prompt_impl,
+    _undo_pvs_impl,
+    _delete_pvs_impl,
+    _accept_pvs_impl,
+)
+
 def _workspace_gesture_payload(image_state, mode=None, click_tool=None, status=""):
-    state = image_state if isinstance(image_state, dict) else {}
-    enabled = bool(state.get("image_id"))
-    if _is_layout_mask_mode(mode):
-        interaction = "click"
-    else:
-        tool = "bbox" if _is_pcs_mode(mode) else _click_tool_key(click_tool)
-        interaction = tool if tool in {"bbox", "point", "polygon"} else "disabled"
-    return _image_gesture_payload(
-        enabled=enabled,
-        width=state.get("width"),
-        height=state.get("height"),
-        image_id=state.get("image_id"),
-        image_sha256=state.get("target_image_sha256"),
-        revision=state.get("interaction_revision"),
-        interaction=interaction if enabled else "disabled",
-        status=status,
+    return _workspace_gesture_payload_impl(
+        {
+            '_click_tool_key': _click_tool_key,
+            '_image_gesture_payload': _image_gesture_payload,
+            '_is_layout_mask_mode': _is_layout_mask_mode,
+            '_is_pcs_mode': _is_pcs_mode,
+        },
+        image_state,
+        mode,
+        click_tool,
+        status,
     )
 
 
@@ -543,15 +561,6 @@ def _clear_layout_cache(layout_state=None):
 
 
 
-def _prompt_mask_size():
-    return tuple(int(v) for v in image_predictor.model.inst_interactive_predictor.model.sam_prompt_encoder.mask_input_size)
-
-
-def _polygon_lowres_logits(polygon, width, height):
-    target_h, target_w = _prompt_mask_size()
-    mask = polygon_to_mask(polygon, height, width).astype(np.float32)
-    lowres = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-    return ((np.clip(lowres, 0.0, 1.0) * 2.0 - 1.0) * 10.0).astype(np.float32)
 
 
 
@@ -561,41 +570,8 @@ def _polygon_lowres_logits(polygon, width, height):
 
 
 
-def _predict_inst(base_state, box_xyxy_px=None, mask_input_lowres_logits=None, point_coords_px=None, point_labels=None):
-    if image_predictor is None:
-        raise RuntimeError("Image predictor is not initialized")
-    kwargs = {"multimask_output": True, "return_logits": True}
-    if box_xyxy_px is not None:
-        kwargs["box"] = np.asarray(box_xyxy_px, dtype=np.float32)
-    if point_coords_px is not None:
-        coords = np.asarray(point_coords_px, dtype=np.float32)
-        if coords.ndim == 1:
-            coords = coords[None, :]
-        if coords.ndim != 2 or coords.shape[-1] != 2:
-            raise ValueError("point_coords_px must have shape Nx2")
-        labels = np.ones((coords.shape[0],), dtype=np.int64) if point_labels is None else np.asarray(point_labels, dtype=np.int64).reshape(-1)
-        if labels.shape[0] != coords.shape[0]:
-            raise ValueError("point_labels length must match point_coords_px")
-        kwargs["point_coords"] = coords
-        kwargs["point_labels"] = labels
-    if mask_input_lowres_logits is not None:
-        mask_input = np.asarray(mask_input_lowres_logits, dtype=np.float32)
-        if mask_input.ndim == 2:
-            mask_input = mask_input[None, :, :]
-        expected = _prompt_mask_size()
-        if mask_input.ndim != 3 or tuple(mask_input.shape[-2:]) != expected:
-            raise ValueError(f"mask_input_lowres_logits must be 1x{expected[0]}x{expected[1]}")
-        kwargs["mask_input"] = mask_input
-    with _PVS_PREDICT_LOCK:
-        masks, scores, lowres_logits = image_predictor.model.predict_inst(base_state, **kwargs)
-    masks = np.asarray(masks)
-    if masks.ndim == 2:
-        masks = masks[None, ...]
-    return {
-        "masks": masks > 0,
-        "scores": np.asarray(scores, dtype=np.float32).reshape(-1),
-        "lowres_logits": np.asarray(lowres_logits, dtype=np.float32),
-    }
+
+
 
 
 
@@ -800,30 +776,47 @@ def _instances_for_mode(pcs_state, pvs_state, mode):
     return _active_instances(pcs_state if _is_pcs_mode(mode) else pvs_state)
 
 
+from sam3_demo.rendering import (
+    _workspace_image_impl,
+    _result_image_impl,
+    _pcs_choice_update_impl,
+    _status_label_impl,
+    _pvs_choice_update_impl,
+    _pvs_pending_count_text_impl,
+    _pcs_summary_impl,
+    _pvs_summary_impl,
+    _analysis_report_impl,
+    _view_impl,
+)
+
 def _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state=None, layout_state=None):
-    if not image_state or not image_state.get("image_id"):
-        return None
-    return _overlay(
+    return _workspace_image_impl(
+        {
+            '_overlay': _overlay,
+        },
         image_state,
         pcs_state,
         pvs_state,
         mode,
         prompt_state,
-        show_instances=False,
-        show_interaction_prompts=True,
-        show_layout_overlay=bool(layout_state and layout_state.get("enabled")),
-        layout_state=layout_state,
+        layout_state,
     )
 
 
 
 
 def _result_image(image_state, pcs_state, pvs_state, mode):
-    if not image_state or not image_state.get("image_id"):
-        return None
-    if not _instances_for_mode(pcs_state, pvs_state, mode):
-        return _result_placeholder(image_state)
-    return _overlay(image_state, pcs_state, pvs_state, mode, prompt_state=None, show_instances=True, show_interaction_prompts=False, show_layout_overlay=False)
+    return _result_image_impl(
+        {
+            '_instances_for_mode': _instances_for_mode,
+            '_overlay': _overlay,
+            '_result_placeholder': _result_placeholder,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+    )
 
 
 
@@ -954,56 +947,30 @@ def _click_tool_key(click_tool):
 
 
 def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state, evt: gr.SelectData):
-    prompt_state = prompt_state or _new_prompt_state()
-    bbox_payload = gr.update()
-    point_payload = gr.update()
-    polygon_payload = gr.update()
-    try:
-        point = _event_point(evt, image_state)
-        w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
-        tool = _click_tool_key(click_tool)
-        if _is_layout_mask_mode(mode):
-            prompt_state["last_point"] = point
-            point_payload = _payload_json({"type": "point", "point_xy_px": point, "image_width": w, "image_height": h})
-            info = f"已记录待应用版图修缮点: {[round(v, 1) for v in point]}。请选择点类型并点击“应用点提示”。"
-            return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
-        if _is_pcs_mode(mode) and tool != "bbox":
-            tool = "bbox"
-        if tool == "point":
-            prompt_state["last_point"] = point
-            point_payload = _payload_json({"type": "positive_point", "point_xy_px": point, "image_width": w, "image_height": h})
-            info = f"\u5df2\u6dfb\u52a0\u6b63\u5411\u70b9: {[round(v, 1) for v in point]}"
-        elif tool == "bbox":
-            bbox_role = "negative" if _is_pcs_mode(mode) and str(pcs_bbox_kind or "").startswith("Negative") else "positive"
-            prompt_state["bbox_role"] = bbox_role
-            if prompt_state.get("bbox_start") is None:
-                prompt_state["bbox_start"] = point
-                prompt_state["last_bbox"] = None
-                info = f"\u5df2\u8bb0\u5f55 bbox \u8d77\u70b9: {[round(v, 1) for v in point]}\u3002\u8bf7\u70b9\u51fb\u5bf9\u89d2\u70b9\u5b8c\u6210\u6846\u9009\u3002"
-            else:
-                start = prompt_state.get("bbox_start")
-                box = _norm_box([start[0], start[1], point[0], point[1]], w, h)
-                prompt_state["bbox_start"] = None
-                prompt_state["last_bbox"] = box
-                bbox_payload = _payload_json({"type": "bbox", "box_xyxy_px": box, "image_width": w, "image_height": h})
-                if _is_pcs_mode(mode):
-                    key = _append_pcs_bbox_sample(pcs_state, box, bbox_role)
-                    prompt_state["last_bbox"] = None
-                    label = "\u8d1f\u6837\u672c" if key == "negative_boxes" else "\u6b63\u6837\u672c"
-                    info = f"\u5df2\u81ea\u52a8\u6dfb\u52a0 PCS {label} bbox: {[round(v, 1) for v in box]}"
-                else:
-                    bbox_id = _append_pvs_pending_bbox(pvs_state, box)
-                    prompt_state["last_bbox"] = None
-                    info = f"\u5df2\u52a0\u5165 PVS \u5f85\u751f\u6210 bbox ID {bbox_id}: {[round(v, 1) for v in box]}\u3002\u7ee7\u7eed\u6846\u9009\u6216\u70b9\u51fb\u201c\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b\u201d\u3002"
-        elif tool == "polygon":
-            points = prompt_state.setdefault("polygon_points", [])
-            points.append(point)
-            info = f"\u591a\u8fb9\u5f62\u5df2\u6dfb\u52a0\u7b2c {len(points)} \u4e2a\u9876\u70b9\u3002\u5b8c\u6210\u540e\u70b9\u51fb\u201c\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61\u201d\u3002"
-        else:
-            info = f"\u672a\u77e5\u4ea4\u4e92\u5de5\u5177: {click_tool}"
-    except Exception as exc:
-        info = f"\u56fe\u50cf\u70b9\u51fb\u5931\u8d25: {exc}"
-    return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+    return _workspace_select_impl(
+        {
+            '_append_pcs_bbox_sample': _append_pcs_bbox_sample,
+            '_append_pvs_pending_bbox': _append_pvs_pending_bbox,
+            '_click_tool_key': _click_tool_key,
+            '_event_point': _event_point,
+            '_is_layout_mask_mode': _is_layout_mask_mode,
+            '_is_pcs_mode': _is_pcs_mode,
+            '_new_prompt_state': _new_prompt_state,
+            '_norm_box': _norm_box,
+            '_payload_json': _payload_json,
+            '_pcs_bbox_choices': _pcs_bbox_choices,
+            '_pvs_pending_bbox_choices': _pvs_pending_bbox_choices,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        click_tool,
+        pcs_bbox_kind,
+        prompt_state,
+        evt,
+    )
 
 
 class _GestureSelectEvent:
@@ -1021,177 +988,98 @@ def _workspace_gesture_input(
     prompt_state,
     gesture_payload,
 ):
-    prompt_state = prompt_state or _new_prompt_state()
-    try:
-        gesture, start, end = _validate_gesture_intent(
-            gesture_payload,
-            image_state or {},
-            allowed_gestures={"click", "drag"},
-        )
-        tool = "bbox" if _is_pcs_mode(mode) else _click_tool_key(click_tool)
-        if _is_layout_mask_mode(mode):
-            tool = "layout"
-        if gesture == "click":
-            if tool == "bbox":
-                raise ValueError("BBox 已改为拖拽操作，请按住左键拖出矩形")
-            result = _workspace_select(
-                image_state,
-                pcs_state,
-                pvs_state,
-                mode,
-                click_tool,
-                pcs_bbox_kind,
-                prompt_state,
-                _GestureSelectEvent(start),
-            )
-            return (*result, _workspace_gesture_payload(image_state, mode, click_tool))
-        if tool != "bbox" or _is_layout_mask_mode(mode):
-            raise ValueError("当前工具不接受拖拽，请使用单击")
-        width = int(image_state.get("width") or 0)
-        height = int(image_state.get("height") or 0)
-        box = _norm_box([start[0], start[1], end[0], end[1]], width, height)
-        if box[2] - box[0] < 4 or box[3] - box[1] < 4:
-            raise ValueError("bbox 太小")
-        prompt_state = dict(prompt_state)
-        prompt_state["bbox_start"] = None
-        prompt_state["last_bbox"] = None
-        bbox_role = "negative" if _is_pcs_mode(mode) and str(pcs_bbox_kind or "").startswith("Negative") else "positive"
-        prompt_state["bbox_role"] = bbox_role
-        bbox_payload = _payload_json(
-            {
-                "type": "bbox",
-                "box_xyxy_px": box,
-                "image_width": width,
-                "image_height": height,
-            }
-        )
-        if _is_pcs_mode(mode):
-            key = _append_pcs_bbox_sample(pcs_state, box, bbox_role)
-            label = "负样本" if key == "negative_boxes" else "正样本"
-            info = f"已拖拽添加 PCS {label} bbox: {[round(v, 1) for v in box]}"
-        else:
-            bbox_id = _append_pvs_pending_bbox(pvs_state, box)
-            info = f"已拖拽加入 PVS 待生成 bbox ID {bbox_id}: {[round(v, 1) for v in box]}"
-        result = (
-            prompt_state,
-            bbox_payload,
-            gr.update(),
-            gr.update(),
-            pcs_state,
-            pvs_state,
-            _pcs_bbox_choices(pcs_state),
-            _pvs_pending_bbox_choices(pvs_state),
-            *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state),
-        )
-    except Exception as exc:
-        info = f"图像交互失败: {exc}"
-        result = (
-            prompt_state,
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            pcs_state,
-            pvs_state,
-            _pcs_bbox_choices(pcs_state),
-            _pvs_pending_bbox_choices(pvs_state),
-            *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state),
-        )
-    return (*result, _workspace_gesture_payload(image_state, mode, click_tool))
+    return _workspace_gesture_input_impl(
+        {
+            '_GestureSelectEvent': _GestureSelectEvent,
+            '_append_pcs_bbox_sample': _append_pcs_bbox_sample,
+            '_append_pvs_pending_bbox': _append_pvs_pending_bbox,
+            '_click_tool_key': _click_tool_key,
+            '_is_layout_mask_mode': _is_layout_mask_mode,
+            '_is_pcs_mode': _is_pcs_mode,
+            '_new_prompt_state': _new_prompt_state,
+            '_norm_box': _norm_box,
+            '_payload_json': _payload_json,
+            '_pcs_bbox_choices': _pcs_bbox_choices,
+            '_pvs_pending_bbox_choices': _pvs_pending_bbox_choices,
+            '_validate_gesture_intent': _validate_gesture_intent,
+            '_view': _view,
+            '_workspace_gesture_payload': _workspace_gesture_payload,
+            '_workspace_select': _workspace_select,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        click_tool,
+        pcs_bbox_kind,
+        prompt_state,
+        gesture_payload,
+    )
 
 
 def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refine", combine_mode="replace", progress=None):
-    action = _polygon_action_key(polygon_action)
-    combine = _polygon_combine_key(combine_mode)
-    ws = _workspace(image_state)
-    w, h = ws["image"].size
-    _pvs_progress(progress, 0.18, "转换 polygon 为 PVS mask prompt")
-    polygon_logits = _polygon_lowres_logits(polygon, w, h)
-
-    if action == "create":
-        _pvs_progress(progress, 0.42, "SAM3 正在根据 polygon 创建实例", delay=0.12)
-        pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=polygon_logits)
-        _pvs_progress(progress, 0.82, "整理 polygon 候选 mask")
-        idx = _best(pred)
-        mask = pred["masks"][idx]
-        inst_id = int(pvs_state.get("next_instance_id", 1))
-        pvs_state.setdefault("instances", {})[inst_id] = _make_inst(
-            inst_id,
-            "manual_pvs_polygon",
-            mask,
-            _mask_box(mask),
-            pred["scores"][idx],
-            pvs_logits=pred["lowres_logits"][idx],
-            history=[{"op":"create_from_polygon","prompt":{"type":"positive_polygon","points":polygon},"candidate_scores":pred["scores"].astype(float).tolist()}],
-        )
-        pvs_state["active_instance_id"] = inst_id
-        pvs_state["next_instance_id"] = inst_id + 1
-        return f"\u5df2\u7528 polygon mask prompt \u521b\u5efa PVS #{inst_id}"
-
-    active_id = pvs_state.get("active_instance_id")
-    if active_id is None or int(active_id) not in pvs_state.get("instances", {}):
-        raise ValueError("\u8bf7\u5148\u521b\u5efa\u6216\u9009\u62e9\u4e00\u4e2a PVS \u5b9e\u4f8b\uff0c\u6216\u5c06 polygon \u52a8\u4f5c\u6539\u4e3a\u201c\u521b\u5efa\u65b0\u5b9e\u4f8b\u201d")
-    inst = pvs_state["instances"][int(active_id)]
-    _pvs_progress(progress, 0.34, f"融合当前实例 logits: {combine}")
-    combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode=combine)
-    before = _history_snapshot(inst)
-    _pvs_progress(progress, 0.52, "SAM3 正在精修当前 PVS 实例", delay=0.12)
-    pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
-    _pvs_progress(progress, 0.84, "更新实例 mask 与 logits")
-    idx = _best(pred)
-    mask = pred["masks"][idx]
-    inst["mask_fullres_bool"] = mask
-    inst["box_xyxy_px"] = _mask_box(mask)
-    inst["score"] = float(pred["scores"][idx])
-    inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
-    after = _history_snapshot(inst)
-    _append_prompt_history(inst, {"op":"positive_polygon_refine","mode":combine,"prompt":{"type":"positive_polygon","points":polygon},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
-    return f"\u5df2\u7528\u591a\u8fb9\u5f62\u7cbe\u4fee PVS #{active_id}\uff0c\u878d\u5408\u65b9\u5f0f: {combine}"
+    return _apply_polygon_to_pvs_impl(
+        {
+            '_append_prompt_history': _append_prompt_history,
+            '_best': _best,
+            '_combine_logits': _combine_logits,
+            '_fresh_state': _fresh_state,
+            '_history_snapshot': _history_snapshot,
+            '_make_inst': _make_inst,
+            '_mask_box': _mask_box,
+            '_polygon_action_key': _polygon_action_key,
+            '_polygon_combine_key': _polygon_combine_key,
+            '_polygon_lowres_logits': _polygon_lowres_logits,
+            '_predict_inst': _predict_inst,
+            '_pvs_progress': _pvs_progress,
+            '_workspace': _workspace,
+        },
+        image_state,
+        pvs_state,
+        polygon,
+        polygon_action,
+        combine_mode,
+        progress,
+    )
 
 
 def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action="create", polygon_combine_mode="replace", progress=gr.Progress(track_tqdm=False)):
-    prompt_state = prompt_state or _new_prompt_state()
-    points = prompt_state.get("polygon_points") or []
-    polygon_payload = gr.update()
-    _pvs_progress(progress, 0.03, "准备 PVS 多边形操作")
-    if len(points) < 3:
-        info = "\u591a\u8fb9\u5f62\u81f3\u5c11\u9700\u8981 3 \u4e2a\u9876\u70b9"
-        return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
-
-    w, h = int(image_state.get("width") or 0), int(image_state.get("height") or 0)
-    polygon_payload = _payload_json({"type": "positive_polygon", "points": points, "image_width": w, "image_height": h})
-
-    if not _is_pvs_manual_mode(mode):
-        info = "多边形已完成。当前模式不使用 polygon prompt。"
-        return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
-
-    try:
-        info = _apply_polygon_to_pvs(image_state, pvs_state, points, polygon_action, polygon_combine_mode, progress)
-        prompt_state["polygon_points"] = []
-        _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
-    except Exception as exc:
-        info = f"PVS \u591a\u8fb9\u5f62\u5904\u7406\u5931\u8d25: {exc}"
-    return prompt_state, polygon_payload, pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+    return _finish_native_polygon_impl(
+        {
+            '_apply_polygon_to_pvs': _apply_polygon_to_pvs,
+            '_is_pvs_manual_mode': _is_pvs_manual_mode,
+            '_new_prompt_state': _new_prompt_state,
+            '_payload_json': _payload_json,
+            '_pvs_progress': _pvs_progress,
+            '_view': _view,
+        },
+        image_state,
+        prompt_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        polygon_action,
+        polygon_combine_mode,
+        progress,
+    )
 
 
 def _clear_prompt_selection(image_state, pcs_state, pvs_state, mode):
-    prompt_state = _new_prompt_state()
-    if _is_pcs_mode(mode):
-        pcs_state["text_prompt"] = ""
-        pcs_state["positive_boxes"] = []
-        pcs_state["negative_boxes"] = []
-        pcs_state["bbox_history"] = []
-        pcs_state["bbox_records"] = []
-        pcs_state["next_bbox_id"] = 1
-        text_prompt_update = ""
-        info = "PCS prompt 已清空；已有 PCS 分割结果不会被删除"
-    elif _is_pvs_manual_mode(mode):
-        cleared = _clear_pvs_pending_bboxes(pvs_state)
-        text_prompt_update = gr.update()
-        info = f"临时提示已清空，包括 {cleared} 个待生成 PVS bbox；已生成实例不会被删除"
-    else:
-        text_prompt_update = gr.update()
-        info = "版图 mask 提示分割的临时点击提示已清空；已生成实例和待生成 bbox 不会被删除"
-    return prompt_state, "", "", "", pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), text_prompt_update, *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
+    return _clear_prompt_selection_impl(
+        {
+            '_clear_pvs_pending_bboxes': _clear_pvs_pending_bboxes,
+            '_is_pcs_mode': _is_pcs_mode,
+            '_is_pvs_manual_mode': _is_pvs_manual_mode,
+            '_new_prompt_state': _new_prompt_state,
+            '_pcs_bbox_choices': _pcs_bbox_choices,
+            '_pvs_pending_bbox_choices': _pvs_pending_bbox_choices,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+    )
 
 
 def _clear_pending_point_payload():
@@ -1203,300 +1091,251 @@ def _clear_bbox_polygon_payloads():
 
 
 def _pcs_choice_update(pcs_state):
-    choices = [(f"PCS #{i['id']} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pcs_state)]
-    return gr.update(choices=choices, value=choices[0][1] if choices else None)
+    return _pcs_choice_update_impl(
+        {
+            '_active_instances': _active_instances,
+        },
+        pcs_state,
+    )
 
 
 def _status_label(status):
-    return {"draft": "草稿", "accepted": "已确认", "deleted": "已删除"}.get(str(status or "draft"), str(status or "草稿"))
+    return _status_label_impl(
+        {
+        },
+        status,
+    )
 
 
 def _pvs_choice_update(pvs_state):
-    choices = [(f"PVS #{i['id']} {_status_label(i.get('status'))}", str(i["id"])) for i in _active_instances(pvs_state)]
-    active = pvs_state.get("active_instance_id")
-    value = str(active) if active is not None and any(c[1] == str(active) for c in choices) else None
-    return gr.update(choices=choices, value=value)
+    return _pvs_choice_update_impl(
+        {
+            '_active_instances': _active_instances,
+            '_status_label': _status_label,
+        },
+        pvs_state,
+    )
 
 
 def _pvs_pending_count_text(pvs_state):
-    _sync_pvs_pending_boxes_from_records(pvs_state)
-    return f"\u5f85\u751f\u6210 bbox \u6570\u91cf: {len(pvs_state.get('pending_boxes', []))}"
+    return _pvs_pending_count_text_impl(
+        {
+            '_sync_pvs_pending_boxes_from_records': _sync_pvs_pending_boxes_from_records,
+        },
+        pvs_state,
+    )
 
 
 def _pcs_summary(pcs_state):
-    _sync_pcs_boxes_from_records(pcs_state)
-    lines = [f"正样本 bbox: {len(pcs_state.get('positive_boxes', []))}", f"负样本 bbox: {len(pcs_state.get('negative_boxes', []))}"]
-    for rec in _pcs_bbox_records(pcs_state)[:40]:
-        role = "负样本" if rec.get("key") == "negative_boxes" else "正样本"
-        lines.append(f"ID {rec.get('id')} {role}: {[round(float(v), 1) for v in rec.get('box', [])]}")
-    items = _active_instances(pcs_state)
-    lines.append(f"PCS 实例: {len(items)}")
-    for inst in items[:80]:
-        lines.append(f"#{inst['id']} score={inst['score']:.3f} box={[round(v,1) for v in inst['box_xyxy_px']]}")
-    return "\n".join(lines)
+    return _pcs_summary_impl(
+        {
+            '_active_instances': _active_instances,
+            '_pcs_bbox_records': _pcs_bbox_records,
+            '_sync_pcs_boxes_from_records': _sync_pcs_boxes_from_records,
+        },
+        pcs_state,
+    )
 
 
 def _pvs_summary(pvs_state):
-    items = _active_instances(pvs_state)
-    active = pvs_state.get("active_instance_id")
-    pending = pvs_state.get("pending_boxes", [])
-    lines = [
-        f"PVS 实例: {len(items)}",
-        f"待生成 bbox: {len(pending)}",
-        f"当前实例: {active or '-'}",
-        "说明: 草稿=draft，表示还未点击确认；score 是 SAM3 返回的候选 mask 质量/置信估计，不等同于人工质检分数。",
-    ]
-    for idx, box in enumerate(pending[:20], start=1):
-        lines.append(f"pending#{idx} box={[round(v,1) for v in box]}")
-    for inst in items[:80]:
-        mark = "*" if str(inst["id"]) == str(active) else " "
-        lines.append(f"{mark}#{inst['id']} {inst['source']} {_status_label(inst.get('status'))} score={inst['score']:.3f}")
-    return "\n".join(lines)
+    return _pvs_summary_impl(
+        {
+            '_active_instances': _active_instances,
+            '_status_label': _status_label,
+        },
+        pvs_state,
+    )
 
 def _analysis_report(pcs_state, pvs_state, mode, info):
-    sections = [str(info or "")]
-    if _is_pcs_mode(mode):
-        sections.extend(["", "PCS Auto 自动概念分割", _pcs_summary(pcs_state)])
-    elif _is_layout_mask_mode(mode):
-        sections.extend(["", "版图 mask 提示分割", _pvs_summary(pvs_state)])
-    else:
-        sections.extend(["", "PVS Manual 手动实例分割", _pvs_summary(pvs_state)])
-    return "\n".join(part for part in sections if part is not None)
-def _view(image_state, pcs_state, pvs_state, mode, info, prompt_state=None, layout_state=None):
-    return (
-        _workspace_image(image_state, pcs_state, pvs_state, mode, prompt_state, layout_state),
-        _result_image(image_state, pcs_state, pvs_state, mode),
-        _analysis_report(pcs_state, pvs_state, mode, info),
-        _pcs_summary(pcs_state),
-        _pvs_summary(pvs_state),
-        _pvs_choice_update(pvs_state),
+    return _analysis_report_impl(
+        {
+            '_is_layout_mask_mode': _is_layout_mask_mode,
+            '_is_pcs_mode': _is_pcs_mode,
+            '_pcs_summary': _pcs_summary,
+            '_pvs_summary': _pvs_summary,
+        },
+        pcs_state,
+        pvs_state,
+        mode,
         info,
-        _pvs_pending_count_text(pvs_state),
+    )
+def _view(image_state, pcs_state, pvs_state, mode, info, prompt_state=None, layout_state=None):
+    return _view_impl(
+        {
+            '_analysis_report': _analysis_report,
+            '_pcs_summary': _pcs_summary,
+            '_pvs_choice_update': _pvs_choice_update,
+            '_pvs_pending_count_text': _pvs_pending_count_text,
+            '_pvs_summary': _pvs_summary,
+            '_result_image': _result_image,
+            '_workspace_image': _workspace_image,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        info,
+        prompt_state,
+        layout_state,
     )
 
 
+from sam3_demo.image_prepost_callbacks import (
+    _init_workspace_impl,
+    _init_workspace_with_layout_editor_impl,
+    _attach_source_provenance_impl,
+    _source_upload_workspace_impl,
+    _record_source_crop_gesture_impl,
+    _crop_failure_outputs_impl,
+    _apply_source_crop_impl,
+    _use_full_source_image_impl,
+    _clear_template_match_outputs_impl,
+    _publish_template_match_export_impl,
+    _run_template_matching_impl,
+)
+
 def _init_workspace(input_image, mode, session_state=None):
-    pcs_state, pvs_state = _new_pcs_state(), _new_pvs_state()
-    prompt_state = _new_prompt_state()
-    session_id = _session_id_from_state(session_state)
-    image_state = {"image_id": None, "width": 0, "height": 0, "session_id": session_id, "target_image_sha256": None, "interaction_revision": 0}
-    if input_image is None:
-        _clear_workspace_cache(session_id)
-        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
-    if image_predictor is None:
-        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
-    image = _pil_image(input_image)
-    image_id = uuid.uuid4().hex
-    target_hash = _layout_tx.image_pixel_sha256(image)
-    try:
-        base_state = image_predictor.set_image(image)
-    except torch.OutOfMemoryError:
-        info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5f53\u524d\u5de5\u4f5c\u533a\u4fdd\u6301\u4e0d\u53d8\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
-        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
-    _clear_workspace_cache(session_id)
-    now = time.monotonic()
-    with _WORKSPACE_CACHE_LOCK:
-        _WORKSPACE_CACHE[image_id] = {
-            "image": image,
-            "base_state": base_state,
-            "session_id": session_id,
-            "target_image_sha256": target_hash,
-            "created_at": now,
-            "last_accessed_at": now,
-        }
-        removed = _prune_workspace_cache(now, protected_image_id=image_id)
-    if removed:
-        _release_workspace_memory()
-    image_state = {"image_id": image_id, "width": image.width, "height": image.height, "session_id": session_id, "target_image_sha256": target_hash, "interaction_revision": 1}
-    return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
+    return _init_workspace_impl(
+        {
+            '_WORKSPACE_CACHE': _WORKSPACE_CACHE,
+            '_WORKSPACE_CACHE_LOCK': _WORKSPACE_CACHE_LOCK,
+            '_clear_workspace_cache': _clear_workspace_cache,
+            '_new_pcs_state': _new_pcs_state,
+            '_new_prompt_state': _new_prompt_state,
+            '_new_pvs_state': _new_pvs_state,
+            '_pcs_bbox_choices': _pcs_bbox_choices,
+            '_pil_image': _pil_image,
+            '_prune_workspace_cache': _prune_workspace_cache,
+            '_pvs_pending_bbox_choices': _pvs_pending_bbox_choices,
+            '_release_workspace_memory': _release_workspace_memory,
+            '_session_id_from_state': _session_id_from_state,
+            '_view': _view,
+            'image_predictor': image_predictor,
+        },
+        input_image,
+        mode,
+        session_state,
+    )
 
 
 def _init_workspace_with_layout_editor(input_image, mode, session_state=None, layout_state=None):
-    _advance_layout_prompt_epoch(
-        layout_state=layout_state,
-        session_state=session_state,
+    return _init_workspace_with_layout_editor_impl(
+        {
+            '_advance_layout_prompt_epoch': _advance_layout_prompt_epoch,
+            '_init_workspace': _init_workspace,
+            '_layout_editor_empty': _layout_editor_empty,
+            '_layout_editor_payload': _layout_editor_payload,
+        },
+        input_image,
+        mode,
+        session_state,
+        layout_state,
     )
-    result = _init_workspace(input_image, mode, session_state)
-    image_state = result[0]
-    if isinstance(layout_state, dict) and layout_state.get("layout_id"):
-        editor = _layout_editor_payload(image_state, layout_state, "目标图像已更新，版图编辑器 payload 已刷新。")
-    else:
-        editor = _layout_editor_empty(image_state, "Image loaded; load or generate a layout mask next.")
-    return (*result, editor)
 
 
 def _attach_source_provenance(init_result, source_state):
-    result = list(init_result)
-    image_state = dict(result[0] or {})
-    if not image_state.get("image_id"):
-        detail = str(result[12] or "") if len(result) > 12 else ""
-        raise RuntimeError(detail or "SAM3 工作区初始化失败")
-    if image_state.get("image_id") and source_state.get("source_image_id"):
-        provenance = {
-            "source_image_id": str(source_state["source_image_id"]),
-            "source_image_sha256": str(source_state["source_image_sha256"]),
-            "source_width": int(source_state["source_width"]),
-            "source_height": int(source_state["source_height"]),
-            "source_revision": int(source_state["source_revision"]),
-            "crop_bbox_xyxy": list(source_state["crop_bbox_xyxy"]),
-        }
-        source_state["workspace_image_id"] = str(image_state["image_id"])
-        source_state["workspace_hash"] = str(image_state.get("target_image_sha256") or "")
-        image_state.update(provenance)
-        with _WORKSPACE_CACHE_LOCK:
-            workspace = _WORKSPACE_CACHE.get(str(image_state["image_id"]))
-            if workspace is not None:
-                workspace.update(provenance)
-    result[0] = image_state
-    return tuple(result)
+    return _attach_source_provenance_impl(
+        {
+            '_WORKSPACE_CACHE': _WORKSPACE_CACHE,
+            '_WORKSPACE_CACHE_LOCK': _WORKSPACE_CACHE_LOCK,
+        },
+        init_result,
+        source_state,
+    )
 
 
 def _source_upload_workspace(input_image, mode, session_state=None, layout_state=None):
-    session_id = _session_id_from_state(session_state)
-    _clear_source_image_cache(session_id)
-    if input_image is None:
-        source_state = _new_source_image_state(session_id)
-        init_result = _init_workspace_with_layout_editor(None, mode, session_state, layout_state)
-        return (
-            source_state,
-            _source_gesture_payload(source_state),
-            "请先上传完整原图",
-            *init_result,
-        )
-    try:
-        source_state = _source_image_cache_put(session_id, input_image)
-        source = _source_image_cache_get(source_state)
-        init_result = _init_workspace_with_layout_editor(source, mode, session_state, layout_state)
-        init_result = _attach_source_provenance(init_result, source_state)
-        status = f"已载入完整原图 {source.width}x{source.height}；当前使用整图"
-        return source_state, _source_gesture_payload(source_state, status), status, *init_result
-    except Exception as exc:
-        source_state = _new_source_image_state(session_id)
-        init_result = _init_workspace_with_layout_editor(None, mode, session_state, layout_state)
-        status = f"完整原图加载失败: {exc}"
-        return source_state, _source_gesture_payload(source_state, status), status, *init_result
+    return _source_upload_workspace_impl(
+        {
+            '_attach_source_provenance': _attach_source_provenance,
+            '_clear_source_image_cache': _clear_source_image_cache,
+            '_init_workspace_with_layout_editor': _init_workspace_with_layout_editor,
+            '_new_source_image_state': _new_source_image_state,
+            '_session_id_from_state': _session_id_from_state,
+            '_source_gesture_payload': _source_gesture_payload,
+            '_source_image_cache_get': _source_image_cache_get,
+            '_source_image_cache_put': _source_image_cache_put,
+        },
+        input_image,
+        mode,
+        session_state,
+        layout_state,
+    )
 
 
 def _record_source_crop_gesture(source_state, gesture_payload):
-    state = dict(source_state or {})
-    try:
-        gesture, start, end = _validate_gesture_intent(
-            gesture_payload,
-            state,
-            allowed_gestures={"drag"},
-        )
-        if gesture != "drag":
-            raise ValueError("请拖拽矩形选择裁剪区域")
-        box = _image_crop.normalize_crop_box(
-            start,
-            end,
-            int(state.get("source_width") or 0),
-            int(state.get("source_height") or 0),
-        )
-        state["pending_crop_bbox_xyxy"] = list(box)
-        status = f"待应用裁剪区域: {list(box)}"
-    except Exception as exc:
-        state["pending_crop_bbox_xyxy"] = None
-        status = f"裁剪框无效: {exc}"
-    return (
-        state,
-        _source_gesture_payload(state, status, retain_selection=state.get("pending_crop_bbox_xyxy") is not None),
-        status,
+    return _record_source_crop_gesture_impl(
+        {
+            '_source_gesture_payload': _source_gesture_payload,
+            '_validate_gesture_intent': _validate_gesture_intent,
+        },
+        source_state,
+        gesture_payload,
     )
 
 
 def _crop_failure_outputs(source_state, status):
-    return (
+    return _crop_failure_outputs_impl(
+        {
+            '_source_gesture_payload': _source_gesture_payload,
+        },
         source_state,
-        _source_gesture_payload(source_state, status),
         status,
-        *([gr.update()] * 16),
     )
 
 
 def _apply_source_crop(source_state, mode, session_state=None, layout_state=None):
-    state = dict(source_state or {})
-    try:
-        source = _source_image_cache_get(state)
-        box = state.get("pending_crop_bbox_xyxy")
-        if not isinstance(box, (list, tuple)) or len(box) != 4:
-            raise ValueError("请先在完整原图上拖拽矩形裁剪框")
-        box = _image_crop.normalize_crop_box(
-            box[:2],
-            box[2:],
-            source.width,
-            source.height,
-        )
-        cropped = _image_crop.crop_pil_image(source, box)
-        next_state = dict(state)
-        next_state["crop_bbox_xyxy"] = list(box)
-        next_state["pending_crop_bbox_xyxy"] = None
-        init_result = _init_workspace_with_layout_editor(cropped, mode, session_state, layout_state)
-        init_result = _attach_source_provenance(init_result, next_state)
-        status = f"已应用裁剪 {list(box)}；工作图尺寸 {cropped.width}x{cropped.height}"
-        return next_state, _source_gesture_payload(next_state, status), status, *init_result
-    except Exception as exc:
-        return _crop_failure_outputs(state, f"应用裁剪失败: {exc}")
+    return _apply_source_crop_impl(
+        {
+            '_attach_source_provenance': _attach_source_provenance,
+            '_crop_failure_outputs': _crop_failure_outputs,
+            '_init_workspace_with_layout_editor': _init_workspace_with_layout_editor,
+            '_source_gesture_payload': _source_gesture_payload,
+            '_source_image_cache_get': _source_image_cache_get,
+        },
+        source_state,
+        mode,
+        session_state,
+        layout_state,
+    )
 
 
 def _use_full_source_image(source_state, mode, session_state=None, layout_state=None):
-    state = dict(source_state or {})
-    try:
-        source = _source_image_cache_get(state)
-        whole = list(_image_crop.whole_image_crop_box(source.width, source.height))
-        if (
-            list(state.get("crop_bbox_xyxy") or []) == whole
-            and not state.get("pending_crop_bbox_xyxy")
-            and state.get("workspace_image_id")
-        ):
-            return _crop_failure_outputs(state, "当前已使用整图，无需重复应用")
-        next_state = dict(state)
-        next_state["crop_bbox_xyxy"] = whole
-        next_state["pending_crop_bbox_xyxy"] = None
-        init_result = _init_workspace_with_layout_editor(source, mode, session_state, layout_state)
-        init_result = _attach_source_provenance(init_result, next_state)
-        status = f"已恢复完整原图 {source.width}x{source.height}"
-        return next_state, _source_gesture_payload(next_state, status, retain_selection=False), status, *init_result
-    except Exception as exc:
-        return _crop_failure_outputs(state, f"恢复整图失败: {exc}")
+    return _use_full_source_image_impl(
+        {
+            '_attach_source_provenance': _attach_source_provenance,
+            '_crop_failure_outputs': _crop_failure_outputs,
+            '_init_workspace_with_layout_editor': _init_workspace_with_layout_editor,
+            '_source_gesture_payload': _source_gesture_payload,
+            '_source_image_cache_get': _source_image_cache_get,
+        },
+        source_state,
+        mode,
+        session_state,
+        layout_state,
+    )
 
 
 def _clear_template_match_outputs(status="请先完成智能分割并选择当前 PVS 实例"):
-    return _new_template_match_state(), None, None, str(status)
+    return _clear_template_match_outputs_impl(
+        {
+            '_new_template_match_state': _new_template_match_state,
+        },
+        status,
+    )
 
 
 def _publish_template_match_export(source_image, workflow, source_state, image_state):
-    export_id = uuid.uuid4().hex
-    export_dir = runtime_export_dir / f"template_match_{export_id}"
-    masks_dir = export_dir / "masks"
-    masks_dir.mkdir(parents=True, exist_ok=True)
-    source_image.convert("RGB").save(export_dir / "original_image.png")
-    seed_mask = np.asarray(workflow["seed_mask_fullres_bool"], dtype=bool)
-    Image.fromarray(seed_mask.astype(np.uint8) * 255, mode="L").save(export_dir / "seed_mask.png")
-    Image.fromarray(np.asarray(workflow["overlay_rgb"], dtype=np.uint8), mode="RGB").save(
-        export_dir / "template_match_overlay.png"
+    return _publish_template_match_export_impl(
+        {
+            '_publish_segmentation_zip': _publish_segmentation_zip,
+            'runtime_export_dir': runtime_export_dir,
+        },
+        source_image,
+        workflow,
+        source_state,
+        image_state,
     )
-    for index, mask in enumerate(workflow["match_masks_fullres_bool"], start=1):
-        Image.fromarray(np.asarray(mask, dtype=bool).astype(np.uint8) * 255, mode="L").save(
-            masks_dir / f"match_{index:04d}.png"
-        )
-    manifest = copy.deepcopy(workflow["result"])
-    manifest["source_image"] = {
-        "image_id": str(source_state.get("source_image_id") or ""),
-        "pixel_sha256": str(source_state.get("source_image_sha256") or ""),
-        "width": int(source_state.get("source_width") or 0),
-        "height": int(source_state.get("source_height") or 0),
-    }
-    manifest["workspace"] = {
-        "image_id": str(image_state.get("image_id") or ""),
-        "pixel_sha256": str(image_state.get("target_image_sha256") or ""),
-        "crop_bbox_xyxy": list(image_state.get("crop_bbox_xyxy") or []),
-    }
-    for match in manifest.get("matches", []):
-        match["mask_file"] = f"masks/match_{int(match['match_id']):04d}.png"
-    with (export_dir / "matches.json").open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, ensure_ascii=False, indent=2)
-    return _publish_segmentation_zip(export_dir, f"template_match_{export_id}.zip"), manifest
 
 
 def _run_template_matching(
@@ -1508,378 +1347,162 @@ def _run_template_matching(
     expand_threshold,
     nms_threshold,
 ):
-    try:
-        if not _is_pvs_pool_mode(mode):
-            raise ValueError("模板匹配需要先在 PVS Manual 或 Layout Mask 模式获得 active PVS 实例")
-        _workspace(image_state)
-        source = _source_image_cache_get(source_state)
-        if str(source_state.get("workspace_image_id") or "") != str(image_state.get("image_id") or ""):
-            raise ValueError("当前工作图 provenance 已过期，请重新应用裁剪")
-        if str(source_state.get("workspace_hash") or "") != str(
-            image_state.get("target_image_sha256") or ""
-        ):
-            raise ValueError("当前工作图 hash 已过期，请重新应用裁剪")
-        source_id = str(source_state.get("source_image_id") or "")
-        if str(image_state.get("source_image_id") or "") != source_id:
-            raise ValueError("当前分割工作区不属于这张完整原图，请重新应用裁剪")
-        if str(image_state.get("source_image_sha256") or "") != str(source_state.get("source_image_sha256") or ""):
-            raise ValueError("完整原图 provenance 已过期，请重新应用裁剪")
-        crop_bbox = list(image_state.get("crop_bbox_xyxy") or [])
-        if crop_bbox != list(source_state.get("crop_bbox_xyxy") or []):
-            raise ValueError("当前裁剪 provenance 已过期，请重新应用裁剪")
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None:
-            raise ValueError("请先完成智能分割并选择当前 PVS 实例")
-        workflow = _template_matching.run_template_match_workflow(
-            np.asarray(source.convert("RGB")),
-            crop_bbox,
-            pvs_state,
-            active_instance_id=active_id,
-            match_threshold=float(0.7 if match_threshold in (None, "") else match_threshold),
-            expand_threshold=int(20 if expand_threshold in (None, "") else expand_threshold),
-            nms_threshold=float(0.3 if nms_threshold in (None, "") else nms_threshold),
-        )
-        zip_path, manifest = _publish_template_match_export(
-            source,
-            workflow,
-            source_state,
-            image_state,
-        )
-        count = int(manifest.get("match_count") or 0)
-        state = {
-            "schema_version": 1,
-            "source_image_id": source_id,
-            "workspace_image_id": str(image_state.get("image_id") or ""),
-            "active_instance_id": active_id,
-            "result": manifest,
-        }
-        status = f"模板匹配完成：{count} matches；结果使用完整原图坐标，不写入 PVS 实例池"
-        return (
-            state,
-            Image.fromarray(np.asarray(workflow["overlay_rgb"], dtype=np.uint8), mode="RGB"),
-            str(zip_path),
-            status,
-        )
-    except Exception as exc:
-        return _clear_template_match_outputs(f"模板匹配失败: {exc}")
+    return _run_template_matching_impl(
+        {
+            '_clear_template_match_outputs': _clear_template_match_outputs,
+            '_is_pvs_pool_mode': _is_pvs_pool_mode,
+            '_publish_template_match_export': _publish_template_match_export,
+            '_source_image_cache_get': _source_image_cache_get,
+            '_workspace': _workspace,
+        },
+        source_state,
+        image_state,
+        pvs_state,
+        mode,
+        match_threshold,
+        expand_threshold,
+        nms_threshold,
+    )
 
 
 def _delete_selected_pcs_bbox(image_state, pcs_state, pvs_state, mode, selected_bbox_id):
-    try:
-        records = list(_pcs_bbox_records(pcs_state))
-        if not selected_bbox_id:
-            raise ValueError("请先在 PCS bbox 列表中选择一个 bbox")
-        target_id = int(selected_bbox_id)
-        target = next((rec for rec in records if int(rec.get("id", -1)) == target_id), None)
-        if target is None:
-            raise ValueError("选中的 PCS bbox 已不存在，请重新选择")
-        pcs_state["bbox_records"] = [rec for rec in records if int(rec.get("id", -1)) != target_id]
-        pcs_state["bbox_history"] = [item for item in pcs_state.get("bbox_history", []) if int(item.get("id", -1)) != target_id]
-        _sync_pcs_boxes_from_records(pcs_state)
-        _reset_pcs_predictions(pcs_state)
-        label = "负样本" if target.get("key") == "negative_boxes" else "正样本"
-        info = f"已删除 PCS {label} bbox: {[round(float(v), 1) for v in target.get('box', [])]}；请重新运行 PCS 分割"
-    except Exception as exc:
-        info = f"删除 PCS bbox 失败: {exc}"
-    return pcs_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _delete_selected_pcs_bbox_impl(
+        {
+            '_pcs_bbox_choices': _pcs_bbox_choices,
+            '_pcs_bbox_records': _pcs_bbox_records,
+            '_reset_pcs_predictions': _reset_pcs_predictions,
+            '_sync_pcs_boxes_from_records': _sync_pcs_boxes_from_records,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        selected_bbox_id,
+    )
 
 
 def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
-    try:
-        ws = _workspace(image_state)
-        w, h = ws["image"].size
-        text_prompt = (text_prompt or "").strip()
-        has_positive = bool(pcs_state.get("positive_boxes"))
-        has_negative = bool(pcs_state.get("negative_boxes"))
-        if not text_prompt and not has_positive and not has_negative:
-            raise ValueError("PCS needs a text prompt or bbox exemplar")
-        if has_negative and not text_prompt and not has_positive:
-            raise ValueError("PCS \u4e0d\u652f\u6301\u53ea\u4f7f\u7528\u8d1f\u6837\u672c bbox\uff0c\u8bf7\u5148\u6dfb\u52a0\u6587\u672c\u63d0\u793a\u6216\u6b63\u6837\u672c bbox")
-        state = _fresh_state(image_state)
-        if text_prompt:
-            state = image_predictor.set_text_prompt(text_prompt, state)
-        for box in pcs_state.get("positive_boxes", []):
-            state = image_predictor.add_geometric_prompt(_xyxy_to_cxcywh_norm(box, w, h), True, state)
-        for box in pcs_state.get("negative_boxes", []):
-            state = image_predictor.add_geometric_prompt(_xyxy_to_cxcywh_norm(box, w, h), False, state)
-        state = image_predictor.set_confidence_threshold(float(threshold), state)
-        masks = state.get("masks")
-        if masks is None or len(masks) == 0:
-            pcs_state["instances"] = {}
-            return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, "PCS found no instances")
-        masks_np = masks.detach().cpu().numpy().astype(bool)
-        if masks_np.ndim == 4:
-            masks_np = masks_np[:, 0]
-        probs = state.get("masks_logits")
-        probs_np = None if probs is None else probs.detach().cpu().numpy().astype(np.float32)
-        if probs_np is not None and probs_np.ndim == 4:
-            probs_np = probs_np[:, 0]
-        boxes_np = state["boxes"].detach().cpu().numpy()
-        scores_np = state["scores"].detach().cpu().numpy()
-        instances = {}
-        for idx, mask in enumerate(masks_np):
-            inst_id = idx + 1
-            instances[inst_id] = _make_inst(inst_id, "pcs", mask, _norm_box(boxes_np[idx].tolist(), w, h), float(scores_np[idx]), pcs_prob=None if probs_np is None else probs_np[idx], history=[{"op":"pcs_grounding","text_prompt":text_prompt or ""}])
-        pcs_state["instances"] = instances
-        pcs_state["next_instance_id"] = len(instances) + 1
-        pcs_state["text_prompt"] = text_prompt or ""
-        info = f"PCS found {len(instances)} instances"
-    except Exception as exc:
-        info = f"PCS failed: {exc}"
-    return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _run_pcs_impl(
+        {
+            '_fresh_state': _fresh_state,
+            '_make_inst': _make_inst,
+            '_norm_box': _norm_box,
+            '_view': _view,
+            '_workspace': _workspace,
+            '_xyxy_to_cxcywh_norm': _xyxy_to_cxcywh_norm,
+            'image_predictor': image_predictor,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        text_prompt,
+        threshold,
+    )
 
 
 def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode, progress=gr.Progress(track_tqdm=False)):
-    try:
-        _pvs_progress(progress, 0.03, "\u51c6\u5907\u6279\u91cf\u751f\u6210 PVS \u5b9e\u4f8b")
-        records = pvs_state.get("pending_bbox_records") or []
-        boxes = (
-            [record.get("box") for record in records]
-            if records
-            else list(pvs_state.get("pending_boxes", []))
-        )
-        if not boxes:
-            raise ValueError("\u6ca1\u6709\u5f85\u751f\u6210\u7684 PVS bbox\uff0c\u8bf7\u5148\u5728\u56fe\u50cf\u4e0a\u6846\u9009\u4e00\u4e2a\u6216\u591a\u4e2a\u76ee\u6807")
-
-        created_ids = []
-        staged_instances = {}
-        next_instance_id = int(pvs_state.get("next_instance_id", 1))
-        _pvs_progress(progress, 0.12, f"\u8bfb\u53d6\u56fe\u50cf\u7f13\u5b58\uff0c\u5171 {len(boxes)} \u4e2a bbox")
-        base_state = _fresh_state(image_state)
-        for box_idx, box in enumerate(boxes, start=1):
-            start = 0.18 + 0.62 * (box_idx - 1) / max(1, len(boxes))
-            _pvs_progress(progress, start, f"SAM3 \u6b63\u5728\u751f\u6210\u7b2c {box_idx}/{len(boxes)} \u4e2a PVS \u5b9e\u4f8b", delay=0.06)
-            pred = _predict_inst(base_state, box_xyxy_px=box)
-            idx = _best(pred)
-            mask = pred["masks"][idx]
-            inst_id = next_instance_id + len(staged_instances)
-            staged_instances[inst_id] = _make_inst(
-                inst_id,
-                "manual_pvs_bbox_batch",
-                mask,
-                _mask_box(mask),
-                pred["scores"][idx],
-                pvs_logits=pred["lowres_logits"][idx],
-                history=[{"op":"create_from_pending_bbox","box_xyxy_px":box,"candidate_scores":pred["scores"].astype(float).tolist()}],
-            )
-            created_ids.append(inst_id)
-
-        _pvs_progress(progress, 0.86, "\u66f4\u65b0 PVS \u5b9e\u4f8b\u6c60")
-        _pvs_progress(progress, 0.96, "\u6e32\u67d3 PVS \u5206\u5272\u7ed3\u679c", delay=0.16)
-        committed_instances = dict(pvs_state.get("instances") or {})
-        committed_instances.update(staged_instances)
-        pvs_state["instances"] = committed_instances
-        pvs_state["next_instance_id"] = next_instance_id + len(staged_instances)
-        pvs_state["active_instance_id"] = created_ids[-1]
-        pvs_state["pending_bbox_records"] = []
-        pvs_state["pending_boxes"] = []
-        info = f"\u5df2\u4ece {len(created_ids)} \u4e2a\u5f85\u751f\u6210 bbox \u521b\u5efa PVS \u5b9e\u4f8b: {created_ids}"
-    except Exception as exc:
-        info = f"PVS \u6279\u91cf bbox \u751f\u6210\u5931\u8d25: {exc}"
-    return pvs_state, _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _create_pvs_from_pending_boxes_impl(
+        {
+            '_best': _best,
+            '_fresh_state': _fresh_state,
+            '_make_inst': _make_inst,
+            '_mask_box': _mask_box,
+            '_predict_inst': _predict_inst,
+            '_pvs_pending_bbox_choices': _pvs_pending_bbox_choices,
+            '_pvs_progress': _pvs_progress,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        progress,
+    )
 
 
 def _delete_selected_pending_pvs_bbox(image_state, pcs_state, pvs_state, mode, selected_bbox_id):
-    try:
-        records = list(_pvs_pending_bbox_records(pvs_state))
-        if not selected_bbox_id:
-            raise ValueError("\u8bf7\u5148\u5728 PVS \u5f85\u751f\u6210 bbox \u5217\u8868\u4e2d\u9009\u62e9\u4e00\u4e2a bbox")
-        target_id = int(selected_bbox_id)
-        target = next((rec for rec in records if int(rec.get("id", -1)) == target_id), None)
-        if target is None:
-            raise ValueError("\u9009\u4e2d\u7684 PVS \u5f85\u751f\u6210 bbox \u5df2\u4e0d\u5b58\u5728\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9")
-        pvs_state["pending_bbox_records"] = [rec for rec in records if int(rec.get("id", -1)) != target_id]
-        _sync_pvs_pending_boxes_from_records(pvs_state)
-        info = f"\u5df2\u5220\u9664 PVS \u5f85\u751f\u6210 bbox ID {target_id}: {[round(float(v), 1) for v in target.get('box', [])]}"
-    except Exception as exc:
-        info = f"\u5220\u9664 PVS \u5f85\u751f\u6210 bbox \u5931\u8d25: {exc}"
-    return pvs_state, _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _delete_selected_pending_pvs_bbox_impl(
+        {
+            '_pvs_pending_bbox_choices': _pvs_pending_bbox_choices,
+            '_pvs_pending_bbox_records': _pvs_pending_bbox_records,
+            '_sync_pvs_pending_boxes_from_records': _sync_pvs_pending_boxes_from_records,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        selected_bbox_id,
+    )
 
 
 def _clear_pending_pvs_boxes(image_state, pcs_state, pvs_state, mode):
-    count = _clear_pvs_pending_bboxes(pvs_state)
-    info = f"\u5df2\u6e05\u7a7a {count} \u4e2a\u5f85\u751f\u6210 PVS bbox\uff1b\u5df2\u751f\u6210\u5b9e\u4f8b\u4e0d\u4f1a\u88ab\u5220\u9664"
-    return pvs_state, _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _clear_pending_pvs_boxes_impl(
+        {
+            '_clear_pvs_pending_bboxes': _clear_pvs_pending_bboxes,
+            '_pvs_pending_bbox_choices': _pvs_pending_bbox_choices,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+    )
 
 
 def _set_active_pvs(image_state, pcs_state, pvs_state, mode, selected_id):
-    if selected_id:
-        pvs_state["active_instance_id"] = int(selected_id)
-        info = f"Selected PVS #{selected_id}"
-    else:
-        pvs_state["active_instance_id"] = None
-        info = "No PVS instance selected"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _set_active_pvs_impl(
+        {
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        selected_id,
+    )
 
 def _refine_active_pvs_with_point(image_state, pvs_state, point, point_label, progress=None):
-    active_id = pvs_state.get("active_instance_id")
-    if active_id is None:
-        raise ValueError("请先创建或选择一个 active PVS instance")
-    try:
-        active_id = int(active_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("active PVS instance ID 无效") from exc
-
-    instances = pvs_state.get("instances", {})
-    active_inst = instances.get(active_id)
-    if active_inst is None:
-        raise ValueError("active PVS instance 不存在，请重新选择")
-    if active_inst.get("status") == "deleted":
-        raise ValueError("active PVS instance 已删除，请重新选择")
-
-    point_array = np.asarray(point, dtype=np.float32).reshape(-1)
-    if point_array.shape != (2,) or not np.isfinite(point_array).all():
-        raise ValueError("point coordinate 必须是两个有限数值")
-    width = int(image_state.get("width") or 0)
-    height = int(image_state.get("height") or 0)
-    if width <= 0 or height <= 0:
-        raise ValueError("image dimensions 无效，请重新加载图像")
-    if not (0.0 <= point_array[0] < width and 0.0 <= point_array[1] < height):
-        raise ValueError("point coordinate 超出当前图像边界")
-    try:
-        point_label_value = float(point_label)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("point label 必须是 0 或 1") from exc
-    if not np.isfinite(point_label_value) or point_label_value not in (0.0, 1.0):
-        raise ValueError("point label 必须是 0 或 1")
-    point_label = int(point_label_value)
-    point_xy = [float(point_array[0]), float(point_array[1])]
-
-    previous_value = active_inst.get("pvs_lowres_logits")
-    previous_status = active_inst.get("status")
-    if previous_value is None:
-        raise ValueError("active PVS instance 缺少上一轮 low-res logits")
-    previous_logits = np.asarray(previous_value)
-    expected = _prompt_mask_size()
-    valid_previous_shape = (
-        previous_logits.ndim == 2
-        or (previous_logits.ndim == 3 and previous_logits.shape[0] == 1)
-    ) and tuple(previous_logits.shape[-2:]) == expected
-    if previous_logits.dtype != np.float32 or not valid_previous_shape or not np.isfinite(previous_logits).all():
-        raise ValueError(f"active PVS instance logits 必须是有限 float32，形状为 {expected} 或 1x{expected}")
-
-    point_name = "负向点" if point_label == 0 else "正向点"
-    _pvs_progress(progress, 0.32, f"SAM3 正在根据{point_name}修缮 active instance", delay=0.12)
-    pred = _predict_inst(
-        _fresh_state(image_state),
-        mask_input_lowres_logits=previous_logits.copy(),
-        point_coords_px=[point_xy],
-        point_labels=[point_label],
-    )
-
-    scores = np.asarray(pred.get("scores"), dtype=np.float32).reshape(-1)
-    if scores.size == 0 or not np.isfinite(scores).all():
-        raise ValueError("predict_inst 返回的候选分数无效")
-    idx = int(np.argmax(scores))
-
-    masks = np.asarray(pred.get("masks"))
-    if masks.ndim == 2:
-        masks = masks[None, ...]
-    if masks.ndim not in (3, 4) or masks.shape[0] != scores.size:
-        raise ValueError("predict_inst 返回的候选 mask 数量或形状无效")
-    mask = np.asarray(masks[idx])
-    if mask.ndim == 3 and mask.shape[0] == 1:
-        mask = mask[0]
-    if mask.ndim != 2:
-        raise ValueError("predict_inst 返回的候选 mask 必须是二维图像")
-    if mask.shape != (height, width):
-        raise ValueError("predict_inst 返回的候选 mask 尺寸与当前图像不一致")
-    if np.issubdtype(mask.dtype, np.number) and not np.isfinite(mask).all():
-        raise ValueError("predict_inst 返回的候选 mask 包含非有限值")
-    mask = mask.astype(bool)
-
-    candidate_logits = np.asarray(pred.get("lowres_logits"), dtype=np.float32)
-    if candidate_logits.ndim == 2:
-        if scores.size != 1:
-            raise ValueError("predict_inst 返回的 low-res logits 缺少候选维度")
-        selected_logits = candidate_logits
-    elif candidate_logits.ndim in (3, 4) and candidate_logits.shape[0] == scores.size:
-        selected_logits = candidate_logits[idx]
-    else:
-        raise ValueError("predict_inst 返回的 low-res logits 数量或形状无效")
-    valid_selected_shape = (
-        selected_logits.ndim == 2
-        or (selected_logits.ndim == 3 and selected_logits.shape[0] == 1)
-    ) and tuple(selected_logits.shape[-2:]) == expected
-    if not valid_selected_shape or not np.isfinite(selected_logits).all():
-        raise ValueError("predict_inst 返回的 low-res logits 无效")
-
-    score = float(scores[idx])
-    box = _mask_box(mask)
-    before = _history_snapshot(active_inst)
-    after = {
-        "box_xyxy_px": list(box),
-        "score": score,
-        "status": active_inst.get("status", "draft"),
-    }
-    prompt_type = "negative_point" if point_label == 0 else "positive_point"
-    op = "negative_point_refine" if point_label == 0 else "positive_point_refine"
-    updated_inst = dict(active_inst)
-    updated_inst["mask_fullres_bool"] = mask
-    updated_inst["box_xyxy_px"] = box
-    updated_inst["score"] = score
-    updated_inst["pvs_lowres_logits"] = selected_logits.copy()
-    updated_inst["prompt_history"] = list(active_inst.get("prompt_history") or [])
-    _append_prompt_history(
-        updated_inst,
+    return _refine_active_pvs_with_point_impl(
         {
-            "op": op,
-            "prompt": {"type": prompt_type, "point_xy_px": point_xy},
-            "before": before,
-            "after": after,
-            "candidate_scores": scores.astype(float).tolist(),
+            '_append_prompt_history': _append_prompt_history,
+            '_fresh_state': _fresh_state,
+            '_history_snapshot': _history_snapshot,
+            '_mask_box': _mask_box,
+            '_predict_inst': _predict_inst,
+            '_prompt_mask_size': _prompt_mask_size,
+            '_pvs_progress': _pvs_progress,
         },
+        image_state,
+        pvs_state,
+        point,
+        point_label,
+        progress,
     )
-    try:
-        current_active_id = int(pvs_state.get("active_instance_id"))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("active PVS instance 在预测期间发生变化，请重试") from exc
-    if (
-        current_active_id != active_id
-        or pvs_state.get("instances") is not instances
-        or instances.get(active_id) is not active_inst
-        or active_inst.get("pvs_lowres_logits") is not previous_value
-        or active_inst.get("status") != previous_status
-    ):
-        raise ValueError("active PVS instance 在预测期间发生变化，请重试")
-    instances[active_id] = updated_inst
-    return active_id, prompt_type
 
 def _pvs_point_prompt(image_state, pcs_state, pvs_state, mode, point_payload, point_kind, progress=gr.Progress(track_tqdm=False)):
-    try:
-        is_negative = str(point_kind or "positive") == "negative"
-        point_label = 0 if is_negative else 1
-        point_name = "负向点" if is_negative else "正向点"
-        _pvs_progress(progress, 0.04, f"准备{point_name} PVS 操作")
-        point = _point_from_payload(point_payload, image_state)
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None:
-            if is_negative:
-                raise ValueError("负向点必须先选择一个 active PVS instance")
-            _pvs_progress(progress, 0.32, f"SAM3 正在根据{point_name}预测 mask", delay=0.12)
-            pred = _predict_inst(_fresh_state(image_state), point_coords_px=[point], point_labels=[point_label])
-            _pvs_progress(progress, 0.78, f"整理{point_name}候选 mask")
-            idx = _best(pred)
-            mask = pred["masks"][idx]
-            inst_id = int(pvs_state.get("next_instance_id", 1))
-            pvs_state.setdefault("instances", {})[inst_id] = _make_inst(inst_id, "manual_pvs_point", mask, _mask_box(mask), pred["scores"][idx], pvs_logits=pred["lowres_logits"][idx], history=[{"op":"create_from_positive_point","point_xy_px":point,"candidate_scores":pred["scores"].astype(float).tolist()}])
-            pvs_state["active_instance_id"] = inst_id
-            pvs_state["next_instance_id"] = inst_id + 1
-            info = f"Created PVS instance #{inst_id} from positive point"
-        else:
-            refined_id, prompt_type = _refine_active_pvs_with_point(
-                image_state,
-                pvs_state,
-                point,
-                point_label,
-                progress=progress,
-            )
-            _pvs_progress(progress, 0.78, f"整理{point_name}候选 mask")
-            info = f"PVS #{refined_id} refined with {prompt_type}"
-        _pvs_progress(progress, 0.96, "渲染 PVS 分割结果", delay=0.16)
-    except Exception as exc:
-        info = f"PVS point prompt failed: {exc}"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _pvs_point_prompt_impl(
+        {
+            '_best': _best,
+            '_fresh_state': _fresh_state,
+            '_make_inst': _make_inst,
+            '_mask_box': _mask_box,
+            '_point_from_payload': _point_from_payload,
+            '_predict_inst': _predict_inst,
+            '_pvs_progress': _pvs_progress,
+            '_refine_active_pvs_with_point': _refine_active_pvs_with_point,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        point_payload,
+        point_kind,
+        progress,
+    )
 
 
 def _layout_point_refine(image_state, pcs_state, pvs_state, mode, point_payload, point_kind, prompt_state, progress=gr.Progress(track_tqdm=False)):
@@ -1953,373 +1576,176 @@ def _layout_point_refine(image_state, pcs_state, pvs_state, mode, point_payload,
     return prompt_state, point_payload, pvs_state, *view
 
 def _undo_pvs(image_state, pcs_state, pvs_state, mode):
-    try:
-        active_id = pvs_state.get("active_instance_id")
-        active_inst = pvs_state.get("instances", {}).get(int(active_id)) if active_id is not None else None
-        if active_inst is not None:
-            history = active_inst.get("prompt_history", [])
-            if history and history[-1].get("op") == "refine_with_layout_mask" and history[-1].get("before"):
-                _restore(active_inst, history[-1]["before"])
-                history.pop()
-                info = f"已撤销 PVS #{active_id} 的版图精修"
-                return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
-        items = _active_instances(pvs_state)
-        if not items:
-            raise ValueError("没有可撤销的 PVS 实例")
-        inst = max(items, key=lambda item: int(item["id"]))
-        pvs_state["instances"].pop(int(inst["id"]), None)
-        if str(pvs_state.get("active_instance_id")) == str(inst["id"]):
-            remaining = _active_instances(pvs_state)
-            pvs_state["active_instance_id"] = max(remaining, key=lambda item: int(item["id"]))["id"] if remaining else None
-        info = f"已撤销上一个 PVS 实例 #{inst['id']}"
-    except Exception as exc:
-        info = f"撤销上一个实例失败: {exc}"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _undo_pvs_impl(
+        {
+            '_active_instances': _active_instances,
+            '_restore': _restore,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+    )
 
 
 def _delete_pvs(image_state, pcs_state, pvs_state, mode):
-    try:
-        items = _active_instances(pvs_state)
-        if not items:
-            raise ValueError("没有可清空的 PVS 实例")
-        pvs_state["instances"] = {}
-        pvs_state["active_instance_id"] = None
-        info = f"已清空 {len(items)} 个 PVS 实例；待生成 bbox 不受影响"
-    except Exception as exc:
-        info = f"清空实例失败: {exc}"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _delete_pvs_impl(
+        {
+            '_active_instances': _active_instances,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+    )
 
 
 def _accept_pvs(image_state, pcs_state, pvs_state, mode):
-    try:
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None:
-            raise ValueError("Select a PVS instance first")
-        pvs_state["instances"][int(active_id)]["status"] = "accepted"
-        info = f"PVS #{active_id} accepted"
-    except Exception as exc:
-        info = f"Accept failed: {exc}"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _accept_pvs_impl(
+        {
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+    )
 
+
+from sam3_demo.feedback_export import (
+    _history_json_impl,
+    _latest_layout_prompt_from_instances_impl,
+    _reconstruct_frozen_layout_prompt_mask_impl,
+    _write_feedback_layout_artifacts_impl,
+    _submit_feedback_impl,
+    _export_pool_impl,
+    _export_pcs_impl,
+    _export_pvs_impl,
+)
 
 def _history_json(history):
-    rows = []
-    for item in history:
-        row = {"op": item.get("op"), "prompt": item.get("prompt"), "box_xyxy_px": item.get("box_xyxy_px"), "candidate_scores": item.get("candidate_scores")}
-        if item.get("before"):
-            row["before"] = {"box_xyxy_px": item["before"].get("box_xyxy_px"), "score": item["before"].get("score"), "status": item["before"].get("status")}
-        if item.get("after"):
-            row["after"] = {"box_xyxy_px": item["after"].get("box_xyxy_px"), "score": item["after"].get("score"), "status": item["after"].get("status")}
-        rows.append({k: v for k, v in row.items() if v is not None})
-    return rows
+    return _history_json_impl(
+        {
+        },
+        history,
+    )
 
 
 
 def _latest_layout_prompt_from_instances(instances):
-    for item in reversed(list(instances or [])):
-        for hist in reversed(item.get("prompt_history", []) or []):
-            prompt = hist.get("prompt") or {}
-            if hist.get("op") in {"create_from_layout_mask", "refine_with_layout_mask"} or prompt.get("type") == "layout_mask":
-                return prompt
-    return None
+    return _latest_layout_prompt_from_instances_impl(
+        {
+        },
+        instances,
+    )
 
 
 def _reconstruct_frozen_layout_prompt_mask(layout_prompt):
-    if not isinstance(layout_prompt, dict):
-        raise ValueError("layout prompt metadata 无效")
-    session_id = layout_prompt.get("session_id")
-    layout_id = layout_prompt.get("layout_id")
-    source_mask_hash = layout_prompt.get("source_mask_pixel_sha256")
-    target_width = int(layout_prompt.get("target_width") or 0)
-    target_height = int(layout_prompt.get("target_height") or 0)
-    if target_width <= 0 or target_height <= 0:
-        raise ValueError("layout prompt 目标尺寸无效")
-    matrix = np.asarray(layout_prompt.get("matrix_2x3"), dtype=np.float64)
-    if matrix.shape != (2, 3) or not np.isfinite(matrix).all():
-        raise ValueError("layout prompt 缺少有效的 frozen affine matrix")
-
-    scope = layout_prompt.get("mask_scope")
-    details = {"reconstruction_status": "ok"}
-    if not scope or scope == _LAYOUT_PROMPT_SCOPE_FULL:
-        source_mask, _ = _LAYOUT_REGION_STORE.load_source_mask(
-            session_id,
-            layout_id,
-            source_mask_hash,
-        )
-        prompt_mask = source_mask
-        details["reconstruction_method"] = "frozen_full_mask"
-    elif scope == "region":
-        document, source_mask = _LAYOUT_REGION_STORE.load_document(
-            session_id,
-            layout_id,
-            source_mask_hash,
-        )
-        details["current_regions_revision"] = int(
-            document.get("regions_revision") or 0
-        )
-        try:
-            region_id = int(layout_prompt.get("region_id"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("layout Region prompt 缺少有效 region_id") from exc
-        record = next(
-            (
-                item
-                for item in document.get("regions", [])
-                if int(item.get("region_id") or 0) == region_id
-            ),
-            None,
-        )
-        if record is None:
-            raise ValueError(f"layout Region R{region_id} 不存在")
-        prompt_mask = _layout_regions.decode_binary_mask(
-            record.get("mask_rle"),
-            source_mask.shape,
-        )
-        actual_hash = _layout_regions.mask_pixel_sha256(
-            prompt_mask.astype(np.uint8)
-        )
-        expected_hash = layout_prompt.get("region_mask_pixel_sha256")
-        if not expected_hash or actual_hash != str(expected_hash):
-            raise ValueError(f"layout Region R{region_id} mask hash 不匹配")
-        prompt_label = layout_prompt.get("label")
-        if prompt_label is not None:
-            if _layout_regions.region_label(record) != str(prompt_label):
-                raise ValueError(f"layout Region R{region_id} Label 与实例记录不一致")
-        else:
-            prompt_class = layout_prompt.get("class_label")
-            if (
-                prompt_class is not None
-                and record.get("class_label") != prompt_class
-            ):
-                raise ValueError(f"layout Region R{region_id} 历史类别与实例记录不一致")
-        details.update(
-            {
-                "reconstruction_method": "frozen_region_rle",
-                "region_id": region_id,
-                "region_deleted_at": record.get("deleted_at"),
-            }
-        )
-    else:
-        raise ValueError(f"未知 layout prompt mask_scope: {scope}")
-
-    transformed = _layout_tx.warp_layout_mask(
-        prompt_mask,
-        matrix,
-        (target_width, target_height),
+    return _reconstruct_frozen_layout_prompt_mask_impl(
+        {
+            '_LAYOUT_PROMPT_SCOPE_FULL': _LAYOUT_PROMPT_SCOPE_FULL,
+            '_LAYOUT_REGION_STORE': _LAYOUT_REGION_STORE,
+        },
+        layout_prompt,
     )
-    return transformed, details
 
 
 def _write_feedback_layout_artifacts(sample_dir, layout_prompt):
-    if not layout_prompt:
-        return {}
-    transform_path = sample_dir / "layout_transform.json"
-    layout_id = layout_prompt.get("layout_id")
-    transformed_mask_path = None
-    reconstruction = {}
-    try:
-        transformed_mask, reconstruction = (
-            _reconstruct_frozen_layout_prompt_mask(layout_prompt)
-        )
-        transformed_mask_path = sample_dir / "layout_transformed_mask.png"
-        written = cv2.imwrite(
-            str(transformed_mask_path),
-            np.asarray(transformed_mask, dtype=np.uint8) * 255,
-        )
-        if not written:
-            raise OSError("cannot write reconstructed layout prompt mask")
-    except Exception as exc:
-        transformed_mask_path = None
-        reconstruction = {
-            "reconstruction_status": "unavailable",
-            "reconstruction_error": str(exc),
-        }
-
-    payload = {
-        "layout_prompt": layout_prompt,
-        "layout_id": layout_id,
-        "has_cached_transformed_mask": False,
-        "has_reconstructed_transformed_mask": (
-            transformed_mask_path is not None
-        ),
-        "layout_transformed_mask_file": (
-            str(transformed_mask_path)
-            if transformed_mask_path is not None
-            else None
-        ),
-        **reconstruction,
-    }
-    with transform_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    return {
-        "layout_transform_file": str(transform_path),
-        "layout_transformed_mask_file": (
-            str(transformed_mask_path)
-            if transformed_mask_path is not None
-            else None
-        ),
-    }
+    return _write_feedback_layout_artifacts_impl(
+        {
+            '_reconstruct_frozen_layout_prompt_mask': _reconstruct_frozen_layout_prompt_mask,
+        },
+        sample_dir,
+        layout_prompt,
+    )
 
 def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_tags, feedback_comment):
-    try:
-        if _is_pvs_pool_mode(mode):
-            active_id = pvs_state.get("active_instance_id")
-            if active_id is None:
-                raise ValueError("请先选择一个 active PVS instance")
-            inst = pvs_state.get("instances", {}).get(int(active_id))
-            if inst is None or inst.get("status") == "deleted":
-                raise ValueError("当前 active PVS instance 不存在或已删除")
-            feedback_instances = [inst]
-            feedback_target = "active_pvs_instance"
-        elif _is_pcs_mode(mode):
-            feedback_instances = _active_instances(pcs_state)
-            if not feedback_instances:
-                raise ValueError("请先运行 PCS 并生成至少一个 PCS instance")
-            inst = None
-            feedback_target = "pcs_instance_pool"
-        else:
-            raise ValueError(f"不支持的 feedback 模式: {mode}")
-
-        ws = _workspace(image_state)
-        image = ws["image"]
-        feedback_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        sample_dir = runtime_feedback_dir / "samples" / feedback_id
-        sample_dir.mkdir(parents=True, exist_ok=False)
-
-        image_path = sample_dir / "image.png"
-        overlay_path = sample_dir / "overlay.png"
-        mask_path = sample_dir / "mask.png"
-        npz_path = sample_dir / "mask.npz"
-        feedback_path = sample_dir / "feedback.json"
-
-        image.save(image_path)
-        overlay = _result_image(image_state, pcs_state, pvs_state, mode)
-        if overlay is not None:
-            overlay.save(overlay_path)
-
-        masks = [np.asarray(item["mask_fullres_bool"]).astype(bool) for item in feedback_instances]
-        mask_stack = np.stack([mask.astype(np.uint8) for mask in masks], axis=0)
-        mask_preview = np.any(mask_stack.astype(bool), axis=0).astype(np.uint8)
-        cv2.imwrite(str(mask_path), mask_preview * 255)
-        pvs_logits_values = [item.get("pvs_lowres_logits") for item in feedback_instances if item.get("pvs_lowres_logits") is not None]
-        pcs_prob_values = [item.get("pcs_fullres_prob") for item in feedback_instances if item.get("pcs_fullres_prob") is not None]
-        np.savez_compressed(
-            npz_path,
-            mask_fullres_uint8=mask_stack,
-            pvs_lowres_logits=np.stack([np.asarray(v, dtype=np.float32) for v in pvs_logits_values], axis=0) if pvs_logits_values else np.empty((0,), dtype=np.float32),
-            pcs_fullres_prob=np.stack([np.asarray(v, dtype=np.float32) for v in pcs_prob_values], axis=0) if pcs_prob_values else np.empty((0,), dtype=np.float32),
-        )
-        instance_rows = [
-            {
-                "instance_id": int(item["id"]),
-                "source": item.get("source"),
-                "status": item.get("status"),
-                "score": float(item.get("score", 0.0)),
-                "bbox_xyxy_px": [float(v) for v in item.get("box_xyxy_px", [])],
-                "prompt_history": _history_json(item.get("prompt_history", [])),
-            }
-            for item in feedback_instances
-        ]
-        layout_artifacts = _write_feedback_layout_artifacts(sample_dir, _latest_layout_prompt_from_instances(feedback_instances))
-
-        payload = {
-            "feedback_id": feedback_id,
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "mode": mode,
-            "target": feedback_target,
-            "rating": rating,
-            "tags": feedback_tags or [],
-            "comment": feedback_comment or "",
-            "image_id": image_state.get("image_id"),
-            "image_size": [int(image.width), int(image.height)],
-            "instance_id": int(inst["id"]) if inst is not None else None,
-            "source": inst.get("source") if inst is not None else "pcs",
-            "status": inst.get("status") if inst is not None else None,
-            "score": float(inst.get("score", 0.0)) if inst is not None else None,
-            "bbox_xyxy_px": [float(v) for v in inst.get("box_xyxy_px", [])] if inst is not None else None,
-            "prompt_history": _history_json(inst.get("prompt_history", [])) if inst is not None else [],
-            "instance_count": len(feedback_instances),
-            "instances": instance_rows,
-            "image_file": str(image_path),
-            "overlay_file": str(overlay_path) if overlay is not None else None,
-            "mask_file": str(mask_path),
-            "mask_npz_file": str(npz_path),
-            "layout_transform_file": layout_artifacts.get("layout_transform_file"),
-            "layout_transformed_mask_file": layout_artifacts.get("layout_transformed_mask_file"),
-            "branch": "Zhengqiyuan/PVS-demo",
-        }
-
-        with feedback_path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        with _FEEDBACK_WRITE_LOCK:
-            with (runtime_feedback_dir / "feedback.jsonl").open("a", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        info = f"反馈已保存: {feedback_id}"
-    except Exception as exc:
-        info = f"反馈保存失败: {exc}"
-    return _view(image_state, pcs_state, pvs_state, mode, info)
+    return _submit_feedback_impl(
+        {
+            '_FEEDBACK_WRITE_LOCK': _FEEDBACK_WRITE_LOCK,
+            '_active_instances': _active_instances,
+            '_history_json': _history_json,
+            '_is_pcs_mode': _is_pcs_mode,
+            '_is_pvs_pool_mode': _is_pvs_pool_mode,
+            '_latest_layout_prompt_from_instances': _latest_layout_prompt_from_instances,
+            '_result_image': _result_image,
+            '_view': _view,
+            '_workspace': _workspace,
+            '_write_feedback_layout_artifacts': _write_feedback_layout_artifacts,
+            'runtime_feedback_dir': runtime_feedback_dir,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        rating,
+        feedback_tags,
+        feedback_comment,
+    )
 
 
 def _export_pool(image_state, pcs_state, pvs_state, mode, pool_name, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file):
-    try:
-        ws = _workspace(image_state)
-        image = ws["image"]
-        pool = pcs_state if pool_name == "pcs" else pvs_state
-        instances = _active_instances(pool)
-        if not instances:
-            raise ValueError(f"No active {pool_name.upper()} instance")
-        export_id = f"{pool_name}_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        export_dir = runtime_export_dir / export_id
-        mask_dir = export_dir / "masks"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        mask_dir.mkdir(exist_ok=True)
-        _overlay(image_state, pcs_state, pvs_state, mode).save(export_dir / "overlay.png")
-        masks, scores, predictions = [], [], []
-        coco_annotation_extras = []
-        for inst in instances:
-            mask = np.asarray(inst["mask_fullres_bool"]).astype(bool)
-            masks.append(mask)
-            scores.append(float(inst.get("score", 1.0)))
-            mask_path = mask_dir / f"{pool_name}_{inst['id']:03d}.png"
-            cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255)
-            mask_file = str(mask_path.relative_to(export_dir))
-            bbox_xyxy = [float(v) for v in inst.get("box_xyxy_px", [])]
-            predictions.append({"id": int(inst["id"]), "source": inst.get("source"), "status": inst.get("status"), "score": float(inst.get("score", 0.0)), "bbox_xyxy": bbox_xyxy, "mask_file": mask_file, "final_contour_polygon": mask_to_polygons(mask), "prompt_history": _history_json(inst.get("prompt_history", []))})
-            coco_annotation_extras.append({"instance_id": int(inst["id"]), "source": inst.get("source"), "status": inst.get("status"), "mask_file": mask_file, "bbox_xyxy": bbox_xyxy})
-        metrics = compare_with_coco(masks, scores, coco_dataset, coco_image_name.strip() if coco_image_name else "", coco_split, pcs_state.get("text_prompt", "") if pool_name == "pcs" else "", image.width, image.height, coco_eval_scope, annotation_json_file)
-        with (export_dir / "prediction.json").open("w", encoding="utf-8") as f:
-            json.dump({"export_id": export_id, "pool": pool_name, "image": {"width": image.width, "height": image.height}, "predictions": predictions, "metrics": metrics}, f, ensure_ascii=False, indent=2)
-        with (export_dir / "metrics.json").open("w", encoding="utf-8") as f:
-            json.dump(metrics, f, ensure_ascii=False, indent=2)
-        coco_payload = create_prediction_coco_json(
-            masks,
-            scores,
-            image.width,
-            image.height,
-            image_file_name=coco_image_name.strip() if coco_image_name else "source_image",
-            category_name=f"{pool_name}_object",
-            export_id=export_id,
-            annotation_extras=coco_annotation_extras,
-        )
-        with (export_dir / "coco_masks.json").open("w", encoding="utf-8") as f:
-            json.dump(coco_payload, f, ensure_ascii=False, indent=2)
-        zip_path = _publish_segmentation_zip(export_dir, f"{export_id}.zip")
-        info = f"Exported {len(instances)} {pool_name.upper()} instances: {zip_path}"
-        if metrics.get("summary_lines"):
-            info += "\n" + "\n".join(metrics["summary_lines"])
-        return str(zip_path), info
-    except Exception as exc:
-        return None, f"Export failed: {exc}"
+    return _export_pool_impl(
+        {
+            '_active_instances': _active_instances,
+            '_history_json': _history_json,
+            '_overlay': _overlay,
+            '_publish_segmentation_zip': _publish_segmentation_zip,
+            '_workspace': _workspace,
+            'compare_with_coco': compare_with_coco,
+            'create_prediction_coco_json': create_prediction_coco_json,
+            'mask_to_polygons': mask_to_polygons,
+            'runtime_export_dir': runtime_export_dir,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        pool_name,
+        coco_dataset,
+        coco_image_name,
+        coco_split,
+        coco_eval_scope,
+        annotation_json_file,
+    )
 
 
 def _export_pcs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file):
-    path, info = _export_pool(image_state, pcs_state, pvs_state, mode, "pcs", coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file)
-    return path, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _export_pcs_impl(
+        {
+            '_export_pool': _export_pool,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        coco_dataset,
+        coco_image_name,
+        coco_split,
+        coco_eval_scope,
+        annotation_json_file,
+    )
 
 
 def _export_pvs(image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file):
-    path, info = _export_pool(image_state, pcs_state, pvs_state, mode, "pvs", coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file)
-    return path, *_view(image_state, pcs_state, pvs_state, mode, info)
+    return _export_pvs_impl(
+        {
+            '_export_pool': _export_pool,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
+        coco_dataset,
+        coco_image_name,
+        coco_split,
+        coco_eval_scope,
+        annotation_json_file,
+    )
 
 
 def _switch_mode(mode, image_state, pcs_state, pvs_state):

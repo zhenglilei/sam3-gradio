@@ -20,12 +20,32 @@ import layout_region_utils as regions
 import sam3_gradio_demo as demo_module
 
 
-def _function_dump(source, name):
+def _function_node(source, name):
     tree = ast.parse(source)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return ast.dump(node, include_attributes=False)
+            return node
     raise AssertionError(f"missing function: {name}")
+
+
+def _function_dump(source, name):
+    return ast.dump(_function_node(source, name), include_attributes=False)
+
+
+def _moved_function_dump(source, impl_name, baseline_source, public_name):
+    node = copy.deepcopy(_function_node(source, impl_name))
+    baseline_node = _function_node(baseline_source, public_name)
+    while (
+        node.body
+        and isinstance(node.body[0], ast.Assign)
+        and isinstance(node.body[0].value, ast.Subscript)
+        and isinstance(node.body[0].value.value, ast.Name)
+        and node.body[0].value.value.id == "_deps"
+    ):
+        node.body.pop(0)
+    node.name = public_name
+    node.args = copy.deepcopy(baseline_node.args)
+    return ast.dump(node, include_attributes=False)
 
 
 def _descendant_ids(layout, target_id):
@@ -747,9 +767,29 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             "_commit_layout_transform",
             "_create_pvs_from_layout_mask",
         ]
+        moved = {
+            "_finish_native_polygon": (
+                ROOT / "sam3_demo" / "pcs_pvs_callbacks.py",
+                "_finish_native_polygon_impl",
+            ),
+            "_run_pcs": (
+                ROOT / "sam3_demo" / "pcs_pvs_callbacks.py",
+                "_run_pcs_impl",
+            ),
+        }
         for name in protected:
             with self.subTest(name=name):
-                self.assertEqual(_function_dump(current, name), _function_dump(baseline, name))
+                if name in moved:
+                    path, impl_name = moved[name]
+                    actual = _moved_function_dump(
+                        path.read_text(encoding="utf-8"),
+                        impl_name,
+                        baseline,
+                        name,
+                    )
+                else:
+                    actual = _function_dump(current, name)
+                self.assertEqual(actual, _function_dump(baseline, name))
 
 
 if __name__ == "__main__":

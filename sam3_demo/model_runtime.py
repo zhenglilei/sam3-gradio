@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import sys
+import threading
+
+import cv2
+import numpy as np
 
 import torch
 
 from sam3_demo.config import current_dir
+from sam3_demo.segmentation_evaluation import polygon_to_mask
 
 
 try:
@@ -56,6 +61,8 @@ def initialize_models():
 
 image_predictor = initialize_models()
 
+_PVS_PREDICT_LOCK = threading.Lock()
+
 
 def _disable_legacy_predict_mask_prompt():
     if image_predictor is None or not hasattr(image_predictor, "predict_mask_prompt"):
@@ -72,3 +79,49 @@ def _disable_legacy_predict_mask_prompt():
 
 
 _disable_legacy_predict_mask_prompt()
+
+
+def _prompt_mask_size():
+    return tuple(int(v) for v in image_predictor.model.inst_interactive_predictor.model.sam_prompt_encoder.mask_input_size)
+
+def _polygon_lowres_logits(polygon, width, height):
+    target_h, target_w = _prompt_mask_size()
+    mask = polygon_to_mask(polygon, height, width).astype(np.float32)
+    lowres = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+    return ((np.clip(lowres, 0.0, 1.0) * 2.0 - 1.0) * 10.0).astype(np.float32)
+
+def _predict_inst(base_state, box_xyxy_px=None, mask_input_lowres_logits=None, point_coords_px=None, point_labels=None):
+    if image_predictor is None:
+        raise RuntimeError("Image predictor is not initialized")
+    kwargs = {"multimask_output": True, "return_logits": True}
+    if box_xyxy_px is not None:
+        kwargs["box"] = np.asarray(box_xyxy_px, dtype=np.float32)
+    if point_coords_px is not None:
+        coords = np.asarray(point_coords_px, dtype=np.float32)
+        if coords.ndim == 1:
+            coords = coords[None, :]
+        if coords.ndim != 2 or coords.shape[-1] != 2:
+            raise ValueError("point_coords_px must have shape Nx2")
+        labels = np.ones((coords.shape[0],), dtype=np.int64) if point_labels is None else np.asarray(point_labels, dtype=np.int64).reshape(-1)
+        if labels.shape[0] != coords.shape[0]:
+            raise ValueError("point_labels length must match point_coords_px")
+        kwargs["point_coords"] = coords
+        kwargs["point_labels"] = labels
+    if mask_input_lowres_logits is not None:
+        mask_input = np.asarray(mask_input_lowres_logits, dtype=np.float32)
+        if mask_input.ndim == 2:
+            mask_input = mask_input[None, :, :]
+        expected = _prompt_mask_size()
+        if mask_input.ndim != 3 or tuple(mask_input.shape[-2:]) != expected:
+            raise ValueError(f"mask_input_lowres_logits must be 1x{expected[0]}x{expected[1]}")
+        kwargs["mask_input"] = mask_input
+    with _PVS_PREDICT_LOCK:
+        masks, scores, lowres_logits = image_predictor.model.predict_inst(base_state, **kwargs)
+    masks = np.asarray(masks)
+    if masks.ndim == 2:
+        masks = masks[None, ...]
+    return {
+        "masks": masks > 0,
+        "scores": np.asarray(scores, dtype=np.float32).reshape(-1),
+        "lowres_logits": np.asarray(lowres_logits, dtype=np.float32),
+    }
