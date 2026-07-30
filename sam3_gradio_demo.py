@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SAM3 Interactive Vision Studio
-基于 SAM3 的交互式图像分割与视频跟踪系统
+基于 SAM3 的交互式图像分割系统
 """
 
 import os
@@ -22,7 +22,6 @@ current_dir = Path(__file__).resolve().parent
 runtime_dir = current_dir / ".runtime"
 runtime_tmp_dir = runtime_dir / "tmp"
 runtime_gradio_dir = runtime_dir / "gradio"
-runtime_video_dir = runtime_dir / "videos"
 runtime_export_dir = runtime_dir / "exports"
 runtime_feedback_dir = runtime_dir / "feedback"
 runtime_layout_dir = runtime_dir / "layout_masks"
@@ -52,7 +51,6 @@ coco_dataset_choices = list(coco_dataset_configs.keys())
 for path in (
     runtime_tmp_dir,
     runtime_gradio_dir,
-    runtime_video_dir,
     runtime_export_dir,
     runtime_feedback_dir,
     runtime_feedback_dir / "samples",
@@ -83,6 +81,9 @@ if component_backend_dir.exists():
 region_component_backend_dir = current_dir / "layout_region_annotator" / "backend"
 if region_component_backend_dir.exists():
     sys.path.insert(0, str(region_component_backend_dir))
+gesture_component_backend_dir = current_dir / "image_gesture_overlay" / "backend"
+if gesture_component_backend_dir.exists():
+    sys.path.insert(0, str(gesture_component_backend_dir))
 
 import numpy as np
 import torch
@@ -91,7 +92,9 @@ from PIL import Image
 import cv2
 import layout_transform_utils as _layout_tx
 import layout_region_utils as _layout_regions
+import image_crop_utils as _image_crop
 import public_download_utils as _public_downloads
+import template_match_workflow as _template_matching
 
 try:
     from gradio_layout_transform_editor import LayoutTransformEditor
@@ -108,6 +111,14 @@ except Exception as exc:
     _layout_region_annotator_import_error = exc
 else:
     _layout_region_annotator_import_error = None
+
+try:
+    from gradio_image_gesture_overlay import ImageGestureOverlay
+except Exception as exc:
+    ImageGestureOverlay = None
+    _image_gesture_overlay_import_error = exc
+else:
+    _image_gesture_overlay_import_error = None
 
 try:
     from scripts.layout_image_to_mask import extract_layout_mask as _layout_extract_mask
@@ -146,7 +157,7 @@ def _gradio_blocked_paths():
         for path in current_dir.iterdir()
         if path.name not in exempt_top_level
     ]
-    exempt_runtime = {runtime_gradio_dir.resolve(), runtime_video_dir.resolve()}
+    exempt_runtime = {runtime_gradio_dir.resolve()}
     blocked.extend(
         str(path.resolve())
         for path in runtime_dir.iterdir()
@@ -191,15 +202,9 @@ def _publish_segmentation_zip(export_dir, zip_name):
 
 # 导入SAM3相关模块
 try:
-    from sam3.model_builder import build_sam3_image_model, build_sam3_video_model
+    from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
-    from sam3.model.sam3_video_predictor import Sam3VideoPredictor
     from sam3.model.data_misc import FindStage
-    from sam3.visualization_utils import (
-        plot_results,
-        visualize_formatted_frame_output,
-        render_masklet_frame,
-    )
     from sam3.model import box_ops
 except ImportError as e:
     print(f"导入SAM3模块失败: {e}")
@@ -213,7 +218,7 @@ print(f"使用设备: {DEVICE}")
 
 # 初始化模型
 def initialize_models():
-    """初始化SAM3图像和视频预测器"""
+    """初始化 SAM3 图像预测器。"""
     try:
         # 检查模型文件是否存在
         model_dir = current_dir / "models"
@@ -223,11 +228,11 @@ def initialize_models():
         if not checkpoint_path.exists():
             print(f"模型文件不存在: {checkpoint_path}")
             print("请下载SAM3模型文件到目录")
-            return None, None
+            return None
 
         if not bpe_path.exists():
             print(f"BPE文件不存在: {bpe_path}")
-            return None, None
+            return None
 
         # 初始化图像模型
         image_model = build_sam3_image_model(
@@ -240,21 +245,16 @@ def initialize_models():
         # 创建图像处理器
         image_predictor = Sam3Processor(image_model, device=DEVICE)
 
-        # 初始化视频预测器
-        video_predictor = Sam3VideoPredictor(
-            checkpoint_path=str(checkpoint_path), bpe_path=str(bpe_path)
-        )
-
         print("模型初始化成功")
-        return image_predictor, video_predictor
+        return image_predictor
 
     except Exception as e:
         print(f"模型初始化失败: {e}")
-        return None, None
+        return None
 
 
 # 全局预测器实例
-image_predictor, video_predictor = initialize_models()
+image_predictor = initialize_models()
 
 
 def _disable_legacy_predict_mask_prompt():
@@ -1407,209 +1407,6 @@ def create_segmentation_export(
 
 # Legacy mixed point/box/polygon image segmentation flow removed.
 
-def convert_output_format(outputs):
-    """转换模型输出格式以适配可视化函数"""
-    if not outputs:
-        return {}
-
-    # 简化版的转换逻辑，复用之前的核心逻辑
-    if "out_binary_masks" in outputs:
-        formatted_outputs = {
-            "out_boxes_xywh": [],
-            "out_probs": [],
-            "out_obj_ids": [],
-            "out_binary_masks": [],
-        }
-
-        masks = outputs["out_binary_masks"]
-        if not isinstance(masks, (list, np.ndarray)):
-            masks = [masks]
-        formatted_outputs["out_binary_masks"] = list(masks)
-
-        if "out_obj_ids" in outputs:
-            formatted_outputs["out_obj_ids"] = list(outputs["out_obj_ids"])
-        else:
-            formatted_outputs["out_obj_ids"] = list(range(len(masks)))
-
-        if "out_probs" in outputs:
-            formatted_outputs["out_probs"] = list(outputs["out_probs"])
-        else:
-            formatted_outputs["out_probs"] = [1.0] * len(masks)
-
-        if "out_boxes_xywh" in outputs:
-            formatted_outputs["out_boxes_xywh"] = list(outputs["out_boxes_xywh"])
-        else:
-            # 计算边界框
-            for mask in formatted_outputs["out_binary_masks"]:
-                if isinstance(mask, np.ndarray) and mask.any():
-                    rows = np.any(mask, axis=1)
-                    cols = np.any(mask, axis=0)
-                    if rows.any() and cols.any():
-                        y_min, y_max = np.where(rows)[0][[0, -1]]
-                        x_min, x_max = np.where(cols)[0][[0, -1]]
-                        h, w = mask.shape
-                        formatted_outputs["out_boxes_xywh"].append(
-                            [
-                                x_min / w,
-                                y_min / h,
-                                (x_max - x_min) / w,
-                                (y_max - y_min) / h,
-                            ]
-                        )
-                    else:
-                        formatted_outputs["out_boxes_xywh"].append([0, 0, 0, 0])
-                else:
-                    formatted_outputs["out_boxes_xywh"].append([0, 0, 0, 0])
-        return formatted_outputs
-
-    # Fallback logic omitted for brevity as it mirrors previous implementation
-    # ... (保持之前的辅助逻辑)
-    # 这里为了节省空间，我们假设主要路径走通，如果需要完整fallback逻辑可以参考上一版代码
-    # 但为了稳健性，这里保留基本的掩码处理
-    elif "masks" in outputs:
-        formatted_outputs = {
-            "out_boxes_xywh": [],
-            "out_probs": [],
-            "out_obj_ids": [],
-            "out_binary_masks": [],
-        }
-        masks = outputs["masks"]
-        # Handle list or tensor
-        if not isinstance(masks, list) and hasattr(masks, "shape"):
-            if len(masks.shape) == 4:
-                masks = [m[0] for m in masks.cpu().numpy()]
-            elif len(masks.shape) == 3:
-                masks = [m for m in masks.cpu().numpy()]
-
-        for i, mask in enumerate(masks):
-            if hasattr(mask, "shape") and len(mask.shape) > 2:
-                mask = mask.squeeze()
-            formatted_outputs["out_binary_masks"].append(mask)
-            formatted_outputs["out_obj_ids"].append(i)
-            formatted_outputs["out_probs"].append(1.0)
-            # 简单box计算
-            if isinstance(mask, np.ndarray) and mask.any():
-                h, w = mask.shape
-                y, x = np.where(mask)
-                formatted_outputs["out_boxes_xywh"].append(
-                    [
-                        x.min() / w,
-                        y.min() / h,
-                        (x.max() - x.min()) / w,
-                        (y.max() - y.min()) / h,
-                    ]
-                )
-            else:
-                formatted_outputs["out_boxes_xywh"].append([0, 0, 0, 0])
-        return formatted_outputs
-
-    return {}
-
-
-def process_video(
-    input_video, text_prompt, confidence_threshold, progress=gr.Progress()
-):
-    """视频处理功能"""
-    if input_video is None:
-        return None, "请上传视频"
-
-    if not text_prompt:
-        return None, "请提供文本提示"
-
-    try:
-        if video_predictor is None:
-            return None, "模型未初始化，请检查模型文件"
-
-        start_time = time.time()
-        progress(0.1, desc="正在解析视频...")
-
-        logger.info(
-            json.dumps(
-                {
-                    "type": "video_tracking",
-                    "device": DEVICE,
-                    "confidence_threshold": confidence_threshold,
-                    "text_prompt": text_prompt or "",
-                },
-                ensure_ascii=False,
-            )
-        )
-
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            fd, output_path = tempfile.mkstemp(suffix=".mp4", dir=runtime_video_dir)
-            os.close(fd)
-
-            cap = cv2.VideoCapture(input_video)
-            if not cap.isOpened():
-                return None, "无法打开视频文件"
-
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-            progress(0.2, desc="初始化跟踪会话...")
-            session_response = video_predictor.start_session(resource_path=input_video)
-            session_id = session_response["session_id"]
-
-            progress(0.3, desc="应用提示...")
-            video_predictor.add_prompt(
-                session_id=session_id, frame_idx=0, text=text_prompt
-            )
-
-            progress(0.4, desc="正在跟踪目标...")
-            outputs_per_frame = {}
-            for response in video_predictor.handle_stream_request(
-                request={"type": "propagate_in_video", "session_id": session_id}
-            ):
-                outputs_per_frame[response["frame_index"]] = response["outputs"]
-
-            for frame_idx in range(frame_count):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                if frame_idx in outputs_per_frame:
-                    formatted_outputs = convert_output_format(
-                        outputs_per_frame[frame_idx]
-                    )
-                    if formatted_outputs.get("out_binary_masks"):
-                        vis_frame = render_masklet_frame(
-                            img=frame_rgb,
-                            outputs=formatted_outputs,
-                            frame_idx=frame_idx,
-                            alpha=0.5,
-                        )
-                    else:
-                        vis_frame = frame_rgb
-                else:
-                    vis_frame = frame_rgb
-
-                vis_frame_bgr = cv2.cvtColor(vis_frame, cv2.COLOR_RGB2BGR)
-                out.write(vis_frame_bgr)
-
-                progress_value = 0.4 + 0.5 * (frame_idx / frame_count)
-                progress(progress_value, desc=f"渲染帧 {frame_idx+1}/{frame_count}")
-
-            cap.release()
-            out.release()
-            video_predictor.close_session(session_id)
-
-            processing_time = time.time() - start_time
-            info = f"✨ 处理完成 | 耗时: {processing_time:.2f}s | 总帧数: {frame_count}"
-
-            return str(output_path), info
-
-    except Exception as e:
-        return None, f"❌ 处理失败: {str(e)}"
-
-
 # --- PCS/PVS single-workspace override ---
 import base64 as _sam3_base64
 import threading as _sam3_threading
@@ -1620,6 +1417,10 @@ _WORKSPACE_CACHE = {}
 _WORKSPACE_CACHE_LOCK = _sam3_threading.RLock()
 _WORKSPACE_CACHE_MAX_ENTRIES = 4
 _WORKSPACE_CACHE_TTL_SECONDS = 3600.0
+_SOURCE_IMAGE_CACHE = {}
+_SOURCE_IMAGE_CACHE_LOCK = _sam3_threading.RLock()
+_SOURCE_IMAGE_CACHE_MAX_ENTRIES = 4
+_SOURCE_IMAGE_CACHE_TTL_SECONDS = 3600.0
 _LAYOUT_CACHE = {}
 _LAYOUT_CACHE_LOCK = _sam3_threading.RLock()
 _LAYOUT_PROMPT_EPOCHS = {}
@@ -1687,6 +1488,246 @@ def _clear_workspace_cache(session_id=None):
     if not removed:
         return
     _release_workspace_memory()
+
+
+def _new_source_image_state(session_id=None):
+    return {
+        "session_id": str(session_id or ""),
+        "source_image_id": None,
+        "source_image_sha256": None,
+        "source_width": 0,
+        "source_height": 0,
+        "source_revision": 0,
+        "crop_bbox_xyxy": None,
+        "pending_crop_bbox_xyxy": None,
+        "workspace_image_id": None,
+        "workspace_hash": None,
+    }
+
+
+def _new_template_match_state():
+    return {
+        "schema_version": 1,
+        "source_image_id": None,
+        "workspace_image_id": None,
+        "active_instance_id": None,
+        "result": None,
+    }
+
+
+def _prune_source_image_cache(now=None, protected_source_id=None):
+    now = time.monotonic() if now is None else float(now)
+    protected = str(protected_source_id) if protected_source_id else None
+    expired = [
+        source_id
+        for source_id, item in _SOURCE_IMAGE_CACHE.items()
+        if now - float(item.get("last_accessed_at", now)) > _SOURCE_IMAGE_CACHE_TTL_SECONDS
+    ]
+    for source_id in expired:
+        _SOURCE_IMAGE_CACHE.pop(source_id, None)
+    while len(_SOURCE_IMAGE_CACHE) > _SOURCE_IMAGE_CACHE_MAX_ENTRIES:
+        candidates = [
+            (source_id, item)
+            for source_id, item in _SOURCE_IMAGE_CACHE.items()
+            if source_id != protected
+        ]
+        if not candidates:
+            break
+        oldest_id, _ = min(
+            candidates,
+            key=lambda item: (float(item[1].get("last_accessed_at", now)), item[0]),
+        )
+        _SOURCE_IMAGE_CACHE.pop(oldest_id, None)
+
+
+def _clear_source_image_cache(session_id=None):
+    with _SOURCE_IMAGE_CACHE_LOCK:
+        if session_id is None:
+            _SOURCE_IMAGE_CACHE.clear()
+            return
+        session_id = str(session_id)
+        for source_id in [
+            key
+            for key, item in _SOURCE_IMAGE_CACHE.items()
+            if item.get("session_id") == session_id
+        ]:
+            _SOURCE_IMAGE_CACHE.pop(source_id, None)
+
+
+def _source_image_cache_put(session_id, image):
+    session_id = str(session_id)
+    source = _pil_image(image)
+    if source is None:
+        raise ValueError("Upload a source image first")
+    source_id = uuid.uuid4().hex
+    source_hash = _layout_tx.image_pixel_sha256(source)
+    now = time.monotonic()
+    with _SOURCE_IMAGE_CACHE_LOCK:
+        for old_id in [
+            key
+            for key, item in _SOURCE_IMAGE_CACHE.items()
+            if item.get("session_id") == session_id
+        ]:
+            _SOURCE_IMAGE_CACHE.pop(old_id, None)
+        _SOURCE_IMAGE_CACHE[source_id] = {
+            "image": source.copy(),
+            "session_id": session_id,
+            "source_image_sha256": source_hash,
+            "created_at": now,
+            "last_accessed_at": now,
+        }
+        _prune_source_image_cache(now, protected_source_id=source_id)
+    whole = list(_image_crop.whole_image_crop_box(source.width, source.height))
+    return {
+        "session_id": session_id,
+        "source_image_id": source_id,
+        "source_image_sha256": source_hash,
+        "source_width": source.width,
+        "source_height": source.height,
+        "source_revision": 1,
+        "crop_bbox_xyxy": whole,
+        "pending_crop_bbox_xyxy": None,
+        "workspace_image_id": None,
+        "workspace_hash": None,
+    }
+
+
+def _source_image_cache_get(source_state):
+    if not isinstance(source_state, dict) or not source_state.get("source_image_id"):
+        raise ValueError("请先上传完整原图")
+    source_id = str(source_state["source_image_id"])
+    session_id = str(source_state.get("session_id") or "")
+    source_hash = str(source_state.get("source_image_sha256") or "")
+    now = time.monotonic()
+    with _SOURCE_IMAGE_CACHE_LOCK:
+        _prune_source_image_cache(now, protected_source_id=source_id)
+        cached = _SOURCE_IMAGE_CACHE.get(source_id)
+        if cached is not None:
+            cached["last_accessed_at"] = now
+    if cached is None:
+        raise ValueError("完整原图缓存已过期，请重新上传")
+    if cached.get("session_id") != session_id:
+        raise ValueError("完整原图不属于当前会话")
+    if not source_hash or cached.get("source_image_sha256") != source_hash:
+        raise ValueError("完整原图 hash 不匹配，请重新上传")
+    image = cached["image"]
+    if image.width != int(source_state.get("source_width") or 0) or image.height != int(source_state.get("source_height") or 0):
+        raise ValueError("完整原图尺寸不匹配，请重新上传")
+    return image.copy()
+
+
+def _image_gesture_payload(*, enabled, width, height, image_id, image_sha256, revision, interaction, crop_bbox_xyxy=None, selection_state="", status=""):
+    payload = {
+        "server_view": {
+            "enabled": bool(enabled),
+            "natural_width": int(width or 0),
+            "natural_height": int(height or 0),
+            "image_id": str(image_id or ""),
+            "image_sha256": str(image_sha256 or ""),
+            "revision": int(revision or 0),
+            "interaction": str(interaction or "disabled"),
+            "selection_state": str(selection_state or ""),
+            "status": str(status or ""),
+        },
+        "client_intent": {},
+    }
+    if crop_bbox_xyxy and len(crop_bbox_xyxy) == 4:
+        payload["client_intent"] = {
+            "gesture": "drag",
+            "start_xy": [float(crop_bbox_xyxy[0]), float(crop_bbox_xyxy[1])],
+            "end_xy": [float(crop_bbox_xyxy[2]), float(crop_bbox_xyxy[3])],
+            "expected_revision": int(revision or 0),
+            "image_id": str(image_id or ""),
+            "image_sha256": str(image_sha256 or ""),
+        }
+    return payload
+
+
+def _source_gesture_payload(source_state, status="", retain_selection=True):
+    state = source_state if isinstance(source_state, dict) else {}
+    enabled = bool(state.get("source_image_id"))
+    selection = None
+    selection_state = ""
+    if enabled and retain_selection:
+        pending = state.get("pending_crop_bbox_xyxy")
+        if isinstance(pending, (list, tuple)) and len(pending) == 4:
+            selection = pending
+            selection_state = "draft"
+        else:
+            applied = state.get("crop_bbox_xyxy")
+            whole = list(
+                _image_crop.whole_image_crop_box(
+                    int(state.get("source_width") or 0),
+                    int(state.get("source_height") or 0),
+                )
+            )
+            if (
+                isinstance(applied, (list, tuple))
+                and len(applied) == 4
+                and list(applied) != whole
+            ):
+                selection = applied
+                selection_state = "applied"
+    return _image_gesture_payload(
+        enabled=enabled,
+        width=state.get("source_width"),
+        height=state.get("source_height"),
+        image_id=state.get("source_image_id"),
+        image_sha256=state.get("source_image_sha256"),
+        revision=state.get("source_revision"),
+        interaction="crop" if enabled else "disabled",
+        crop_bbox_xyxy=selection,
+        selection_state=selection_state,
+        status=status,
+    )
+
+
+def _workspace_gesture_payload(image_state, mode=None, click_tool=None, status=""):
+    state = image_state if isinstance(image_state, dict) else {}
+    enabled = bool(state.get("image_id"))
+    if _is_layout_mask_mode(mode):
+        interaction = "click"
+    else:
+        tool = "bbox" if _is_pcs_mode(mode) else _click_tool_key(click_tool)
+        interaction = tool if tool in {"bbox", "point", "polygon"} else "disabled"
+    return _image_gesture_payload(
+        enabled=enabled,
+        width=state.get("width"),
+        height=state.get("height"),
+        image_id=state.get("image_id"),
+        image_sha256=state.get("target_image_sha256"),
+        revision=state.get("interaction_revision"),
+        interaction=interaction if enabled else "disabled",
+        status=status,
+    )
+
+
+def _validate_gesture_intent(payload, identity_state, *, allowed_gestures):
+    if not isinstance(payload, dict):
+        raise ValueError("交互 payload 无效")
+    gesture = str(payload.get("gesture") or "")
+    if gesture not in set(allowed_gestures):
+        raise ValueError("当前交互手势无效")
+    expected_revision = payload.get("expected_revision")
+    actual_revision = int(identity_state.get("interaction_revision") or identity_state.get("source_revision") or 0)
+    if isinstance(expected_revision, bool) or expected_revision != actual_revision:
+        raise ValueError("交互 revision 已过期，请重试")
+    expected_id = str(identity_state.get("image_id") or identity_state.get("source_image_id") or "")
+    expected_hash = str(identity_state.get("target_image_sha256") or identity_state.get("source_image_sha256") or "")
+    if str(payload.get("image_id") or "") != expected_id:
+        raise ValueError("交互图像 identity 已过期，请重试")
+    if str(payload.get("image_sha256") or "") != expected_hash:
+        raise ValueError("交互图像 hash 已过期，请重试")
+    start = payload.get("start_xy")
+    end = payload.get("end_xy")
+    if not isinstance(start, (list, tuple)) or len(start) != 2:
+        raise ValueError("交互起点无效")
+    if not isinstance(end, (list, tuple)) or len(end) != 2:
+        raise ValueError("交互终点无效")
+    values = np.asarray([*start, *end], dtype=np.float64)
+    if values.shape != (4,) or not np.isfinite(values).all():
+        raise ValueError("交互坐标必须是有限数值")
+    return gesture, values[:2].tolist(), values[2:].tolist()
 
 
 def _pil_image(image):
@@ -2596,6 +2637,99 @@ def _workspace_select(image_state, pcs_state, pvs_state, mode, click_tool, pcs_b
     return prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state)
 
 
+class _GestureSelectEvent:
+    def __init__(self, point):
+        self.index = list(point)
+
+
+def _workspace_gesture_input(
+    image_state,
+    pcs_state,
+    pvs_state,
+    mode,
+    click_tool,
+    pcs_bbox_kind,
+    prompt_state,
+    gesture_payload,
+):
+    prompt_state = prompt_state or _new_prompt_state()
+    try:
+        gesture, start, end = _validate_gesture_intent(
+            gesture_payload,
+            image_state or {},
+            allowed_gestures={"click", "drag"},
+        )
+        tool = "bbox" if _is_pcs_mode(mode) else _click_tool_key(click_tool)
+        if _is_layout_mask_mode(mode):
+            tool = "layout"
+        if gesture == "click":
+            if tool == "bbox":
+                raise ValueError("BBox 已改为拖拽操作，请按住左键拖出矩形")
+            result = _workspace_select(
+                image_state,
+                pcs_state,
+                pvs_state,
+                mode,
+                click_tool,
+                pcs_bbox_kind,
+                prompt_state,
+                _GestureSelectEvent(start),
+            )
+            return (*result, _workspace_gesture_payload(image_state, mode, click_tool))
+        if tool != "bbox" or _is_layout_mask_mode(mode):
+            raise ValueError("当前工具不接受拖拽，请使用单击")
+        width = int(image_state.get("width") or 0)
+        height = int(image_state.get("height") or 0)
+        box = _norm_box([start[0], start[1], end[0], end[1]], width, height)
+        if box[2] - box[0] < 4 or box[3] - box[1] < 4:
+            raise ValueError("bbox 太小")
+        prompt_state = dict(prompt_state)
+        prompt_state["bbox_start"] = None
+        prompt_state["last_bbox"] = None
+        bbox_role = "negative" if _is_pcs_mode(mode) and str(pcs_bbox_kind or "").startswith("Negative") else "positive"
+        prompt_state["bbox_role"] = bbox_role
+        bbox_payload = _payload_json(
+            {
+                "type": "bbox",
+                "box_xyxy_px": box,
+                "image_width": width,
+                "image_height": height,
+            }
+        )
+        if _is_pcs_mode(mode):
+            key = _append_pcs_bbox_sample(pcs_state, box, bbox_role)
+            label = "负样本" if key == "negative_boxes" else "正样本"
+            info = f"已拖拽添加 PCS {label} bbox: {[round(v, 1) for v in box]}"
+        else:
+            bbox_id = _append_pvs_pending_bbox(pvs_state, box)
+            info = f"已拖拽加入 PVS 待生成 bbox ID {bbox_id}: {[round(v, 1) for v in box]}"
+        result = (
+            prompt_state,
+            bbox_payload,
+            gr.update(),
+            gr.update(),
+            pcs_state,
+            pvs_state,
+            _pcs_bbox_choices(pcs_state),
+            _pvs_pending_bbox_choices(pvs_state),
+            *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state),
+        )
+    except Exception as exc:
+        info = f"图像交互失败: {exc}"
+        result = (
+            prompt_state,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            pcs_state,
+            pvs_state,
+            _pcs_bbox_choices(pcs_state),
+            _pvs_pending_bbox_choices(pvs_state),
+            *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state),
+        )
+    return (*result, _workspace_gesture_payload(image_state, mode, click_tool))
+
+
 def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refine", combine_mode="replace", progress=None):
     action = _polygon_action_key(polygon_action)
     combine = _polygon_combine_key(combine_mode)
@@ -2695,6 +2829,10 @@ def _clear_pending_point_payload():
     return ""
 
 
+def _clear_bbox_polygon_payloads():
+    return "", ""
+
+
 def _pcs_choice_update(pcs_state):
     choices = [(f"PCS #{i['id']} score={i['score']:.3f}", str(i["id"])) for i in _active_instances(pcs_state)]
     return gr.update(choices=choices, value=choices[0][1] if choices else None)
@@ -2772,23 +2910,21 @@ def _init_workspace(input_image, mode, session_state=None):
     pcs_state, pvs_state = _new_pcs_state(), _new_pvs_state()
     prompt_state = _new_prompt_state()
     session_id = _session_id_from_state(session_state)
-    image_state = {"image_id": None, "width": 0, "height": 0, "session_id": session_id, "target_image_sha256": None}
+    image_state = {"image_id": None, "width": 0, "height": 0, "session_id": session_id, "target_image_sha256": None, "interaction_revision": 0}
     if input_image is None:
         _clear_workspace_cache(session_id)
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
     if image_predictor is None:
-        _clear_workspace_cache(session_id)
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
     image = _pil_image(input_image)
     image_id = uuid.uuid4().hex
     target_hash = _layout_tx.image_pixel_sha256(image)
-    _clear_workspace_cache(session_id)
     try:
         base_state = image_predictor.set_image(image)
     except torch.OutOfMemoryError:
-        _clear_workspace_cache(session_id)
-        info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5df2\u6e05\u7406\u5f53\u524d\u5de5\u4f5c\u53f0\u7f13\u5b58\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
+        info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5f53\u524d\u5de5\u4f5c\u533a\u4fdd\u6301\u4e0d\u53d8\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
+    _clear_workspace_cache(session_id)
     now = time.monotonic()
     with _WORKSPACE_CACHE_LOCK:
         _WORKSPACE_CACHE[image_id] = {
@@ -2802,7 +2938,7 @@ def _init_workspace(input_image, mode, session_state=None):
         removed = _prune_workspace_cache(now, protected_image_id=image_id)
     if removed:
         _release_workspace_memory()
-    image_state = {"image_id": image_id, "width": image.width, "height": image.height, "session_id": session_id, "target_image_sha256": target_hash}
+    image_state = {"image_id": image_id, "width": image.width, "height": image.height, "session_id": session_id, "target_image_sha256": target_hash, "interaction_revision": 1}
     return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
 
 
@@ -2818,6 +2954,245 @@ def _init_workspace_with_layout_editor(input_image, mode, session_state=None, la
     else:
         editor = _layout_editor_empty(image_state, "Image loaded; load or generate a layout mask next.")
     return (*result, editor)
+
+
+def _attach_source_provenance(init_result, source_state):
+    result = list(init_result)
+    image_state = dict(result[0] or {})
+    if not image_state.get("image_id"):
+        detail = str(result[12] or "") if len(result) > 12 else ""
+        raise RuntimeError(detail or "SAM3 工作区初始化失败")
+    if image_state.get("image_id") and source_state.get("source_image_id"):
+        provenance = {
+            "source_image_id": str(source_state["source_image_id"]),
+            "source_image_sha256": str(source_state["source_image_sha256"]),
+            "source_width": int(source_state["source_width"]),
+            "source_height": int(source_state["source_height"]),
+            "source_revision": int(source_state["source_revision"]),
+            "crop_bbox_xyxy": list(source_state["crop_bbox_xyxy"]),
+        }
+        source_state["workspace_image_id"] = str(image_state["image_id"])
+        source_state["workspace_hash"] = str(image_state.get("target_image_sha256") or "")
+        image_state.update(provenance)
+        with _WORKSPACE_CACHE_LOCK:
+            workspace = _WORKSPACE_CACHE.get(str(image_state["image_id"]))
+            if workspace is not None:
+                workspace.update(provenance)
+    result[0] = image_state
+    return tuple(result)
+
+
+def _source_upload_workspace(input_image, mode, session_state=None, layout_state=None):
+    session_id = _session_id_from_state(session_state)
+    _clear_source_image_cache(session_id)
+    if input_image is None:
+        source_state = _new_source_image_state(session_id)
+        init_result = _init_workspace_with_layout_editor(None, mode, session_state, layout_state)
+        return (
+            source_state,
+            _source_gesture_payload(source_state),
+            "请先上传完整原图",
+            *init_result,
+        )
+    try:
+        source_state = _source_image_cache_put(session_id, input_image)
+        source = _source_image_cache_get(source_state)
+        init_result = _init_workspace_with_layout_editor(source, mode, session_state, layout_state)
+        init_result = _attach_source_provenance(init_result, source_state)
+        status = f"已载入完整原图 {source.width}x{source.height}；当前使用整图"
+        return source_state, _source_gesture_payload(source_state, status), status, *init_result
+    except Exception as exc:
+        source_state = _new_source_image_state(session_id)
+        init_result = _init_workspace_with_layout_editor(None, mode, session_state, layout_state)
+        status = f"完整原图加载失败: {exc}"
+        return source_state, _source_gesture_payload(source_state, status), status, *init_result
+
+
+def _record_source_crop_gesture(source_state, gesture_payload):
+    state = dict(source_state or {})
+    try:
+        gesture, start, end = _validate_gesture_intent(
+            gesture_payload,
+            state,
+            allowed_gestures={"drag"},
+        )
+        if gesture != "drag":
+            raise ValueError("请拖拽矩形选择裁剪区域")
+        box = _image_crop.normalize_crop_box(
+            start,
+            end,
+            int(state.get("source_width") or 0),
+            int(state.get("source_height") or 0),
+        )
+        state["pending_crop_bbox_xyxy"] = list(box)
+        status = f"待应用裁剪区域: {list(box)}"
+    except Exception as exc:
+        state["pending_crop_bbox_xyxy"] = None
+        status = f"裁剪框无效: {exc}"
+    return (
+        state,
+        _source_gesture_payload(state, status, retain_selection=state.get("pending_crop_bbox_xyxy") is not None),
+        status,
+    )
+
+
+def _crop_failure_outputs(source_state, status):
+    return (
+        source_state,
+        _source_gesture_payload(source_state, status),
+        status,
+        *([gr.update()] * 16),
+    )
+
+
+def _apply_source_crop(source_state, mode, session_state=None, layout_state=None):
+    state = dict(source_state or {})
+    try:
+        source = _source_image_cache_get(state)
+        box = state.get("pending_crop_bbox_xyxy")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            raise ValueError("请先在完整原图上拖拽矩形裁剪框")
+        box = _image_crop.normalize_crop_box(
+            box[:2],
+            box[2:],
+            source.width,
+            source.height,
+        )
+        cropped = _image_crop.crop_pil_image(source, box)
+        next_state = dict(state)
+        next_state["crop_bbox_xyxy"] = list(box)
+        next_state["pending_crop_bbox_xyxy"] = None
+        init_result = _init_workspace_with_layout_editor(cropped, mode, session_state, layout_state)
+        init_result = _attach_source_provenance(init_result, next_state)
+        status = f"已应用裁剪 {list(box)}；工作图尺寸 {cropped.width}x{cropped.height}"
+        return next_state, _source_gesture_payload(next_state, status), status, *init_result
+    except Exception as exc:
+        return _crop_failure_outputs(state, f"应用裁剪失败: {exc}")
+
+
+def _use_full_source_image(source_state, mode, session_state=None, layout_state=None):
+    state = dict(source_state or {})
+    try:
+        source = _source_image_cache_get(state)
+        whole = list(_image_crop.whole_image_crop_box(source.width, source.height))
+        if (
+            list(state.get("crop_bbox_xyxy") or []) == whole
+            and not state.get("pending_crop_bbox_xyxy")
+            and state.get("workspace_image_id")
+        ):
+            return _crop_failure_outputs(state, "当前已使用整图，无需重复应用")
+        next_state = dict(state)
+        next_state["crop_bbox_xyxy"] = whole
+        next_state["pending_crop_bbox_xyxy"] = None
+        init_result = _init_workspace_with_layout_editor(source, mode, session_state, layout_state)
+        init_result = _attach_source_provenance(init_result, next_state)
+        status = f"已恢复完整原图 {source.width}x{source.height}"
+        return next_state, _source_gesture_payload(next_state, status, retain_selection=False), status, *init_result
+    except Exception as exc:
+        return _crop_failure_outputs(state, f"恢复整图失败: {exc}")
+
+
+def _clear_template_match_outputs(status="请先完成智能分割并选择当前 PVS 实例"):
+    return _new_template_match_state(), None, None, str(status)
+
+
+def _publish_template_match_export(source_image, workflow, source_state, image_state):
+    export_id = uuid.uuid4().hex
+    export_dir = runtime_export_dir / f"template_match_{export_id}"
+    masks_dir = export_dir / "masks"
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    source_image.convert("RGB").save(export_dir / "original_image.png")
+    seed_mask = np.asarray(workflow["seed_mask_fullres_bool"], dtype=bool)
+    Image.fromarray(seed_mask.astype(np.uint8) * 255, mode="L").save(export_dir / "seed_mask.png")
+    Image.fromarray(np.asarray(workflow["overlay_rgb"], dtype=np.uint8), mode="RGB").save(
+        export_dir / "template_match_overlay.png"
+    )
+    for index, mask in enumerate(workflow["match_masks_fullres_bool"], start=1):
+        Image.fromarray(np.asarray(mask, dtype=bool).astype(np.uint8) * 255, mode="L").save(
+            masks_dir / f"match_{index:04d}.png"
+        )
+    manifest = copy.deepcopy(workflow["result"])
+    manifest["source_image"] = {
+        "image_id": str(source_state.get("source_image_id") or ""),
+        "pixel_sha256": str(source_state.get("source_image_sha256") or ""),
+        "width": int(source_state.get("source_width") or 0),
+        "height": int(source_state.get("source_height") or 0),
+    }
+    manifest["workspace"] = {
+        "image_id": str(image_state.get("image_id") or ""),
+        "pixel_sha256": str(image_state.get("target_image_sha256") or ""),
+        "crop_bbox_xyxy": list(image_state.get("crop_bbox_xyxy") or []),
+    }
+    for match in manifest.get("matches", []):
+        match["mask_file"] = f"masks/match_{int(match['match_id']):04d}.png"
+    with (export_dir / "matches.json").open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=False, indent=2)
+    return _publish_segmentation_zip(export_dir, f"template_match_{export_id}.zip"), manifest
+
+
+def _run_template_matching(
+    source_state,
+    image_state,
+    pvs_state,
+    mode,
+    match_threshold,
+    expand_threshold,
+    nms_threshold,
+):
+    try:
+        if not _is_pvs_pool_mode(mode):
+            raise ValueError("模板匹配需要先在 PVS Manual 或 Layout Mask 模式获得 active PVS 实例")
+        _workspace(image_state)
+        source = _source_image_cache_get(source_state)
+        if str(source_state.get("workspace_image_id") or "") != str(image_state.get("image_id") or ""):
+            raise ValueError("当前工作图 provenance 已过期，请重新应用裁剪")
+        if str(source_state.get("workspace_hash") or "") != str(
+            image_state.get("target_image_sha256") or ""
+        ):
+            raise ValueError("当前工作图 hash 已过期，请重新应用裁剪")
+        source_id = str(source_state.get("source_image_id") or "")
+        if str(image_state.get("source_image_id") or "") != source_id:
+            raise ValueError("当前分割工作区不属于这张完整原图，请重新应用裁剪")
+        if str(image_state.get("source_image_sha256") or "") != str(source_state.get("source_image_sha256") or ""):
+            raise ValueError("完整原图 provenance 已过期，请重新应用裁剪")
+        crop_bbox = list(image_state.get("crop_bbox_xyxy") or [])
+        if crop_bbox != list(source_state.get("crop_bbox_xyxy") or []):
+            raise ValueError("当前裁剪 provenance 已过期，请重新应用裁剪")
+        active_id = pvs_state.get("active_instance_id")
+        if active_id is None:
+            raise ValueError("请先完成智能分割并选择当前 PVS 实例")
+        workflow = _template_matching.run_template_match_workflow(
+            np.asarray(source.convert("RGB")),
+            crop_bbox,
+            pvs_state,
+            active_instance_id=active_id,
+            match_threshold=float(0.7 if match_threshold in (None, "") else match_threshold),
+            expand_threshold=int(20 if expand_threshold in (None, "") else expand_threshold),
+            nms_threshold=float(0.3 if nms_threshold in (None, "") else nms_threshold),
+        )
+        zip_path, manifest = _publish_template_match_export(
+            source,
+            workflow,
+            source_state,
+            image_state,
+        )
+        count = int(manifest.get("match_count") or 0)
+        state = {
+            "schema_version": 1,
+            "source_image_id": source_id,
+            "workspace_image_id": str(image_state.get("image_id") or ""),
+            "active_instance_id": active_id,
+            "result": manifest,
+        }
+        status = f"模板匹配完成：{count} matches；结果使用完整原图坐标，不写入 PVS 实例池"
+        return (
+            state,
+            Image.fromarray(np.asarray(workflow["overlay_rgb"], dtype=np.uint8), mode="RGB"),
+            str(zip_path),
+            status,
+        )
+    except Exception as exc:
+        return _clear_template_match_outputs(f"模板匹配失败: {exc}")
 
 
 def _delete_selected_pcs_bbox(image_state, pcs_state, pvs_state, mode, selected_bbox_id):
@@ -6765,9 +7140,10 @@ def _reset_layout_controls_with_prompt_epoch(image_state, layout_state):
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
     custom_css = """
-    .container { max-width: 1200px; margin: auto; padding-top: 20px; }
-    h1 { text-align: center; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #2d3748; margin-bottom: 10px; }
-    .description { text-align: center; font-size: 1.1em; color: #4a5568; margin-bottom: 30px; }
+    .container { max-width: 1200px; margin: auto; padding-top: 10px; }
+    h1 { text-align: center; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #2d3748; margin: 0 0 8px; }
+    .description { text-align: center; font-size: 1.1em; color: #4a5568; margin: 0 0 16px; }
+    #main_tabs { margin-top: -32px; }
     .gr-button-primary { background: linear-gradient(90deg, #4b6cb7 0%, #182848 100%); border: none; }
     .gr-box { border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
     #interaction-info { font-weight: bold; color: #2b6cb0; text-align: center; background-color: #ebf8ff; padding: 10px; border-radius: 5px; border: 1px solid #bee3f8; }
@@ -6775,6 +7151,9 @@ def create_demo():
     .mode-radio .wrap { display: flex; width: 100%; gap: 10px; }
     .mode-radio .wrap label { flex: 1; justify-content: center; text-align: center; }
     .sam3-panel textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .gesture-overlay-anchor { min-height: 0 !important; height: 0 !important; overflow: visible !important; }
+    .image-prepost-row { align-items: stretch !important; }
+    .image-prepost-column { height: 100%; }
     .polygon-finish-btn button {
         width: 100%;
         min-height: 42px;
@@ -6812,8 +7191,10 @@ def create_demo():
             gr.Markdown("\u57fa\u4e8e SAM3 \u7684 PCS \u81ea\u52a8\u6982\u5ff5\u5206\u5272\u4e0e PVS \u624b\u52a8\u5b9e\u4f8b\u5206\u5272\u5de5\u4f5c\u53f0", elem_classes="description")
             session_state = gr.State(_new_session_state())
             image_state = gr.State({"image_id": None, "width": 0, "height": 0})
+            source_image_state = gr.State(_new_source_image_state())
             pcs_state = gr.State(_new_pcs_state())
             pvs_state = gr.State(_new_pvs_state())
+            template_match_state = gr.State(_new_template_match_state())
             prompt_state = gr.State(_new_prompt_state())
             layout_state = gr.State(_new_layout_state())
             layout_region_state = gr.State(_new_layout_region_state())
@@ -6821,8 +7202,58 @@ def create_demo():
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
 
-            with gr.Tabs():
+            with gr.Tabs(elem_id="main_tabs"):
                 with gr.TabItem("智能图像分割", id="tab_image"):
+                    with gr.Row(equal_height=True, elem_id="image_prepost_row", elem_classes="image-prepost-row"):
+                        with gr.Column(scale=1, elem_id="source_prepost_column", elem_classes="image-prepost-column"):
+                            gr.Markdown("### 上传与裁剪")
+                            source_image_upload = gr.Image(
+                                type="pil",
+                                label="完整原图",
+                                show_label=False,
+                                sources=["upload", "clipboard"],
+                                elem_id="source_input_image",
+                                elem_classes="aligned-prepost-preview",
+                                height=320,
+                            )
+                            if ImageGestureOverlay is not None:
+                                source_crop_overlay = ImageGestureOverlay(
+                                    value=_source_gesture_payload(_new_source_image_state()),
+                                    label="完整原图裁剪手势",
+                                    show_label=False,
+                                    target_elem_id="source_input_image",
+                                    height=1,
+                                    elem_classes="gesture-overlay-anchor",
+                                )
+                            else:
+                                gr.Markdown(f"图像手势组件不可用。错误：{_image_gesture_overlay_import_error}")
+                                source_crop_overlay = gr.JSON(
+                                    value=_source_gesture_payload(_new_source_image_state()),
+                                    visible=False,
+                                )
+                            with gr.Row():
+                                apply_crop_btn = gr.Button("应用裁剪", variant="primary")
+                                use_full_image_btn = gr.Button("使用整图", variant="secondary")
+                            source_crop_status = gr.Markdown("请上传完整原图；默认直接使用整图。")
+                            with gr.Accordion("模板匹配可选参数", open=False):
+                                match_threshold = gr.Slider(minimum=0.0, maximum=1.0, value=0.7, step=0.01, label="matchThreshold")
+                                expand_threshold = gr.Number(value=20, minimum=0, precision=0, label="expandThreshold (px)")
+                                nms_threshold = gr.Slider(minimum=0.0, maximum=1.0, value=0.3, step=0.01, label="nmsThreshold")
+                        with gr.Column(scale=1, elem_id="template_prepost_column", elem_classes="image-prepost-column"):
+                            gr.Markdown("### 模板匹配")
+                            template_match_preview = gr.Image(
+                                type="pil",
+                                label="完整原图模板匹配结果",
+                                show_label=False,
+                                interactive=False,
+                                height=320,
+                                elem_id="template_match_preview",
+                                elem_classes="aligned-prepost-preview",
+                            )
+                            gr.Markdown("基于当前 active PVS 分割结果，在完整原图中寻找相似结构。")
+                            run_template_match_btn = gr.Button("开始模板匹配", variant="primary")
+                            template_match_status = gr.Markdown("请先完成智能分割并选择当前 PVS 实例")
+                            template_match_file = gr.File(label="下载模板匹配结果包", interactive=False)
                     mode = gr.Radio(
                         choices=[("PCS Auto 自动概念分割", "PCS Auto"), ("PVS Manual 手动实例分割", "PVS Manual"), ("版图 mask 提示分割", "Layout Mask")],
                         value="PVS Manual",
@@ -6832,7 +7263,21 @@ def create_demo():
                     with gr.Row():
                         with gr.Column(scale=1):
                             gr.Markdown("### 原始图像（点击进行交互）")
-                            image_upload = gr.Image(type="numpy", label="原始图像", show_label=False, sources=["upload", "clipboard"], elem_id="input_image")
+                            image_upload = gr.Image(type="numpy", label="原始图像", show_label=False, interactive=False, elem_id="input_image")
+                            if ImageGestureOverlay is not None:
+                                workspace_gesture_overlay = ImageGestureOverlay(
+                                    value=_workspace_gesture_payload({}, "PVS Manual", "bbox"),
+                                    label="分割交互手势",
+                                    show_label=False,
+                                    target_elem_id="input_image",
+                                    height=1,
+                                    elem_classes="gesture-overlay-anchor",
+                                )
+                            else:
+                                workspace_gesture_overlay = gr.JSON(
+                                    value=_workspace_gesture_payload({}, "PVS Manual", "bbox"),
+                                    visible=False,
+                                )
                             with gr.Group():
                                 gr.Markdown("### \u4ea4\u4e92\u6a21\u5f0f")
                                 click_tool = gr.Radio(
@@ -7072,14 +7517,13 @@ def create_demo():
                                 label="下载 Label 标注包",
                                 interactive=False,
                             )
-                with gr.TabItem("\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a", id="tab_video"):
-                    gr.Markdown("\u5f53\u524d PVS demo \u5206\u652f\u805a\u7126\u56fe\u50cf\u5206\u5272\uff1b\u89c6\u9891\u76ee\u6807\u8ddf\u8e2a\u8bf7\u4f7f\u7528\u539f\u59cb demo \u5206\u652f\u3002")
 
             run_layout_mask_event = run_layout_mask_btn.click(
                 fn=_run_layout_mask_page_with_downloads,
                 inputs=[session_state, image_state, layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode, layout_morph_pixels],
                 outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
                 api_name="_run_layout_mask_page",
             )
             run_layout_region_event = run_layout_mask_event.then(
@@ -7093,6 +7537,7 @@ def create_demo():
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             save_layout_mask_btn.click(
                 fn=_save_current_layout_mask,
@@ -7105,6 +7550,7 @@ def create_demo():
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
                 api_name="_clear_current_layout_mask",
             )
             clear_layout_region_event = clear_layout_mask_event.then(
@@ -7118,6 +7564,7 @@ def create_demo():
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             layout_region_annotator.input(
                 fn=_preview_layout_region,
@@ -7136,6 +7583,7 @@ def create_demo():
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             layout_region_selector.input(
                 fn=_select_layout_region,
@@ -7154,6 +7602,7 @@ def create_demo():
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
 
             export_layout_regions_btn.click(
@@ -7169,84 +7618,203 @@ def create_demo():
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_pvs_info],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             use_current_layout_event.then(
                 fn=_load_layout_prompt_choices,
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             load_layout_binary_event = load_layout_binary_btn.click(
                 fn=_load_layout_binary_mask_png,
                 inputs=[session_state, image_state, layout_binary_upload, layout_region_mode],
                 outputs=[layout_state, layout_editor, layout_pvs_info],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             load_layout_binary_event.then(
                 fn=_reset_layout_prompt_selection,
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             layout_prompt_mask_selector.input(
                 fn=_select_layout_prompt_mask,
                 inputs=[image_state, layout_state, layout_prompt_mask_selector],
                 outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             update_layout_preview_btn.click(
                 fn=_update_layout_preview_with_groups,
                 inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor],
                 outputs=[layout_state, image_upload, layout_editor, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             layout_editor.change(
                 fn=_sync_layout_controls_from_editor_with_prompt_epoch,
                 inputs=[layout_state, layout_editor],
                 outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
             reset_layout_btn.click(
                 fn=_reset_layout_controls_with_prompt_epoch,
                 inputs=[image_state, layout_state],
                 outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_pvs_info],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
-            create_from_layout_btn.click(
+            create_from_layout_event = create_from_layout_btn.click(
                 fn=_create_pvs_from_layout_selection,
                 inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_prompt_mask_selector],
                 outputs=[pvs_state, layout_state, layout_editor, layout_pvs_info, *common],
                 show_progress_on=[result_image],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
+            )
+            create_from_layout_event.then(
+                fn=_clear_template_match_outputs,
+                inputs=None,
+                outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+                concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
 
-            image_upload_event = image_upload.upload(fn=_init_workspace_with_layout_editor, inputs=[image_upload, mode, session_state, layout_state], outputs=[image_state, pcs_state, pvs_state, prompt_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, export_file, layout_editor], concurrency_limit=1)
-            image_upload_point_event = image_upload_event.then(fn=_clear_pending_point_payload, inputs=None, outputs=[point_payload], concurrency_limit=1)
-            image_upload_point_event.then(
-                fn=_reset_layout_prompt_selection,
-                inputs=[image_state, layout_state],
-                outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
+            workspace_init_outputs = [
+                image_state,
+                pcs_state,
+                pvs_state,
+                prompt_state,
+                pcs_bbox_selector,
+                pvs_pending_bbox_selector,
+                *common,
+                export_file,
+                layout_editor,
+            ]
+            source_image_event = source_image_upload.upload(
+                fn=_source_upload_workspace,
+                inputs=[source_image_upload, mode, session_state, layout_state],
+                outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
                 concurrency_limit=1,
+                concurrency_id="image-prepost-state",
             )
-            image_upload.select(fn=_workspace_select, inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common], concurrency_limit=1)
-            finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
-            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1)
-            mode.change(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, layout_point_refine_panel, *common, layout_editor], concurrency_limit=1)
-            click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
-            delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1)
-            run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1)
-            create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
-            delete_selected_pending_bbox_btn.click(fn=_delete_selected_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pvs_pending_bbox_selector], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1)
-            clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1)
-            pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
-            layout_point_btn.click(fn=_layout_point_refine, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, layout_point_kind, prompt_state], outputs=[prompt_state, point_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1)
-            active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1)
-            undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
-            delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
-            accept_pvs_btn.click(fn=_accept_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1)
-            export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1)
-            export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1)
-            submit_feedback_btn.click(fn=_submit_feedback, inputs=[image_state, pcs_state, pvs_state, mode, feedback_rating, feedback_tags, feedback_comment], outputs=common, concurrency_limit=1)
+            source_clear_event = source_image_upload.clear(
+                fn=_source_upload_workspace,
+                inputs=[source_image_upload, mode, session_state, layout_state],
+                outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
+                concurrency_limit=1,
+                concurrency_id="image-prepost-state",
+            )
+            source_crop_overlay.input(
+                fn=_record_source_crop_gesture,
+                inputs=[source_image_state, source_crop_overlay],
+                outputs=[source_image_state, source_crop_overlay, source_crop_status],
+                concurrency_limit=1,
+                concurrency_id="image-prepost-state",
+            )
+            apply_crop_event = apply_crop_btn.click(
+                fn=_apply_source_crop,
+                inputs=[source_image_state, mode, session_state, layout_state],
+                outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
+                concurrency_limit=1,
+                concurrency_id="image-prepost-state",
+            )
+            use_full_image_event = use_full_image_btn.click(
+                fn=_use_full_source_image,
+                inputs=[source_image_state, mode, session_state, layout_state],
+                outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
+                concurrency_limit=1,
+                concurrency_id="image-prepost-state",
+            )
+            for workspace_event in (source_image_event, source_clear_event, apply_crop_event, use_full_image_event):
+                workspace_event.then(fn=_clear_pending_point_payload, inputs=None, outputs=[point_payload], concurrency_limit=1, concurrency_id="image-prepost-state")
+                workspace_event.then(fn=_clear_bbox_polygon_payloads, inputs=None, outputs=[bbox_payload, polygon_payload], concurrency_limit=1, concurrency_id="image-prepost-state")
+                workspace_event.then(
+                    fn=_reset_layout_prompt_selection,
+                    inputs=[image_state, layout_state],
+                    outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
+                    concurrency_limit=1,
+                    concurrency_id="image-prepost-state",
+                )
+                workspace_event.then(
+                    fn=_workspace_gesture_payload,
+                    inputs=[image_state, mode, click_tool],
+                    outputs=[workspace_gesture_overlay],
+                    concurrency_limit=1,
+                    concurrency_id="image-prepost-state",
+                )
+                workspace_event.then(
+                    fn=_clear_template_match_outputs,
+                    inputs=None,
+                    outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+                    concurrency_limit=1,
+                    concurrency_id="image-prepost-state",
+                )
+            workspace_gesture_overlay.input(
+                fn=_workspace_gesture_input,
+                inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state, workspace_gesture_overlay],
+                outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, workspace_gesture_overlay],
+                concurrency_limit=1,
+                concurrency_id="image-prepost-state",
+            )
+            run_template_match_btn.click(
+                fn=_run_template_matching,
+                inputs=[source_image_state, image_state, pvs_state, mode, match_threshold, expand_threshold, nms_threshold],
+                outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+                concurrency_limit=1,
+                concurrency_id="image-prepost-state",
+            )
+            for template_parameter in (match_threshold, expand_threshold, nms_threshold):
+                template_parameter.change(
+                    fn=_clear_template_match_outputs,
+                    inputs=None,
+                    outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+                    concurrency_limit=1,
+                    concurrency_id="image-prepost-state",
+                )
+            finish_polygon_event = finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
+            clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            mode_event = mode.change(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, layout_point_refine_panel, *common, layout_editor], concurrency_limit=1, concurrency_id="image-prepost-state")
+            mode_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=1, concurrency_id="image-prepost-state")
+            click_tool_event = click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
+            click_tool_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=1, concurrency_id="image-prepost-state")
+            delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            create_pvs_batch_event = create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
+            delete_selected_pending_bbox_btn.click(fn=_delete_selected_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pvs_pending_bbox_selector], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            pvs_point_event = pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
+            layout_point_event = layout_point_btn.click(fn=_layout_point_refine, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, layout_point_kind, prompt_state], outputs=[prompt_state, point_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
+            active_pvs_event = active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            undo_pvs_event = undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            delete_pvs_event = delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            accept_pvs_event = accept_pvs_btn.click(fn=_accept_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            for invalidating_event in (
+                mode_event,
+                finish_polygon_event,
+                create_pvs_batch_event,
+                pvs_point_event,
+                layout_point_event,
+                active_pvs_event,
+                undo_pvs_event,
+                delete_pvs_event,
+                accept_pvs_event,
+            ):
+                invalidating_event.then(
+                    fn=_clear_template_match_outputs,
+                    inputs=None,
+                    outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+                    concurrency_limit=1,
+                    concurrency_id="image-prepost-state",
+                )
+            export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+            submit_feedback_btn.click(fn=_submit_feedback, inputs=[image_state, pcs_state, pvs_state, mode, feedback_rating, feedback_tags, feedback_comment], outputs=common, concurrency_limit=1, concurrency_id="image-prepost-state")
         gr.Markdown("---\n<div style='text-align:center;color:#718096;font-size:0.9em;'>Powered by SAM3</div>")
     return demo
 # --- end PCS/PVS single-workspace override ---

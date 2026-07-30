@@ -16,7 +16,6 @@ The demo now pins all runtime paths to Zheng Qiyuan owned directories:
 
 - Gradio uploads: `/data/zhengqiyuan/sam3-gradio/.runtime/gradio`
 - Python/system temp files: `/data/zhengqiyuan/sam3-gradio/.runtime/tmp`
-- Video outputs: `/data/zhengqiyuan/sam3-gradio/.runtime/videos`
 - Demo logs for managed runs: `/data/zhengqiyuan/sam3-gradio/.runtime/logs`
 - Hugging Face cache: `/data/zhengqiyuan/.cache/huggingface`
 - ModelScope cache: `/data/zhengqiyuan/.cache/modelscope`
@@ -26,7 +25,7 @@ This fixes the upload failure caused by Gradio defaulting to `/tmp/gradio`, whic
 
 ## Model Path
 
-The active image/video checkpoint remains:
+The active image checkpoint remains:
 
 - `/data/zhengqiyuan/sam3-gradio/models/sam3.pt`
 

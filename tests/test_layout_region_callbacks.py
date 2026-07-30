@@ -469,7 +469,6 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             current_dir=repository,
             runtime_dir=runtime,
             runtime_gradio_dir=gradio_runtime,
-            runtime_video_dir=video_runtime,
             public_download_dir=public,
         ):
             allowed = demo_module._gradio_allowed_paths()
@@ -485,7 +484,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertNotIn(str(public.resolve()), blocked)
         self.assertNotIn(str((repository / ".gradio").resolve()), blocked)
         self.assertNotIn(str(gradio_runtime.resolve()), blocked)
-        self.assertNotIn(str(video_runtime.resolve()), blocked)
+        self.assertIn(str(video_runtime.resolve()), blocked)
 
     def test_pcs_export_pool_returns_public_zip(self):
         image_id = "export-image"

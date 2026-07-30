@@ -181,15 +181,19 @@ python sam3_gradio_demo.py
 ### 上传图像
 
 1. 打开 Web 页面。
-2. 在左侧上传图片。
-3. 上传完成后，左侧显示可交互原图，右侧预留同尺寸分割结果。
+2. 在功能模式上方的“上传与裁剪”区域上传完整原图。
+3. 上传后默认直接使用整图；如需局部分割，在完整原图上拖出矩形，再点击“应用裁剪”。
+4. “使用整图”可恢复完整原图工作区。
+5. 下方“原始图像”只负责 point、bbox 和 polygon 交互，不再承担上传。
+
+裁剪图作为统一 SAM3 工作图；服务端保留完整原图及 crop provenance，用于模板匹配时映射回完整图坐标。
 
 ### PCS Auto 操作流程
 
 1. `功能模式` 选择 `PCS Auto 自动概念分割`。
 2. 输入 `文本提示 (Text Prompt)`，例如 `ACT-1` 或 `a cat`。
 3. 在 `PCS bbox 样本类型` 选择 `正样本 bbox` 或 `负样本 bbox`。
-4. 在原图上两次点击成框，bbox 会自动加入对应样本列表。
+4. 在原图上按住左键拖出矩形，bbox 会自动加入对应样本列表。
 5. 如需删除某个 bbox，在 `PCS bbox 列表` 选择对应 ID，点击 `删除选中 PCS bbox`。
 6. 如需全部重来，点击 `清空提示 (Clear Prompts)`。
 7. 调整 `置信度阈值 (Confidence)`。
@@ -205,7 +209,7 @@ python sam3_gradio_demo.py
 
 1. `功能模式` 选择 `PVS Manual 手动实例分割`。
 2. `交互模式` 选择 `框提示 (Box)`。
-3. 在原图上两次点击成框，bbox 会进入待生成队列。
+3. 在原图上按住左键拖出矩形，bbox 会进入待生成队列。
 4. 在 `PVS 待生成 bbox 列表` 可选择任意 ID 删除。
 5. `清空待生成 bbox` 只清空 pending bbox，不删除已生成实例。
 6. 点击 `批量生成 PVS 实例`，系统会为 pending bbox 创建实例。
@@ -241,6 +245,15 @@ python sam3_gradio_demo.py
 - `清空实例`：清空当前 PVS 实例。
 - `确认`：将当前实例标记为 accepted。
 - `导出 PVS`：导出有效 PVS 实例。
+
+### 完整原图模板匹配
+
+1. 先通过 PVS Manual 或 Layout Mask 创建分割实例，并选择当前 PVS seed。
+2. 点击顶部“开始模板匹配”；默认参数为 matchThreshold=0.7、expandThreshold=20 px、nmsThreshold=0.3。
+3. 结果在完整原图坐标中独立预览和导出，不写入 PVS instance pool，也不再次调用 SAM3。
+
+Blocker 固定为：seed 始终排除自身，其他 accepted PVS 阻止重复匹配，draft/deleted 不阻止候选。导出包包含完整原图、seed mask、overlay、matches JSON 及每个结果独立的 0/255 PNG mask。
+
 
 ### 版图 mask 提示分割流程
 

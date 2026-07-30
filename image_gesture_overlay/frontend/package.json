@@ -1,0 +1,35 @@
+{
+  "name": "gradio_image_gesture_overlay",
+  "version": "0.0.1",
+  "description": "Transparent click and drag gesture overlay for Gradio images",
+  "type": "module",
+  "license": "Apache-2.0",
+  "private": false,
+  "dependencies": {
+    "@gradio/atoms": "0.24.0",
+    "@gradio/statustracker": "0.14.1",
+    "@gradio/utils": "0.12.2",
+    "svelte": "^5.48.0"
+  },
+  "devDependencies": {
+    "@gradio/preview": "0.16.2"
+  },
+  "main_changeset": true,
+  "main": "./Index.svelte",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "gradio": "./Index.svelte",
+      "svelte": "./dist/Index.svelte",
+      "types": "./dist/Index.svelte.d.ts"
+    },
+    "./example": {
+      "gradio": "./Example.svelte",
+      "svelte": "./dist/Example.svelte",
+      "types": "./dist/Example.svelte.d.ts"
+    }
+  },
+  "peerDependencies": {
+    "svelte": "^5.48.0"
+  }
+}

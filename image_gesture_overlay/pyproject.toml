@@ -1,0 +1,27 @@
+[build-system]
+requires = [
+  "hatchling",
+  "hatch-requirements-txt",
+  "hatch-fancy-pypi-readme>=22.5.0",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "gradio_image_gesture_overlay"
+version = "0.0.1"
+description = "Transparent click and drag gesture overlay for Gradio images"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.8"
+authors = [{ name = "Zhengqiyuan SAM3 Demo" }]
+keywords = ["gradio-custom-component", "image", "crop", "bbox"]
+dependencies = ["gradio>=6.14,<7"]
+
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
+[tool.hatch.build]
+artifacts = ["/backend/gradio_image_gesture_overlay/templates", "*.pyi"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["/backend/gradio_image_gesture_overlay"]

@@ -21,6 +21,8 @@ PUBLIC_DOWNLOAD_CATEGORIES = frozenset(
     }
 )
 DEFAULT_PUBLIC_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60
+_ZIP_MIN_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+_ZIP_MAX_DATE_TIME = (2107, 12, 31, 23, 59, 58)
 
 PathLike: TypeAlias = str | os.PathLike[str]
 PublishSources: TypeAlias = Mapping[str, PathLike] | Sequence[PathLike]
@@ -205,6 +207,27 @@ def _zip_sources(source_dir: PathLike) -> list[tuple[Path, str]]:
     return files
 
 
+def _zip_date_time(modified_at: float) -> tuple[int, int, int, int, int, int]:
+    """Convert a filesystem mtime to ZIP's supported local-time range."""
+
+    try:
+        value = time.localtime(modified_at)
+    except (OverflowError, OSError, ValueError):
+        return _ZIP_MIN_DATE_TIME if modified_at < 0 else _ZIP_MAX_DATE_TIME
+    if value.tm_year < _ZIP_MIN_DATE_TIME[0]:
+        return _ZIP_MIN_DATE_TIME
+    if value.tm_year > _ZIP_MAX_DATE_TIME[0]:
+        return _ZIP_MAX_DATE_TIME
+    return (
+        value.tm_year,
+        value.tm_mon,
+        value.tm_mday,
+        value.tm_hour,
+        value.tm_min,
+        value.tm_sec,
+    )
+
+
 def publish_zip(
     root: PathLike,
     category: str,
@@ -222,9 +245,16 @@ def publish_zip(
     try:
         with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
             for source, archive_name in files:
-                source_file, _ = _open_regular_file(source)
+                source_file, metadata = _open_regular_file(source)
+                archive_info = zipfile.ZipInfo(
+                    archive_name,
+                    date_time=_zip_date_time(metadata.st_mtime),
+                )
+                archive_info.compress_type = zipfile.ZIP_DEFLATED
+                archive_info.create_system = 3
+                archive_info.external_attr = (metadata.st_mode & 0xFFFF) << 16
                 with source_file:
-                    with archive.open(archive_name, "w") as archive_member:
+                    with archive.open(archive_info, "w") as archive_member:
                         shutil.copyfileobj(source_file, archive_member)
         return archive_path
     except Exception:

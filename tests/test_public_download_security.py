@@ -2,6 +2,7 @@ import ast
 import os
 import re
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -100,6 +101,14 @@ class PublicDownloadSecurityTests(unittest.TestCase):
         (staging / "regions.json").write_text('{"regions": []}', encoding="utf-8")
         (staging / "source_mask.png").write_bytes(b"png")
         (nested / "manifest.json").write_text('{"schema_version": 1}', encoding="utf-8")
+        expected_date_time = (2026, 7, 30, 12, 34, 56)
+        modified_at = time.mktime((*expected_date_time, 0, 0, -1))
+        for source in (
+            staging / "regions.json",
+            staging / "source_mask.png",
+            nested / "manifest.json",
+        ):
+            os.utime(source, (modified_at, modified_at))
 
         archive_path = publish_zip(
             self.root,
@@ -119,6 +128,30 @@ class PublicDownloadSecurityTests(unittest.TestCase):
                 ["metadata/manifest.json", "regions.json", "source_mask.png"],
             )
             self.assertEqual(archive.read("regions.json"), b'{"regions": []}')
+            self.assertEqual(
+                {item.date_time for item in archive.infolist()},
+                {expected_date_time},
+            )
+
+    def test_publish_zip_clamps_pre_1980_member_timestamps(self):
+        staging = self.internal / "legacy-export"
+        staging.mkdir()
+        source = staging / "result.json"
+        source.write_text("{}", encoding="utf-8")
+        os.utime(source, (0, 0))
+
+        archive_path = publish_zip(
+            self.root,
+            "pcs_pvs_exports",
+            staging,
+            "legacy.zip",
+        )
+
+        with zipfile.ZipFile(archive_path) as archive:
+            self.assertEqual(
+                archive.getinfo("result.json").date_time,
+                (1980, 1, 1, 0, 0, 0),
+            )
 
     def test_publish_zip_rejects_symlinks_and_cross_platform_traversal_names(self):
         outside = self.internal / "outside.txt"
