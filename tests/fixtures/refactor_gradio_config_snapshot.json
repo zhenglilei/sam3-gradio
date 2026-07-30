@@ -1,0 +1,5238 @@
+{
+  "component_count": 211,
+  "components": [
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "# SAM3 交互式视觉工作台",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "基于 SAM3 的 PCS 自动概念分割与 PVS 手动实例分割工作台",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {
+        "elem_id": "bbox_payload",
+        "label": "bbox payload",
+        "lines": 1,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "elem_id": "polygon_payload",
+        "label": "polygon payload",
+        "lines": 1,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "elem_id": "point_payload",
+        "label": "point payload",
+        "lines": 1,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "elem_id": "main_tabs",
+        "visible": true
+      },
+      "type": "tabs"
+    },
+    {
+      "props": {
+        "id": "tab_image",
+        "interactive": true,
+        "label": "智能图像分割",
+        "visible": true
+      },
+      "type": "tabitem"
+    },
+    {
+      "props": {
+        "elem_id": "image_prepost_row",
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "elem_id": "source_prepost_column",
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### 上传与裁剪",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "elem_id": "source_input_image",
+        "height": 320,
+        "label": "完整原图",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "height": 1,
+        "label": "完整原图裁剪手势",
+        "show_label": false,
+        "value": {
+          "client_intent": {},
+          "server_view": {
+            "enabled": false,
+            "image_id": "",
+            "image_sha256": "",
+            "interaction": "disabled",
+            "natural_height": 0,
+            "natural_width": 0,
+            "revision": 0,
+            "selection_state": "",
+            "status": ""
+          }
+        },
+        "visible": true
+      },
+      "type": "imagegestureoverlay"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "应用裁剪",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "使用整图",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "请上传完整原图；默认直接使用整图。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "label": "模板匹配可选参数",
+        "visible": true
+      },
+      "type": "accordion"
+    },
+    {
+      "props": {
+        "label": "matchThreshold",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "show_label": true,
+        "step": 0.01,
+        "value": 0.7,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {
+        "label": "expandThreshold (px)",
+        "minimum": 0,
+        "show_label": true,
+        "step": 1,
+        "value": 20,
+        "visible": true
+      },
+      "type": "number"
+    },
+    {
+      "props": {
+        "label": "nmsThreshold",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "show_label": true,
+        "step": 0.01,
+        "value": 0.3,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "elem_id": "template_prepost_column",
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### 模板匹配",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "elem_id": "template_match_preview",
+        "height": 320,
+        "interactive": false,
+        "label": "完整原图模板匹配结果",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "webcam",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "基于当前 active PVS 分割结果，在完整原图中寻找相似结构。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "开始模板匹配",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "请先完成智能分割并选择当前 PVS 实例",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "下载模板匹配结果包",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "file"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "PCS Auto 自动概念分割",
+            "PCS Auto"
+          ],
+          [
+            "PVS Manual 手动实例分割",
+            "PVS Manual"
+          ],
+          [
+            "版图 mask 提示分割",
+            "Layout Mask"
+          ]
+        ],
+        "label": "功能模式",
+        "show_label": true,
+        "value": "PVS Manual",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### 原始图像（点击进行交互）",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "elem_id": "input_image",
+        "interactive": false,
+        "label": "原始图像",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "webcam",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "height": 1,
+        "label": "分割交互手势",
+        "show_label": false,
+        "value": {
+          "client_intent": {},
+          "server_view": {
+            "enabled": false,
+            "image_id": "",
+            "image_sha256": "",
+            "interaction": "disabled",
+            "natural_height": 0,
+            "natural_width": 0,
+            "revision": 0,
+            "selection_state": "",
+            "status": ""
+          }
+        },
+        "visible": true
+      },
+      "type": "imagegestureoverlay"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### 交互模式",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "点提示 (Point)",
+            "point"
+          ],
+          [
+            "框提示 (Box)",
+            "bbox"
+          ],
+          [
+            "多边形Mask (Polygon)",
+            "polygon"
+          ]
+        ],
+        "label": "选择模式",
+        "show_label": false,
+        "value": "bbox",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "visible": false
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "正样本 bbox",
+            "Positive exemplar"
+          ],
+          [
+            "负样本 bbox",
+            "Negative exemplar"
+          ]
+        ],
+        "label": "PCS bbox 样本类型",
+        "show_label": true,
+        "value": "Positive exemplar",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "choices": [],
+        "interactive": true,
+        "label": "PCS bbox 列表",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "dropdown"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "删除选中 PCS bbox",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "清空提示 (Clear Prompts)",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "elem_id": "interaction-info",
+        "show_label": false,
+        "value": "点击图像开始添加提示...",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "label": "点提示修缮",
+        "visible": false
+      },
+      "type": "accordion"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "正向点",
+            "positive"
+          ],
+          [
+            "负向点",
+            "negative"
+          ]
+        ],
+        "label": "点类型",
+        "show_label": true,
+        "value": "positive",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "应用点提示",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "label": "高级提示选项",
+        "visible": true
+      },
+      "type": "accordion"
+    },
+    {
+      "props": {
+        "visible": false
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### PCS Auto 自动概念分割",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "label": "文本提示 (Text Prompt)",
+        "lines": 1,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "label": "置信度阈值 (Confidence)",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "show_label": true,
+        "step": 0.05,
+        "value": 0.4,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "开始 PCS 分割",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "导出 PCS",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "PCS 实例",
+        "lines": 6,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### PVS Manual 手动实例分割",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "#### BBox prompt",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "待生成 bbox 数量: 0",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "choices": [],
+        "interactive": true,
+        "label": "PVS 待生成 bbox 列表",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "dropdown"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "批量生成 PVS 实例",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "删除选中待生成 bbox",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "清空待生成 bbox",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": false
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "#### Point prompt",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "正向点",
+            "positive"
+          ],
+          [
+            "负向点",
+            "negative"
+          ]
+        ],
+        "label": "点类型",
+        "show_label": true,
+        "value": "positive",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "应用点提示",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": false
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "#### Polygon prompt",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "创建新 PVS 实例",
+            "create"
+          ],
+          [
+            "精修当前 PVS 实例",
+            "refine"
+          ]
+        ],
+        "label": "多边形动作",
+        "show_label": true,
+        "value": "create",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "完成多边形对象",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "label": "高级 Polygon 融合方式",
+        "visible": true
+      },
+      "type": "accordion"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "Replace 重新定义实例",
+            "replace"
+          ],
+          [
+            "Blend 与旧 mask 融合",
+            "blend"
+          ],
+          [
+            "Union 补充区域",
+            "union"
+          ],
+          [
+            "Intersect 限制范围",
+            "intersect"
+          ]
+        ],
+        "label": "多边形融合方式",
+        "show_label": true,
+        "value": "replace",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "**以上四种都是 Positive Polygon 的融合方式，不包含 negative prompt。**  \n- Replace 重新定义实例：用当前 polygon 作为完整 mask prompt。  \n- Blend 与旧 mask 融合：旧 logits 和 polygon logits 共同影响结果。  \n- Union 补充区域：保留旧 mask，并加入 polygon 区域。  \n- Intersect 限制范围：将结果限制在 polygon 范围内。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "PVS 实例",
+        "lines": 6,
+        "show_label": true,
+        "visible": false
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": false
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### PVS 版图 mask 提示",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "上传或选择二值版图 mask；多选 Label 后，每个 Label 可在右侧独立拖动、缩放和旋转。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "使用当前已保存版图 mask",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "载入二值 mask PNG",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "全部版图 mask",
+            "full"
+          ]
+        ],
+        "elem_id": "layout_prompt_mask_selector",
+        "interactive": false,
+        "label": "版图 mask 选择（可多选 Label）",
+        "show_label": true,
+        "value": [
+          "full"
+        ],
+        "visible": true
+      },
+      "type": "checkboxgroup"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "#### 直接上传二值 mask PNG",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "label": "直接上传二值 mask PNG",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "label": "导出与 COCO 量化",
+        "visible": true
+      },
+      "type": "accordion"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "GE1_coco",
+            "GE1_coco"
+          ],
+          [
+            "O3_coco/GE1_coco",
+            "O3_coco/GE1_coco"
+          ],
+          [
+            "O3_coco/GE2_coco",
+            "O3_coco/GE2_coco"
+          ],
+          [
+            "O3_coco/ACT_coco",
+            "O3_coco/ACT_coco"
+          ],
+          [
+            "O3_coco/BSM_coco",
+            "O3_coco/BSM_coco"
+          ]
+        ],
+        "label": "指标数据集",
+        "show_label": true,
+        "value": "GE1_coco",
+        "visible": true
+      },
+      "type": "dropdown"
+    },
+    {
+      "props": {
+        "label": "COCO image file_name（可选）",
+        "lines": 1,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "auto",
+            "auto"
+          ],
+          [
+            "val",
+            "val"
+          ],
+          [
+            "train",
+            "train"
+          ],
+          [
+            "test",
+            "test"
+          ]
+        ],
+        "label": "标注 split",
+        "show_label": true,
+        "value": "auto",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "只评估与预测相交的GT",
+            "只评估与预测相交的GT"
+          ],
+          [
+            "评估整图全部GT",
+            "评估整图全部GT"
+          ]
+        ],
+        "label": "评估范围",
+        "show_label": true,
+        "value": "只评估与预测相交的GT",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "label": "上传 O3/LabelMe-like JSON 标注（优先于 COCO lookup）",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "file"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### 分割结果",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "label": "分割结果",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "webcam",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "分析报告",
+        "lines": 18,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": false
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### 修改变形版图",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "elem_id": "layout_transform_editor",
+        "height": 520,
+        "label": "版图交互编辑器",
+        "show_label": false,
+        "value": {
+          "base_image": "",
+          "enabled": false,
+          "foreground_bbox_xyxy": null,
+          "mask_image": "",
+          "source_height": 0,
+          "source_width": 0,
+          "status": "请先加载或生成版图 mask",
+          "target_height": 0,
+          "target_width": 0,
+          "transform": null
+        },
+        "visible": true
+      },
+      "type": "layouttransformeditor"
+    },
+    {
+      "props": {
+        "label": "显示/启用版图 overlay",
+        "show_label": true,
+        "value": false,
+        "visible": true
+      },
+      "type": "checkbox"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "多选 Label 时，下方数值只对应 Canvas 中当前激活的 Label。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "label": "水平偏移 tx",
+        "show_label": true,
+        "step": 1,
+        "value": 0.0,
+        "visible": true
+      },
+      "type": "number"
+    },
+    {
+      "props": {
+        "label": "垂直偏移 ty",
+        "show_label": true,
+        "step": 1,
+        "value": 0.0,
+        "visible": true
+      },
+      "type": "number"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "label": "缩放 scale",
+        "maximum": 20.0,
+        "minimum": 0.1,
+        "show_label": true,
+        "step": 0.01,
+        "value": 1.0,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {
+        "label": "旋转 rotation",
+        "maximum": 180.0,
+        "minimum": -180.0,
+        "show_label": true,
+        "step": 1.0,
+        "value": 0.0,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "label": "透明度 alpha",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "show_label": true,
+        "step": 0.05,
+        "value": 0.35,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "重置",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "更新预览",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "用所选版图 mask / Label 创建实例",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "版图提示状态",
+        "lines": 5,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### PVS 实例操作",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "choices": [],
+        "label": "当前 PVS 实例",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "dropdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "撤销上一个实例",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "清空实例",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "确认",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "导出 PVS",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "下载结果包（PNG + masks + JSON）",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "file"
+    },
+    {
+      "props": {
+        "label": "结果反馈（PCS 结果 / PVS 当前实例，用于 RL 数据收集）",
+        "visible": true
+      },
+      "type": "accordion"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "好",
+            "good"
+          ],
+          [
+            "及格",
+            "pass"
+          ],
+          [
+            "差",
+            "bad"
+          ]
+        ],
+        "label": "结果质量",
+        "show_label": true,
+        "value": "pass",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "毛边",
+            "毛边"
+          ],
+          [
+            "空缺",
+            "空缺"
+          ],
+          [
+            "漏检",
+            "漏检"
+          ],
+          [
+            "误检",
+            "误检"
+          ],
+          [
+            "边界偏移",
+            "边界偏移"
+          ],
+          [
+            "多分/粘连",
+            "多分/粘连"
+          ],
+          [
+            "polygon 不贴合",
+            "polygon 不贴合"
+          ],
+          [
+            "其他",
+            "其他"
+          ]
+        ],
+        "label": "问题标签",
+        "show_label": true,
+        "value": [],
+        "visible": true
+      },
+      "type": "checkboxgroup"
+    },
+    {
+      "props": {
+        "label": "备注",
+        "lines": 3,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "提交反馈",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "id": "tab_layout_mask",
+        "interactive": true,
+        "label": "版图截图转掩码",
+        "visible": true
+      },
+      "type": "tabitem"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### 版图截图转二值 mask",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "binary mask 是唯一权威数据；contour 仅用于预览和导出。左右两侧预览使用相同高度。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "#### 上传版图截图",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "height": 430,
+        "label": "上传版图截图",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "label": "threshold（色彩/饱和度阈值）",
+        "maximum": 255,
+        "minimum": 0,
+        "show_label": true,
+        "step": 1,
+        "value": 12,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {
+        "label": "invert（反转前景/背景）",
+        "show_label": true,
+        "value": false,
+        "visible": true
+      },
+      "type": "checkbox"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "label": "open kernel",
+        "maximum": 31,
+        "minimum": 0,
+        "show_label": true,
+        "step": 1,
+        "value": 0,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {
+        "label": "close kernel",
+        "maximum": 31,
+        "minimum": 0,
+        "show_label": true,
+        "step": 1,
+        "value": 0,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "label": "膨胀/腐蚀像素（正数膨胀，负数腐蚀）",
+        "maximum": 31,
+        "minimum": -31,
+        "show_label": true,
+        "step": 1,
+        "value": 0,
+        "visible": true
+      },
+      "type": "slider"
+    },
+    {
+      "props": {
+        "label": "min component area",
+        "show_label": true,
+        "step": 1,
+        "value": 0,
+        "visible": true
+      },
+      "type": "number"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "全部区域",
+            "all"
+          ],
+          [
+            "最大连通区域",
+            "largest"
+          ]
+        ],
+        "label": "区域模式",
+        "show_label": true,
+        "value": "all",
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "生成并保存当前版图 mask",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "保存为当前版图 mask",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "清除当前版图",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "处理信息",
+        "lines": 8,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "下载 mask PNG",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "file"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "下载 contour JSON",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "file"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "label": "原图预览",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "webcam",
+          "clipboard"
+        ],
+        "visible": false
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "#### mask 与 contour 预览",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "height": 430,
+        "label": "binary mask 预览",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "webcam",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "**binary mask 预览**",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "height": 430,
+        "label": "contour overlay",
+        "show_label": false,
+        "sources": [
+          "upload",
+          "webcam",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "**contour overlay**",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "左右滑动或拖动下方滚动条切换预览。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### Label Annotation Layer",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "黄色表示未保存 Draft；绿色表示已保存 Label。一个套索对应一个独立 Label；Label 可选留空并自动按序号命名。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "elem_id": "layout_region_annotator",
+        "height": 520,
+        "label": "版图 Label 套索标注器",
+        "show_label": false,
+        "value": {
+          "client_intent": {
+            "expected_regions_revision": 0,
+            "lasso_polygon": [],
+            "layout_id": "",
+            "session_id": "",
+            "source_mask_hash": "",
+            "tool_mode": "browse"
+          },
+          "server_view": {
+            "draft_region_overlay_image": "",
+            "enabled": false,
+            "natural_height": 0,
+            "natural_width": 0,
+            "regions": [],
+            "regions_revision": 0,
+            "saved_region_overlay_image": "",
+            "selected_region_id": null,
+            "source_image": "",
+            "source_mask_image": "",
+            "status": "请先生成版图 binary mask"
+          }
+        },
+        "visible": true
+      },
+      "type": "layoutregionannotator"
+    },
+    {
+      "props": {
+        "label": "Label（可选）",
+        "lines": 1,
+        "show_label": true,
+        "value": "",
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "value": "保存当前 Draft Label",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "choices": [],
+        "interactive": true,
+        "label": "活动 Label",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "dropdown"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "value": "软删除选中 Label",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "Label 状态",
+        "lines": 4,
+        "show_label": true,
+        "visible": true
+      },
+      "type": "textbox"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "导出当前 Label 标注",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "下载 Label 标注包",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "file"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "---\n<div style='text-align:center;color:#718096;font-size:0.9em;'>Powered by SAM3</div>",
+        "visible": true
+      },
+      "type": "markdown"
+    }
+  ],
+  "dependencies": [
+    {
+      "api_name": "_run_layout_mask_page",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        3,
+        4,
+        165,
+        166,
+        167,
+        169,
+        170,
+        173,
+        174,
+        172
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        186,
+        190,
+        193,
+        180,
+        181,
+        178
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          175,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_load_layout_region_context",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        11,
+        198,
+        199,
+        201,
+        200,
+        202,
+        203
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 0,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 1,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_save_current_layout_mask",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        180,
+        181,
+        178
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          176,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_current_layout_mask",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        186,
+        190,
+        193,
+        180,
+        181,
+        178
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          177,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_layout_region_context",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        11,
+        198,
+        199,
+        201,
+        200,
+        202,
+        203
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 4,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 5,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_preview_layout_region",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10,
+        11,
+        198
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        11,
+        198,
+        200,
+        203
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          198,
+          "input"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_save_layout_region",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10,
+        11,
+        198,
+        199
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        11,
+        198,
+        199,
+        201,
+        200,
+        202,
+        203
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          200,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 8,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_select_layout_region",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10,
+        11,
+        201
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        11,
+        198,
+        200,
+        202,
+        203
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          201,
+          "input"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_delete_layout_region",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10,
+        11,
+        198,
+        201
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        11,
+        198,
+        199,
+        201,
+        200,
+        202,
+        203
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          202,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 11,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_export_layout_regions",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10,
+        11
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        205,
+        203
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          204,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_use_current_layout_mask",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        138
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          101,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_load_layout_prompt_choices",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103,
+        138
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 14,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_load_layout_binary_mask_png",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        3,
+        4,
+        105,
+        174
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        138
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          102,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_4",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 16,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_select_layout_prompt_mask",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10,
+        103
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103,
+        138,
+        123,
+        126,
+        127,
+        130,
+        131,
+        133
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          103,
+          "input"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_update_layout_preview_with_groups",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        10,
+        123,
+        126,
+        127,
+        130,
+        131,
+        133,
+        122
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        42,
+        122,
+        123,
+        126,
+        127,
+        130,
+        131,
+        133,
+        138
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          136,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_sync_layout_controls_from_editor_with_prompt_epoch",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        10,
+        122
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        123,
+        126,
+        127,
+        130,
+        131,
+        133,
+        138
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          122,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_controls_with_prompt_epoch",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        123,
+        126,
+        127,
+        130,
+        131,
+        133,
+        122,
+        138
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          135,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_create_pvs_from_layout_selection",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        10,
+        123,
+        126,
+        127,
+        130,
+        131,
+        133,
+        122,
+        103
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        10,
+        122,
+        138,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          137,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 22,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_source_upload_workspace",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        20,
+        38,
+        3,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        5,
+        21,
+        25,
+        4,
+        6,
+        7,
+        9,
+        49,
+        75,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74,
+        151,
+        122
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          20,
+          "upload"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_source_upload_workspace_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        20,
+        38,
+        3,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        5,
+        21,
+        25,
+        4,
+        6,
+        7,
+        9,
+        49,
+        75,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74,
+        151,
+        122
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          20,
+          "clear"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_record_source_crop_gesture",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        5,
+        21
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        5,
+        21,
+        25
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          21,
+          "input"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_apply_source_crop",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        5,
+        38,
+        3,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        5,
+        21,
+        25,
+        4,
+        6,
+        7,
+        9,
+        49,
+        75,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74,
+        151,
+        122
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          23,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_use_full_source_image",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        5,
+        38,
+        3,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        5,
+        21,
+        25,
+        4,
+        6,
+        7,
+        9,
+        49,
+        75,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74,
+        151,
+        122
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          24,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_point_payload",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        14
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 24,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_bbox_polygon_payloads",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        12,
+        13
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 24,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_5",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 24,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        38,
+        46
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        43
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 24,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 24,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_point_payload_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        14
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 25,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_bbox_polygon_payloads_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        12,
+        13
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 25,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_6",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 25,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        38,
+        46
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        43
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 25,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 25,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_point_payload_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        14
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 27,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_bbox_polygon_payloads_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        12,
+        13
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 27,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_7",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 27,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        38,
+        46
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        43
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 27,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 27,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_point_payload_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        14
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 28,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_bbox_polygon_payloads_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        12,
+        13
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 28,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_8",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        10,
+        122,
+        103
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 28,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        38,
+        46
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        43
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 28,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_4",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 28,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_input",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        46,
+        48,
+        9,
+        43
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        9,
+        12,
+        14,
+        13,
+        6,
+        7,
+        49,
+        75,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74,
+        43
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          43,
+          "input"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_run_template_matching",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        5,
+        4,
+        7,
+        38,
+        27,
+        28,
+        29
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          35,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_5",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          27,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_6",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          28,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_7",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          29,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_finish_native_polygon",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        9,
+        6,
+        7,
+        38,
+        88,
+        91
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        9,
+        13,
+        7,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          89,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_prompt_selection",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        9,
+        12,
+        14,
+        13,
+        6,
+        7,
+        49,
+        75,
+        63,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          53,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_switch_mode_with_layout_editor",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        38,
+        4,
+        6,
+        7,
+        10
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        9,
+        12,
+        14,
+        13,
+        46,
+        89,
+        47,
+        61,
+        70,
+        142,
+        117,
+        97,
+        120,
+        72,
+        81,
+        86,
+        49,
+        75,
+        56,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74,
+        122
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          38,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_4",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        38,
+        46
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        43
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 56,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_switch_click_tool",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        46,
+        38
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        72,
+        81,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          46,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_5",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        38,
+        46
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        43
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 58,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_delete_selected_pcs_bbox",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        49
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        6,
+        49,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          50,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_run_pcs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        63,
+        64
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        6,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          65,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_create_pvs_from_pending_boxes",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        75,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          76,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_delete_selected_pending_pvs_bbox",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        75
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        75,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          78,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_pvs_boxes",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        75,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          79,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_pvs_point_prompt",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        14,
+        83
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          84,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_point_refine",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        14,
+        57,
+        9
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        9,
+        14,
+        7,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          58,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_set_active_pvs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        144
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          144,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_undo_pvs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          146,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_delete_pvs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          147,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_accept_pvs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        7,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          148,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_8",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 56,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_9",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 54,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_10",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 62,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_11",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 65,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_12",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 66,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_13",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 67,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_14",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 68,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_15",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 69,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_16",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        8,
+        33,
+        37,
+        36
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 70,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_export_pcs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        108,
+        109,
+        110,
+        111,
+        112
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        151,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          66,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_export_pvs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        108,
+        109,
+        110,
+        111,
+        112
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        151,
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          149,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_submit_feedback",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        4,
+        6,
+        7,
+        38,
+        153,
+        154,
+        155
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        42,
+        116,
+        118,
+        67,
+        95,
+        144,
+        54,
+        74
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          156,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    }
+  ],
+  "dependency_count": 83,
+  "layout": {
+    "children": [
+      {
+        "children": [
+          {
+            "component": 1
+          },
+          {
+            "component": 2
+          },
+          {
+            "component": 3
+          },
+          {
+            "component": 4
+          },
+          {
+            "component": 5
+          },
+          {
+            "component": 6
+          },
+          {
+            "component": 7
+          },
+          {
+            "component": 8
+          },
+          {
+            "component": 9
+          },
+          {
+            "component": 10
+          },
+          {
+            "component": 11
+          },
+          {
+            "children": [
+              {
+                "component": 12
+              },
+              {
+                "component": 13
+              },
+              {
+                "component": 14
+              }
+            ],
+            "component": 209
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "component": 19
+                          },
+                          {
+                            "component": 20
+                          },
+                          {
+                            "component": 21
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 23
+                              },
+                              {
+                                "component": 24
+                              }
+                            ],
+                            "component": 22
+                          },
+                          {
+                            "component": 25
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 27
+                                  },
+                                  {
+                                    "component": 28
+                                  },
+                                  {
+                                    "component": 29
+                                  }
+                                ],
+                                "component": 30
+                              }
+                            ],
+                            "component": 26
+                          }
+                        ],
+                        "component": 18
+                      },
+                      {
+                        "children": [
+                          {
+                            "component": 32
+                          },
+                          {
+                            "component": 33
+                          },
+                          {
+                            "component": 34
+                          },
+                          {
+                            "component": 35
+                          },
+                          {
+                            "component": 36
+                          },
+                          {
+                            "component": 37
+                          }
+                        ],
+                        "component": 31
+                      }
+                    ],
+                    "component": 17
+                  },
+                  {
+                    "children": [
+                      {
+                        "component": 38
+                      }
+                    ],
+                    "component": 158
+                  },
+                  {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "component": 41
+                          },
+                          {
+                            "component": 42
+                          },
+                          {
+                            "component": 43
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 45
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 46
+                                  }
+                                ],
+                                "component": 55
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 48
+                                      },
+                                      {
+                                        "component": 49
+                                      }
+                                    ],
+                                    "component": 51
+                                  },
+                                  {
+                                    "component": 50
+                                  }
+                                ],
+                                "component": 47
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 53
+                                  }
+                                ],
+                                "component": 52
+                              },
+                              {
+                                "component": 54
+                              }
+                            ],
+                            "component": 44
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 57
+                                  }
+                                ],
+                                "component": 59
+                              },
+                              {
+                                "component": 58
+                              }
+                            ],
+                            "component": 56
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 62
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 63
+                                      },
+                                      {
+                                        "component": 64
+                                      }
+                                    ],
+                                    "component": 68
+                                  },
+                                  {
+                                    "component": 65
+                                  },
+                                  {
+                                    "component": 66
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 67
+                                      }
+                                    ],
+                                    "component": 69
+                                  }
+                                ],
+                                "component": 61
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 71
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 73
+                                      },
+                                      {
+                                        "component": 74
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "component": 75
+                                          }
+                                        ],
+                                        "component": 80
+                                      },
+                                      {
+                                        "component": 76
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "component": 78
+                                          },
+                                          {
+                                            "component": 79
+                                          }
+                                        ],
+                                        "component": 77
+                                      }
+                                    ],
+                                    "component": 72
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 82
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "component": 83
+                                          }
+                                        ],
+                                        "component": 85
+                                      },
+                                      {
+                                        "component": 84
+                                      }
+                                    ],
+                                    "component": 81
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 87
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "component": 88
+                                          }
+                                        ],
+                                        "component": 94
+                                      },
+                                      {
+                                        "component": 89
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "children": [
+                                              {
+                                                "component": 91
+                                              }
+                                            ],
+                                            "component": 93
+                                          },
+                                          {
+                                            "component": 92
+                                          }
+                                        ],
+                                        "component": 90
+                                      }
+                                    ],
+                                    "component": 86
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 95
+                                      }
+                                    ],
+                                    "component": 96
+                                  }
+                                ],
+                                "component": 70
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 98
+                                  },
+                                  {
+                                    "component": 99
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 101
+                                      },
+                                      {
+                                        "component": 102
+                                      }
+                                    ],
+                                    "component": 100
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 103
+                                      }
+                                    ],
+                                    "component": 106
+                                  },
+                                  {
+                                    "component": 104
+                                  },
+                                  {
+                                    "component": 105
+                                  }
+                                ],
+                                "component": 97
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 108
+                                      },
+                                      {
+                                        "component": 109
+                                      },
+                                      {
+                                        "component": 110
+                                      },
+                                      {
+                                        "component": 111
+                                      }
+                                    ],
+                                    "component": 113
+                                  },
+                                  {
+                                    "component": 112
+                                  }
+                                ],
+                                "component": 107
+                              }
+                            ],
+                            "component": 60
+                          }
+                        ],
+                        "component": 40
+                      },
+                      {
+                        "children": [
+                          {
+                            "component": 115
+                          },
+                          {
+                            "component": 116
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 118
+                                  }
+                                ],
+                                "component": 119
+                              }
+                            ],
+                            "component": 117
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 121
+                              },
+                              {
+                                "component": 122
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 123
+                                  }
+                                ],
+                                "component": 139
+                              },
+                              {
+                                "component": 124
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 126
+                                      },
+                                      {
+                                        "component": 127
+                                      }
+                                    ],
+                                    "component": 128
+                                  }
+                                ],
+                                "component": 125
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 130
+                                      },
+                                      {
+                                        "component": 131
+                                      }
+                                    ],
+                                    "component": 132
+                                  }
+                                ],
+                                "component": 129
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 133
+                                  }
+                                ],
+                                "component": 140
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 135
+                                  },
+                                  {
+                                    "component": 136
+                                  }
+                                ],
+                                "component": 134
+                              },
+                              {
+                                "component": 137
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 138
+                                  }
+                                ],
+                                "component": 141
+                              }
+                            ],
+                            "component": 120
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 143
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 144
+                                  }
+                                ],
+                                "component": 150
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 146
+                                  },
+                                  {
+                                    "component": 147
+                                  },
+                                  {
+                                    "component": 148
+                                  }
+                                ],
+                                "component": 145
+                              },
+                              {
+                                "component": 149
+                              }
+                            ],
+                            "component": 142
+                          },
+                          {
+                            "component": 151
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 153
+                                  },
+                                  {
+                                    "component": 154
+                                  },
+                                  {
+                                    "component": 155
+                                  }
+                                ],
+                                "component": 157
+                              },
+                              {
+                                "component": 156
+                              }
+                            ],
+                            "component": 152
+                          }
+                        ],
+                        "component": 114
+                      }
+                    ],
+                    "component": 39
+                  }
+                ],
+                "component": 16
+              },
+              {
+                "children": [
+                  {
+                    "component": 160
+                  },
+                  {
+                    "component": 161
+                  },
+                  {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "component": 164
+                          },
+                          {
+                            "component": 165
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 166
+                              },
+                              {
+                                "component": 167
+                              }
+                            ],
+                            "component": 182
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 169
+                                  },
+                                  {
+                                    "component": 170
+                                  }
+                                ],
+                                "component": 171
+                              }
+                            ],
+                            "component": 168
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 172
+                              },
+                              {
+                                "component": 173
+                              },
+                              {
+                                "component": 174
+                              }
+                            ],
+                            "component": 183
+                          },
+                          {
+                            "component": 175
+                          },
+                          {
+                            "component": 176
+                          },
+                          {
+                            "component": 177
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 178
+                              }
+                            ],
+                            "component": 184
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 180
+                              },
+                              {
+                                "component": 181
+                              }
+                            ],
+                            "component": 179
+                          }
+                        ],
+                        "component": 163
+                      },
+                      {
+                        "children": [
+                          {
+                            "component": 186
+                          },
+                          {
+                            "component": 187
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 190
+                                  },
+                                  {
+                                    "component": 191
+                                  }
+                                ],
+                                "component": 189
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 193
+                                  },
+                                  {
+                                    "component": 194
+                                  }
+                                ],
+                                "component": 192
+                              }
+                            ],
+                            "component": 188
+                          },
+                          {
+                            "component": 195
+                          },
+                          {
+                            "component": 196
+                          },
+                          {
+                            "component": 197
+                          },
+                          {
+                            "component": 198
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 199
+                              }
+                            ],
+                            "component": 206
+                          },
+                          {
+                            "component": 200
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 201
+                              }
+                            ],
+                            "component": 207
+                          },
+                          {
+                            "component": 202
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 203
+                              }
+                            ],
+                            "component": 208
+                          },
+                          {
+                            "component": 204
+                          },
+                          {
+                            "component": 205
+                          }
+                        ],
+                        "component": 185
+                      }
+                    ],
+                    "component": 162
+                  }
+                ],
+                "component": 159
+              }
+            ],
+            "component": 15
+          }
+        ],
+        "component": 0
+      },
+      {
+        "component": 210
+      }
+    ],
+    "component": "root"
+  }
+}
