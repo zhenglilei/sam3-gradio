@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import sam3_gradio_demo as demo
+from sam3_demo import app as demo
 
 
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "refactor_gradio_config_snapshot.json"
@@ -137,6 +137,15 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             for dependency in cls.config["dependencies"]
             if dependency.get("api_name")
         }
+
+    def test_public_entrypoint_is_thin(self):
+        source = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
+        self.assertEqual(
+            source,
+            "from sam3_demo.app import create_demo, main\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    main()\n",
+        )
 
     def test_gradio_config_semantic_snapshot(self):
         actual = canonical_config(self.config)

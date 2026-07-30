@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_overlay_namespace():
-    source = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
+    source = (ROOT / "sam3_demo" / "app.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     required_functions = {
         "_active_instances",
@@ -36,7 +36,7 @@ def _load_overlay_namespace():
         "MODE_LAYOUT": "Layout Mask",
         "_layout_cache_get": lambda *_args, **_kwargs: None,
     }
-    exec(compile(ast.Module(body=body, type_ignores=[]), str(ROOT / "sam3_gradio_demo.py"), "exec"), namespace)
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(ROOT / "sam3_demo" / "app.py"), "exec"), namespace)
     return namespace
 
 

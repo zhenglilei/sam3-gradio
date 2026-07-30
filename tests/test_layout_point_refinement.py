@@ -11,7 +11,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import sam3_gradio_demo as demo_module
+from sam3_demo import app as demo_module
 
 
 def _signature(value):

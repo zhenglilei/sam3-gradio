@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import layout_region_utils as regions
-import sam3_gradio_demo as demo_module
+from sam3_demo import app as demo_module
 
 
 def _function_node(source, name):
@@ -730,14 +730,16 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             )
         )
 
-        source = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
+        source = (
+            ROOT / "sam3_demo" / "ui" / "bindings.py"
+        ).read_text(encoding="utf-8")
         tree = ast.parse(source)
-        create_demo_node = next(
+        bind_demo_node = next(
             node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "create_demo"
+            if isinstance(node, ast.FunctionDef) and node.name == "bind_demo_events"
         )
         common_assignment = next(
-            node for node in ast.walk(create_demo_node)
+            node for node in ast.walk(bind_demo_node)
             if isinstance(node, ast.Assign)
             and any(
                 isinstance(target, ast.Name) and target.id == "common"
@@ -759,7 +761,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout
-        current = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
+        current = (ROOT / "sam3_demo" / "app.py").read_text(encoding="utf-8")
         protected = [
             "_finish_native_polygon",
             "_run_pcs",

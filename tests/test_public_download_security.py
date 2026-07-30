@@ -216,7 +216,7 @@ class PublicDownloadSecurityTests(unittest.TestCase):
 
 
     def test_main_launch_only_allows_public_downloads_and_sets_blocklist(self):
-        source = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
+        source = (ROOT / "sam3_demo" / "app.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         main = next(
             node
@@ -247,7 +247,7 @@ class PublicDownloadSecurityTests(unittest.TestCase):
         )
 
     def test_demo_configures_gradio_cache_ttl(self):
-        source = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
+        source = (ROOT / "sam3_demo" / "app.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         create_demo = next(
             node

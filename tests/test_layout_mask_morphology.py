@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-import sam3_gradio_demo as demo_module
+from sam3_demo import app as demo_module
 
 
 class LayoutMaskMorphologyTest(unittest.TestCase):

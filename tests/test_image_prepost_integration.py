@@ -16,7 +16,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import sam3_gradio_demo as demo
+from sam3_demo import app as demo
 
 
 class _FakeImagePredictor:
