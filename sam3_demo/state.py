@@ -105,6 +105,27 @@ def _new_layout_state(session_id=None):
         "prompt_region_ids": [],
     }
 
+def _new_layout_mask_agent_state(session_id=None):
+    return {
+        "schema_version": 1,
+        "session_id": str(session_id or ""),
+        "image_sha256": None,
+        "consent_image_sha256": None,
+        "conversation_revision": 0,
+        "turn_count": 0,
+        "profile_mode": "Auto",
+        "detected_profile": "Unknown",
+        "confidence": 0.0,
+        "baseline_params": None,
+        "current_draft_params": None,
+        "applied_revision": 0,
+        "history": [],
+        "undo_stack": [],
+        "skill_version": "1.0.0",
+        "last_usage": None,
+        "last_cost": None,
+    }
+
 def _norm_box(box, width, height):
     x1, y1, x2, y2 = [float(v) for v in box]
     x1, x2 = sorted((max(0.0, min(x1, width - 1)), max(0.0, min(x2, width - 1))))
