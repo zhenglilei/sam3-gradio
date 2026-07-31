@@ -267,6 +267,44 @@ def _filter_layout_components_impl(_deps, mask, min_component_area, region_mode)
     return filtered.astype(bool)
 
 
+def _compute_layout_mask_draft_impl(
+    _deps,
+    input_image,
+    threshold,
+    invert,
+    open_kernel,
+    close_kernel,
+    min_component_area,
+    region_mode,
+    morph_pixels,
+):
+    """Run the authoritative preprocessing pipeline without persisting output."""
+    _binarize_layout_image = _deps['_binarize_layout_image']
+    _filter_layout_components = _deps['_filter_layout_components']
+    _layout_mask_contours = _deps['_layout_mask_contours']
+    _normalize_layout_morph_pixels = _deps['_normalize_layout_morph_pixels']
+    image, mask = _binarize_layout_image(
+        input_image,
+        threshold,
+        invert,
+        open_kernel,
+        close_kernel,
+        morph_pixels,
+    )
+    mask = _filter_layout_components(mask, min_component_area, region_mode)
+    contours = _layout_mask_contours(mask)
+    params = {
+        "threshold": int(threshold),
+        "invert": bool(invert),
+        "open_kernel": int(open_kernel or 0),
+        "close_kernel": int(close_kernel or 0),
+        "morph_pixels": _normalize_layout_morph_pixels(morph_pixels),
+        "min_component_area": int(min_component_area or 0),
+        "region_mode": str(region_mode or "all"),
+    }
+    return image, mask, contours, params
+
+
 def _layout_mask_contours_impl(_deps, mask):
     cv2 = _deps['cv2']
     np = _deps['np']
@@ -913,31 +951,26 @@ def _sync_layout_controls_from_editor_with_prompt_epoch_impl(_deps, layout_state
 
 
 def _run_layout_mask_page_impl(_deps, session_state, image_state, input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode, morph_pixels):
-    _binarize_layout_image = _deps['_binarize_layout_image']
-    _filter_layout_components = _deps['_filter_layout_components']
     _layout_editor_empty = _deps['_layout_editor_empty']
     _layout_editor_payload = _deps['_layout_editor_payload']
-    _layout_mask_contours = _deps['_layout_mask_contours']
     _layout_mask_to_preview = _deps['_layout_mask_to_preview']
     _new_layout_state = _deps['_new_layout_state']
-    _normalize_layout_morph_pixels = _deps['_normalize_layout_morph_pixels']
     _save_layout_mask_files = _deps['_save_layout_mask_files']
     _session_id_from_state = _deps['_session_id_from_state']
     try:
-        image, mask = _binarize_layout_image(input_image, threshold, invert, open_kernel, close_kernel, morph_pixels)
-        mask = _filter_layout_components(mask, min_component_area, region_mode)
+        image, mask, contours, params = _compute_layout_mask_draft_impl(
+            _deps,
+            input_image,
+            threshold,
+            invert,
+            open_kernel,
+            close_kernel,
+            min_component_area,
+            region_mode,
+            morph_pixels,
+        )
         if not mask.any():
             raise ValueError("Binary mask is empty; lower threshold or check invert")
-        contours = _layout_mask_contours(mask)
-        params = {
-            "threshold": int(threshold),
-            "invert": bool(invert),
-            "open_kernel": int(open_kernel or 0),
-            "close_kernel": int(close_kernel or 0),
-            "morph_pixels": _normalize_layout_morph_pixels(morph_pixels),
-            "min_component_area": int(min_component_area or 0),
-            "region_mode": str(region_mode or "all"),
-        }
         state, mask_path, contour_path, overlay = _save_layout_mask_files(session_state, image, mask, contours, params)
         info = (
             f"版图 mask 已生成：{state['layout_id']}\n"
