@@ -755,8 +755,7 @@ function Ga() {
 function ka(e) {
   return typeof e == "object" ? Ga(e) : e ?? "";
 }
-const pn = [" , \	, \
-, \, \, \u00a0, \, \uFEFF];
+const pn = Array.from(" \t\n\r\f\u00a0\v\uFEFF");
 function ja(e, t, r) {
   var n = e == null ? "" : "" + e;
   if (t && (n = n ? n + " " + t : t), r) {
