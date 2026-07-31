@@ -1,11 +1,20 @@
 import io
 import json
 import unittest
+import os
 
 import numpy as np
 from PIL import Image
 
-from sam3_demo.config import layout_mask_agent_skill_dir
+from sam3_demo.config import (
+    _LAYOUT_MASK_VLM_API_KEY,
+    _LAYOUT_MASK_VLM_BASE_URL,
+    _LAYOUT_MASK_VLM_MAX_TOKENS,
+    _LAYOUT_MASK_VLM_MODEL,
+    _LAYOUT_MASK_VLM_TEMPERATURE,
+    _LAYOUT_MASK_VLM_TIMEOUT_SECONDS,
+    layout_mask_agent_skill_dir,
+)
 from sam3_demo.layout.agent_runtime import (
     LayoutMaskVLMError,
     build_candidate_contact_sheet,
@@ -142,6 +151,34 @@ class LayoutMaskAgentRuntimeTests(unittest.TestCase):
         self.assertEqual(usage["total_tokens"], 125)
         self.assertEqual(cost, 0.01)
         self.assertEqual(len(version), 16)
+
+    @unittest.skipUnless(
+        os.environ.get("RUN_LAYOUT_MASK_VLM_SMOKE") == "1",
+        "paid VLM smoke is opt-in",
+    )
+    def test_paid_qwen_vlm_smoke(self):
+        contact = build_candidate_contact_sheet(
+            self.image,
+            self.baseline,
+            self.candidates,
+        )
+        response, usage, _cost, _version = call_qwen_layout_mask(
+            image=self.image,
+            contact_sheet=contact,
+            candidates=self.candidates,
+            message="Select the safest candidate.",
+            profile_mode="ACT",
+            history=[],
+            skill_dir=layout_mask_agent_skill_dir,
+            base_url=_LAYOUT_MASK_VLM_BASE_URL,
+            model=_LAYOUT_MASK_VLM_MODEL,
+            timeout_seconds=_LAYOUT_MASK_VLM_TIMEOUT_SECONDS,
+            max_tokens=_LAYOUT_MASK_VLM_MAX_TOKENS,
+            temperature=_LAYOUT_MASK_VLM_TEMPERATURE,
+            api_key=_LAYOUT_MASK_VLM_API_KEY,
+        )
+        self.assertEqual(response["selected_candidate_id"], "C1")
+        self.assertIsInstance(usage, (dict, type(None)))
 
 
 if __name__ == "__main__":

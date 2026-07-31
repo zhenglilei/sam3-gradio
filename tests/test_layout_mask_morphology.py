@@ -52,6 +52,43 @@ class LayoutMaskMorphologyTest(unittest.TestCase):
 
         np.testing.assert_array_equal(result, expected)
         self.assertLess(int(result.sum()), int(mask.sum()))
+    def test_agent_draft_matches_authoritative_pipeline_pixel_for_pixel(self):
+        rgb = np.full((40, 50, 3), 255, dtype=np.uint8)
+        rgb[8:32, 10:40] = (255, 0, 0)
+        rgb[18:22, 20:24] = (255, 255, 255)
+        image = Image.fromarray(rgb)
+        params = {
+            "threshold": 12,
+            "invert": False,
+            "open_kernel": 0,
+            "close_kernel": 3,
+            "min_component_area": 0,
+            "region_mode": "all",
+            "morph_pixels": 1,
+        }
+
+        draft_image, draft_mask, draft_contours, draft_params = (
+            demo_module._compute_layout_mask_draft(
+                image,
+                params["threshold"],
+                params["invert"],
+                params["open_kernel"],
+                params["close_kernel"],
+                params["min_component_area"],
+                params["region_mode"],
+                params["morph_pixels"],
+            )
+        )
+        expected_image, expected_mask = demo_module._binarize_layout_image(
+            image, 12, False, 0, 3, 1
+        )
+        expected_mask = demo_module._filter_layout_components(expected_mask, 0, "all")
+        expected_contours = demo_module._layout_mask_contours(expected_mask)
+
+        np.testing.assert_array_equal(draft_mask, expected_mask)
+        self.assertEqual(draft_contours, expected_contours)
+        self.assertEqual(draft_params, params)
+        self.assertEqual(draft_image.size, expected_image.size)
 
     def test_pixels_are_clamped_to_ui_limit(self):
         self.assertEqual(

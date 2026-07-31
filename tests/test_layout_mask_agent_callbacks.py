@@ -8,6 +8,7 @@ from sam3_demo.layout.agent_callbacks import (
     apply_layout_mask_agent_params,
     run_layout_mask_agent_turn,
     undo_layout_mask_agent_draft,
+    set_layout_mask_agent_consent,
 )
 from sam3_demo.layout.preprocess_registry import params_from_controls
 from sam3_demo.state import _new_layout_mask_agent_state
@@ -57,8 +58,15 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
         )
 
     def run_turn(self, state=None, consent=True, controls=None, vlm=None):
+        state = set_layout_mask_agent_consent(
+            state or _new_layout_mask_agent_state("session"),
+            session_id="session",
+            image=self.image,
+            consent=consent,
+            profile_mode="ACT",
+        )
         return run_layout_mask_agent_turn(
-            state=state or _new_layout_mask_agent_state("session"),
+            state=state,
             session_id="session",
             image=self.image,
             consent=consent,
@@ -149,6 +157,60 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
             any(row.get("kind") == "manual_override" for row in result["state"]["history"])
         )
 
+
+    def test_second_turn_continues_from_unapplied_draft(self):
+        first = self.run_turn()
+
+        def select_fill_candidate(**kwargs):
+            self.calls.append(kwargs)
+            candidate_id = next(
+                row["candidate_id"]
+                for row in kwargs["candidates"]
+                if row["label"] == "ACT fill a little more"
+            )
+            return (
+                {
+                    "schema_version": 1,
+                    "intent": "revise",
+                    "profile": "ACT",
+                    "confidence": 0.9,
+                    "selected_candidate_id": candidate_id,
+                    "observations": [],
+                    "assistant_message": "Fill a little more.",
+                    "manual_review": False,
+                    "warnings": [],
+                },
+                None,
+                None,
+                "skill-test",
+            )
+
+        second = self.run_turn(state=first["state"], vlm=select_fill_candidate)
+        self.assertEqual(second["state"]["current_draft_params"]["close_kernel"], 19)
+        self.assertEqual(second["state"]["undo_stack"][-1]["close_kernel"], 17)
+
+    def test_consent_is_bound_to_one_image_identity(self):
+        state = set_layout_mask_agent_consent(
+            _new_layout_mask_agent_state("session"),
+            session_id="session",
+            image=self.image,
+            consent=True,
+            profile_mode="ACT",
+        )
+        other_image = Image.new("RGB", (80, 60), "black")
+        with self.assertRaisesRegex(ValueError, "outbound"):
+            run_layout_mask_agent_turn(
+                state=state,
+                session_id="session",
+                image=other_image,
+                consent=True,
+                profile_mode="ACT",
+                user_message="analyze",
+                controls=self.controls,
+                compute_draft=self.compute_draft,
+                vlm_options={},
+                vlm_call=self.vlm,
+            )
 
 def json_keys(value):
     if isinstance(value, dict):

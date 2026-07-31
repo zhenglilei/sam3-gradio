@@ -15,6 +15,7 @@ runtime_gradio_dir = runtime_dir / "gradio"
 runtime_export_dir = runtime_dir / "exports"
 runtime_feedback_dir = runtime_dir / "feedback"
 runtime_layout_dir = runtime_dir / "layout_masks"
+runtime_layout_agent_golden_dir = runtime_dir / "layout_agent_goldens"
 runtime_layout_region_dir = runtime_dir / "layout_regions"
 runtime_log_dir = runtime_dir / "logs"
 public_download_dir = current_dir / "public_downloads"
@@ -74,6 +75,7 @@ for path in (
     runtime_feedback_dir / "samples",
     runtime_layout_dir,
     runtime_layout_region_dir,
+    runtime_layout_agent_golden_dir,
     runtime_log_dir,
     public_download_dir,
     current_dir / ".gradio",

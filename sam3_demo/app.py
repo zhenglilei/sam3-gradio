@@ -18,6 +18,13 @@ from sam3_demo.config import (
     MODE_PCS,
     MODE_PVS,
     _LAYOUT_MASK_MORPH_LIMIT_PX,
+    _LAYOUT_MASK_VLM_API_KEY,
+    _LAYOUT_MASK_VLM_BASE_URL,
+    _LAYOUT_MASK_VLM_MAX_TOKENS,
+    _LAYOUT_MASK_VLM_MODEL,
+    _LAYOUT_MASK_VLM_TEMPERATURE,
+    _LAYOUT_MASK_VLM_TIMEOUT_SECONDS,
+    layout_mask_agent_skill_dir,
     _LAYOUT_PROMPT_CLASS_PREFIX,
     _LAYOUT_PROMPT_LABEL_PREFIX,
     _LAYOUT_PROMPT_SCOPE_FULL,
@@ -291,6 +298,7 @@ from sam3_demo.state import (
     _new_session_state,
     _session_id_from_state,
     _new_layout_state,
+    _new_layout_mask_agent_state,
     _norm_box,
     _bbox_from_payload,
     _xyxy_to_cxcywh_norm,
@@ -417,6 +425,7 @@ from sam3_demo.layout.mask_callbacks import (
     _apply_layout_mask_morphology_impl,
     _binarize_layout_image_impl,
     _filter_layout_components_impl,
+    _compute_layout_mask_draft_impl,
     _layout_mask_contours_impl,
     _layout_mask_to_preview_impl,
     _layout_contour_overlay_impl,
@@ -444,6 +453,18 @@ from sam3_demo.layout.mask_callbacks import (
     _reset_layout_controls_impl,
     _reset_layout_controls_with_prompt_epoch_impl,
 )
+from sam3_demo.layout.agent_callbacks import (
+    apply_layout_mask_agent_params,
+    format_parameter_diff,
+    mark_layout_mask_agent_saved,
+    reset_layout_mask_agent,
+    run_layout_mask_agent_turn,
+    undo_layout_mask_agent_draft,
+    set_layout_mask_agent_consent,
+)
+from sam3_demo.layout.preprocess_registry import params_from_controls
+
+
 
 def _layout_cache_key(session_id, layout_id):
     return _layout_cache_key_impl(
@@ -1831,6 +1852,34 @@ def _filter_layout_components(mask, min_component_area=0, region_mode="all"):
     )
 
 
+def _compute_layout_mask_draft(
+    input_image,
+    threshold,
+    invert,
+    open_kernel,
+    close_kernel,
+    min_component_area,
+    region_mode,
+    morph_pixels,
+):
+    return _compute_layout_mask_draft_impl(
+        {
+            '_binarize_layout_image': _binarize_layout_image,
+            '_filter_layout_components': _filter_layout_components,
+            '_layout_mask_contours': _layout_mask_contours,
+            '_normalize_layout_morph_pixels': _normalize_layout_morph_pixels,
+        },
+        input_image,
+        threshold,
+        invert,
+        open_kernel,
+        close_kernel,
+        min_component_area,
+        region_mode,
+        morph_pixels,
+    )
+
+
 def _layout_mask_contours(mask):
     return _layout_mask_contours_impl(
         {
@@ -2727,6 +2776,230 @@ def _run_layout_mask_page_with_downloads(
     )
 
 
+def _layout_mask_agent_controls(
+    threshold,
+    invert,
+    open_kernel,
+    close_kernel,
+    min_component_area,
+    region_mode,
+    morph_pixels,
+):
+    return params_from_controls(
+        threshold,
+        invert,
+        open_kernel,
+        close_kernel,
+        min_component_area,
+        region_mode,
+        morph_pixels,
+    )
+
+
+def _layout_mask_agent_reset_callback(
+    session_state,
+    input_image,
+    profile_mode,
+):
+    image = _pil_image(input_image) if input_image is not None else None
+    state = reset_layout_mask_agent(
+        _session_id_from_state(session_state),
+        image,
+        profile_mode,
+    )
+    return (
+        state,
+        False,
+        [],
+        None,
+        None,
+        "No active Agent Draft.",
+        "Confirm outbound sharing before the next VLM request.",
+        gr.update(interactive=False),
+        "",
+    )
+
+
+def _layout_mask_agent_consent_callback(
+    session_state,
+    agent_state,
+    input_image,
+    consent,
+    profile_mode,
+):
+    image = _pil_image(input_image) if input_image is not None else None
+    return set_layout_mask_agent_consent(
+        agent_state,
+        session_id=_session_id_from_state(session_state),
+        image=image,
+        consent=consent,
+        profile_mode=profile_mode,
+    )
+
+
+def _layout_mask_agent_run_callback(
+    session_state,
+    agent_state,
+    input_image,
+    consent,
+    profile_mode,
+    user_message,
+    threshold,
+    invert,
+    open_kernel,
+    close_kernel,
+    min_component_area,
+    region_mode,
+    morph_pixels,
+):
+    try:
+        image = _pil_image(input_image)
+        controls = _layout_mask_agent_controls(
+            threshold,
+            invert,
+            open_kernel,
+            close_kernel,
+            min_component_area,
+            region_mode,
+            morph_pixels,
+        )
+        result = run_layout_mask_agent_turn(
+            state=agent_state,
+            session_id=_session_id_from_state(session_state),
+            image=image,
+            consent=consent,
+            profile_mode=profile_mode,
+            user_message=user_message,
+            controls=controls,
+            compute_draft=_compute_layout_mask_draft,
+            vlm_options={
+                "skill_dir": layout_mask_agent_skill_dir,
+                "base_url": _LAYOUT_MASK_VLM_BASE_URL,
+                "model": _LAYOUT_MASK_VLM_MODEL,
+                "timeout_seconds": _LAYOUT_MASK_VLM_TIMEOUT_SECONDS,
+                "max_tokens": _LAYOUT_MASK_VLM_MAX_TOKENS,
+                "temperature": _LAYOUT_MASK_VLM_TEMPERATURE,
+                "api_key": _LAYOUT_MASK_VLM_API_KEY,
+            },
+        )
+        return (
+            result["state"],
+            result["chat"],
+            result["draft_preview"],
+            result["candidate_preview"],
+            result["diff"],
+            result["status"],
+            gr.update(interactive=True),
+            "",
+        )
+    except Exception as exc:
+        return (
+            agent_state,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            f"AI Mask assistant failed: {exc}",
+            gr.update(),
+            gr.update(),
+        )
+
+
+def _layout_mask_agent_undo_callback(agent_state, input_image):
+    try:
+        result = undo_layout_mask_agent_draft(
+            agent_state,
+            _pil_image(input_image),
+            _compute_layout_mask_draft,
+        )
+        return (
+            result["state"],
+            result["chat"],
+            result["draft_preview"],
+            result["diff"],
+            result["status"],
+            gr.update(interactive=True),
+        )
+    except Exception as exc:
+        return (
+            agent_state,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            f"Undo failed: {exc}",
+            gr.update(),
+        )
+
+
+def _layout_mask_agent_apply_callback(agent_state):
+    try:
+        updated, params = apply_layout_mask_agent_params(agent_state)
+        return (
+            updated,
+            params["threshold"],
+            params["invert"],
+            params["open_kernel"],
+            params["close_kernel"],
+            params["min_component_area"],
+            params["region_mode"],
+            params["morph_pixels"],
+            format_parameter_diff(
+                updated.get("baseline_params"),
+                updated.get("current_draft_params"),
+            ),
+            "Recommended parameters applied. Click the existing generate button to save the authoritative mask.",
+            gr.update(interactive=False),
+        )
+    except Exception as exc:
+        return (
+            agent_state,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            f"Apply failed: {exc}",
+            gr.update(),
+        )
+
+
+def _layout_mask_agent_mark_saved_callback(
+    agent_state,
+    layout_state,
+    threshold,
+    invert,
+    open_kernel,
+    close_kernel,
+    min_component_area,
+    region_mode,
+    morph_pixels,
+):
+    if not isinstance(layout_state, dict) or not layout_state.get("enabled"):
+        return agent_state, gr.update(), gr.update(), gr.update()
+    controls = _layout_mask_agent_controls(
+        threshold,
+        invert,
+        open_kernel,
+        close_kernel,
+        min_component_area,
+        region_mode,
+        morph_pixels,
+    )
+    updated = mark_layout_mask_agent_saved(agent_state, controls)
+    return (
+        updated,
+        format_parameter_diff(
+            updated.get("baseline_params"),
+            updated.get("current_draft_params"),
+        ),
+        "Current controls were saved as the authoritative layout mask baseline.",
+        gr.update(interactive=False),
+    )
+
+
 def _save_current_layout_mask(layout_state):
     return _save_current_layout_mask_impl(
         {
@@ -3241,6 +3514,7 @@ def create_demo():
             layout_state = gr.State(_new_layout_state())
             layout_region_state = gr.State(_new_layout_region_state())
             bbox_payload = gr.Textbox(label="bbox payload", elem_id="bbox_payload", elem_classes="hidden-payload")
+            layout_mask_agent_state = gr.State(_new_layout_mask_agent_state())
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
 
@@ -3278,6 +3552,7 @@ def create_demo():
                 layout_state=layout_state,
                 layout_region_state=layout_region_state,
                 bbox_payload=bbox_payload,
+                layout_mask_agent_state=layout_mask_agent_state,
                 polygon_payload=polygon_payload,
                 point_payload=point_payload,
             )

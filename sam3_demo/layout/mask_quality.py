@@ -108,5 +108,12 @@ def render_mask_delta(image, previous_mask, candidate_mask, *, manual_review=Fal
     output[added] = output[added] * 0.35 + np.array([255, 40, 40], dtype=np.float32) * 0.65
     output[removed] = output[removed] * 0.35 + np.array([40, 90, 255], dtype=np.float32) * 0.65
     if manual_review:
+        changed = (added | removed).astype(np.uint8)
+        risk_outline = cv2.dilate(
+            changed,
+            np.ones((5, 5), dtype=np.uint8),
+            iterations=1,
+        ).astype(bool) & ~changed.astype(bool)
+        output[risk_outline] = np.array([255, 220, 0], dtype=np.float32)
         cv2.rectangle(output, (1, 1), (max(1, rgb.shape[1] - 2), max(1, rgb.shape[0] - 2)), (255, 220, 0), 4)
     return np.clip(output, 0, 255).astype(np.uint8)

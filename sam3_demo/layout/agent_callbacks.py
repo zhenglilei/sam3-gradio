@@ -100,7 +100,13 @@ def _candidate_rows(compute_draft, image, current_mask, registry_rows):
 
 def _manual_override(state, controls):
     current = state.get("current_draft_params")
-    if current is None or _params_signature(current) == _params_signature(controls):
+    baseline = state.get("baseline_params")
+    control_signature = _params_signature(controls)
+    if (
+        current is None
+        or _params_signature(current) == control_signature
+        or (baseline is not None and _params_signature(baseline) == control_signature)
+    ):
         return state
     updated = copy.deepcopy(state)
     updated["baseline_params"] = dict(controls)
@@ -116,6 +122,29 @@ def _manual_override(state, controls):
     )
     updated["history"] = history[-6:]
     return updated
+
+
+def set_layout_mask_agent_consent(
+    state,
+    *,
+    session_id,
+    image,
+    consent,
+    profile_mode,
+):
+    """Bind outbound consent to one exact image and profile locally."""
+    current = copy.deepcopy(state or _new_layout_mask_agent_state(session_id))
+    image_hash = None
+    if image is not None:
+        image_hash = layout_agent_image_sha256(image.convert("RGB"))
+    if (
+        current.get("session_id") != session_id
+        or current.get("image_sha256") != image_hash
+        or current.get("profile_mode") != profile_mode
+    ):
+        current = reset_layout_mask_agent(session_id, image, profile_mode)
+    current["consent_image_sha256"] = image_hash if consent and image_hash else None
+    return current
 
 
 def run_layout_mask_agent_turn(
@@ -137,16 +166,18 @@ def run_layout_mask_agent_turn(
     image = image.convert("RGB")
     image_hash = layout_agent_image_sha256(image)
     current_state = copy.deepcopy(state or _new_layout_mask_agent_state(session_id))
-    if current_state.get("image_sha256") != image_hash:
+    if (
+        current_state.get("session_id") != session_id
+        or current_state.get("image_sha256") != image_hash
+    ):
         current_state = _new_layout_mask_agent_state(session_id)
         current_state["image_sha256"] = image_hash
     if current_state.get("profile_mode") != profile_mode:
         current_state = _new_layout_mask_agent_state(session_id)
         current_state["image_sha256"] = image_hash
         current_state["profile_mode"] = profile_mode
-    if not consent:
+    if not consent or current_state.get("consent_image_sha256") != image_hash:
         raise ValueError("Confirm outbound image sharing for this image")
-    current_state["consent_image_sha256"] = image_hash
     message = str(user_message or "").strip()
     if not message:
         raise ValueError("Enter a request for the mask assistant")

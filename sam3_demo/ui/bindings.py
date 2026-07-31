@@ -11,6 +11,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     template_match_state = state_refs.template_match_state
     prompt_state = state_refs.prompt_state
     layout_state = state_refs.layout_state
+    layout_mask_agent_state = state_refs.layout_mask_agent_state
     layout_region_state = state_refs.layout_region_state
     bbox_payload = state_refs.bbox_payload
     polygon_payload = state_refs.polygon_payload
@@ -119,6 +120,28 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     layout_region_annotator = layout_refs.layout_region_annotator
     layout_region_label = layout_refs.layout_region_label
     save_layout_region_btn = layout_refs.save_layout_region_btn
+    layout_agent_consent = layout_refs.layout_agent_consent
+    layout_agent_profile = layout_refs.layout_agent_profile
+    layout_agent_action_auto = layout_refs.layout_agent_action_auto
+    layout_agent_action_fill = layout_refs.layout_agent_action_fill
+    layout_agent_action_bridge = layout_refs.layout_agent_action_bridge
+    layout_agent_action_thicken = layout_refs.layout_agent_action_thicken
+    layout_agent_action_holes = layout_refs.layout_agent_action_holes
+    layout_agent_auto_btn = layout_refs.layout_agent_auto_btn
+    layout_agent_fill_btn = layout_refs.layout_agent_fill_btn
+    layout_agent_bridge_btn = layout_refs.layout_agent_bridge_btn
+    layout_agent_thicken_btn = layout_refs.layout_agent_thicken_btn
+    layout_agent_holes_btn = layout_refs.layout_agent_holes_btn
+    layout_agent_undo_btn = layout_refs.layout_agent_undo_btn
+    layout_agent_reset_btn = layout_refs.layout_agent_reset_btn
+    layout_agent_chatbot = layout_refs.layout_agent_chatbot
+    layout_agent_prompt = layout_refs.layout_agent_prompt
+    layout_agent_send_btn = layout_refs.layout_agent_send_btn
+    layout_agent_draft_preview = layout_refs.layout_agent_draft_preview
+    layout_agent_candidate_preview = layout_refs.layout_agent_candidate_preview
+    layout_agent_diff = layout_refs.layout_agent_diff
+    layout_agent_status = layout_refs.layout_agent_status
+    layout_agent_apply_btn = layout_refs.layout_agent_apply_btn
     layout_region_selector = layout_refs.layout_region_selector
     delete_layout_region_btn = layout_refs.delete_layout_region_btn
     layout_region_status = layout_refs.layout_region_status
@@ -126,6 +149,12 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     layout_region_export_file = layout_refs.layout_region_export_file
 
     _run_layout_mask_page_with_downloads = callbacks["_run_layout_mask_page_with_downloads"]
+    _layout_mask_agent_reset_callback = callbacks["_layout_mask_agent_reset_callback"]
+    _layout_mask_agent_consent_callback = callbacks["_layout_mask_agent_consent_callback"]
+    _layout_mask_agent_run_callback = callbacks["_layout_mask_agent_run_callback"]
+    _layout_mask_agent_undo_callback = callbacks["_layout_mask_agent_undo_callback"]
+    _layout_mask_agent_apply_callback = callbacks["_layout_mask_agent_apply_callback"]
+    _layout_mask_agent_mark_saved_callback = callbacks["_layout_mask_agent_mark_saved_callback"]
     _load_layout_region_context = callbacks["_load_layout_region_context"]
     _reset_layout_prompt_selection = callbacks["_reset_layout_prompt_selection"]
     _save_current_layout_mask = callbacks["_save_current_layout_mask"]
@@ -173,6 +202,163 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     _export_pvs = callbacks["_export_pvs"]
     _submit_feedback = callbacks["_submit_feedback"]
 
+    layout_agent_control_inputs = [
+        layout_threshold,
+        layout_invert,
+        layout_open_kernel,
+        layout_close_kernel,
+        layout_min_area,
+        layout_region_mode,
+        layout_morph_pixels,
+    ]
+    layout_agent_run_outputs = [
+        layout_mask_agent_state,
+        layout_agent_chatbot,
+        layout_agent_draft_preview,
+        layout_agent_candidate_preview,
+        layout_agent_diff,
+        layout_agent_status,
+        layout_agent_apply_btn,
+        layout_agent_prompt,
+    ]
+    layout_agent_reset_outputs = [
+        layout_mask_agent_state,
+        layout_agent_consent,
+        layout_agent_chatbot,
+        layout_agent_draft_preview,
+        layout_agent_candidate_preview,
+        layout_agent_diff,
+        layout_agent_status,
+        layout_agent_apply_btn,
+        layout_agent_prompt,
+    ]
+
+    layout_input.change(
+        fn=_layout_mask_agent_reset_callback,
+        inputs=[session_state, layout_input, layout_agent_profile],
+        outputs=layout_agent_reset_outputs,
+        concurrency_limit=1,
+        concurrency_id="layout-mask-agent-local",
+    )
+    layout_agent_profile.change(
+        fn=_layout_mask_agent_reset_callback,
+        inputs=[session_state, layout_input, layout_agent_profile],
+        outputs=layout_agent_reset_outputs,
+        concurrency_limit=1,
+        concurrency_id="layout-mask-agent-local",
+    )
+    layout_agent_reset_btn.click(
+        fn=_layout_mask_agent_reset_callback,
+        inputs=[session_state, layout_input, layout_agent_profile],
+        outputs=layout_agent_reset_outputs,
+        concurrency_limit=1,
+        concurrency_id="layout-mask-agent-local",
+    )
+
+    layout_agent_consent.change(
+        fn=_layout_mask_agent_consent_callback,
+        inputs=[
+            session_state,
+            layout_mask_agent_state,
+            layout_input,
+            layout_agent_consent,
+            layout_agent_profile,
+        ],
+        outputs=[layout_mask_agent_state],
+        queue=False,
+    )
+
+    def bind_layout_agent_request(trigger, message_component):
+        trigger.click(
+            fn=_layout_mask_agent_run_callback,
+            inputs=[
+                session_state,
+                layout_mask_agent_state,
+                layout_input,
+                layout_agent_consent,
+                layout_agent_profile,
+                message_component,
+                *layout_agent_control_inputs,
+            ],
+            outputs=layout_agent_run_outputs,
+            concurrency_limit=1,
+            concurrency_id="layout-mask-vlm",
+        )
+
+    for trigger, message_component in (
+        (layout_agent_auto_btn, layout_agent_action_auto),
+        (layout_agent_fill_btn, layout_agent_action_fill),
+        (layout_agent_bridge_btn, layout_agent_action_bridge),
+        (layout_agent_thicken_btn, layout_agent_action_thicken),
+        (layout_agent_holes_btn, layout_agent_action_holes),
+    ):
+        bind_layout_agent_request(trigger, message_component)
+
+    layout_agent_send_btn.click(
+        fn=_layout_mask_agent_run_callback,
+        inputs=[
+            session_state,
+            layout_mask_agent_state,
+            layout_input,
+            layout_agent_consent,
+            layout_agent_profile,
+            layout_agent_prompt,
+            *layout_agent_control_inputs,
+        ],
+        outputs=layout_agent_run_outputs,
+        concurrency_limit=1,
+        concurrency_id="layout-mask-vlm",
+        api_name="_layout_mask_agent_run",
+    )
+    layout_agent_prompt.submit(
+        fn=_layout_mask_agent_run_callback,
+        inputs=[
+            session_state,
+            layout_mask_agent_state,
+            layout_input,
+            layout_agent_consent,
+            layout_agent_profile,
+            layout_agent_prompt,
+            *layout_agent_control_inputs,
+        ],
+        outputs=layout_agent_run_outputs,
+        concurrency_limit=1,
+        concurrency_id="layout-mask-vlm",
+    )
+    layout_agent_undo_btn.click(
+        fn=_layout_mask_agent_undo_callback,
+        inputs=[layout_mask_agent_state, layout_input],
+        outputs=[
+            layout_mask_agent_state,
+            layout_agent_chatbot,
+            layout_agent_draft_preview,
+            layout_agent_diff,
+            layout_agent_status,
+            layout_agent_apply_btn,
+        ],
+        concurrency_limit=1,
+        concurrency_id="layout-mask-agent-local",
+    )
+    layout_agent_apply_btn.click(
+        fn=_layout_mask_agent_apply_callback,
+        inputs=[layout_mask_agent_state],
+        outputs=[
+            layout_mask_agent_state,
+            layout_threshold,
+            layout_invert,
+            layout_open_kernel,
+            layout_close_kernel,
+            layout_min_area,
+            layout_region_mode,
+            layout_morph_pixels,
+            layout_agent_diff,
+            layout_agent_status,
+            layout_agent_apply_btn,
+        ],
+        concurrency_limit=1,
+        concurrency_id="layout-mask-agent-local",
+    )
+
     run_layout_mask_event = run_layout_mask_btn.click(
         fn=_run_layout_mask_page_with_downloads,
         inputs=[session_state, image_state, layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode, layout_morph_pixels],
@@ -180,6 +366,22 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         concurrency_limit=1,
         concurrency_id="image-prepost-state",
         api_name="_run_layout_mask_page",
+    )
+    run_layout_mask_event.success(
+        fn=_layout_mask_agent_mark_saved_callback,
+        inputs=[
+            layout_mask_agent_state,
+            layout_state,
+            *layout_agent_control_inputs,
+        ],
+        outputs=[
+            layout_mask_agent_state,
+            layout_agent_diff,
+            layout_agent_status,
+            layout_agent_apply_btn,
+        ],
+        concurrency_limit=1,
+        concurrency_id="layout-mask-agent-local",
     )
     run_layout_region_event = run_layout_mask_event.then(
         fn=_load_layout_region_context,

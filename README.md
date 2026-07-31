@@ -97,6 +97,22 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 - `min component area`：过滤小连通域。
 - `区域模式`：选择保留区域策略。
 
+#### AI Mask repair assistant
+
+The optional assistant is a constrained VLM decision layer over the existing deterministic OpenCV pipeline:
+
+1. Upload a layout screenshot and explicitly confirm outbound sharing for that image.
+2. Choose Auto/ACT/GE1/GE2, then run automatic analysis or provide a short repair request.
+3. The backend generates at most six legal parameter candidates and sends only resized image/contact-sheet PNGs to Qwen3.5-122B.
+4. Qwen may select only one backend candidate ID. It cannot generate pixels, parameters, code, or tool calls.
+5. Red pixels in the Draft preview are additions, blue pixels are removals, and a yellow border requires manual review.
+6. Apply the recommended parameters to the existing seven controls.
+7. Click the existing generate button to create and persist the authoritative layout mask.
+
+Agent Drafts, dialogue history, and undo versions remain in memory and never create a layout ID or write under
+`.runtime/layout_masks`. A new image or forced profile change clears the dialogue, Draft, undo stack, and outbound
+consent. Undo, reset, and apply are local operations and do not call the paid VLM endpoint.
+
 右侧先显示 `binary mask 预览` 和 `contour overlay`，其下方是独立的 `Region Annotation Layer`：
 
 1. 切换到 `套索选择`：按住鼠标左键拖动可绘制自由线条，松开后 Draft 保持开放；随后可继续拖动补自由线，或逐点点击添加直线边。至少有 3 个不同点后点击 `完成套索`，此时才会闭合并生成黄色 `Draft` 预览。
