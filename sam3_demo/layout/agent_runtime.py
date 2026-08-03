@@ -41,6 +41,7 @@ def load_skill_bundle(skill_dir):
         "SKILL.md",
         "references/operation-catalog.md",
         "references/profile-priors.md",
+        "references/keyword-routing.md",
         "references/response-schema.json",
         "references/dialogue-examples.md",
     )

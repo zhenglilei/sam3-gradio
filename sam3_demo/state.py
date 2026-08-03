@@ -124,6 +124,7 @@ def _new_layout_mask_agent_state(session_id=None):
         "skill_version": "1.0.0",
         "last_usage": None,
         "last_cost": None,
+        "last_latency_seconds": None,
     }
 
 def _norm_box(box, width, height):

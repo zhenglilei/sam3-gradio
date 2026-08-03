@@ -41,9 +41,22 @@ class LayoutMaskAgentPrimitiveTests(unittest.TestCase):
             profile_mode="GE2",
             image_shape=(100, 120),
         )
+
         identity = next(row for row in ge2 if row["label"] == "GE2 preserve holes")
         self.assertEqual(identity["params"]["close_kernel"], 0)
         self.assertEqual(identity["params"]["morph_pixels"], 0)
+
+    def test_negated_thicken_keyword_does_not_add_dilation_candidate(self):
+        candidates = build_candidates(
+            self.current,
+            profile_mode="GE1",
+            message="不要加粗但修补断口",
+            image_shape=(100, 120),
+        )
+        labels = {row["label"] for row in candidates}
+        self.assertNotIn("Thicken globally", labels)
+        self.assertIn("GE1 close=3", labels)
+        self.assertIn("GE1 close=5", labels)
 
     def test_explicit_value_must_be_in_ui_range(self):
         candidates = build_candidates(self.current, message="close=17", image_shape=(100, 120))

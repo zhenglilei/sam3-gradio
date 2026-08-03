@@ -30,6 +30,19 @@ _EXPLICIT_PARAM_RE = re.compile(
 )
 
 
+_KEYWORD_GROUPS = {
+    "fill": ("再填", "填补", "凹坑", "坑洼", "补洞"),
+    "reduce_bridges": ("减少粘连", "粘连", "分开", "断开"),
+    "thicken": ("整体加粗", "加粗", "变粗"),
+    "avoid_thicken": ("不要加粗", "不加粗", "不要变粗", "保持线宽"),
+    "preserve_holes": ("保留孔洞", "保留方孔", "孔洞", "方孔"),
+}
+
+
+def _contains_keyword(text, group):
+    return any(keyword in str(text or "") for keyword in _KEYWORD_GROUPS[group])
+
+
 def params_from_controls(
     threshold,
     invert,
@@ -140,16 +153,16 @@ def build_candidates(
     text = str(message or "")
     if profile == "ACT":
         current_close = int(current["close_kernel"])
-        if "\u518d\u586b" in text or "\u586b\u8865" in text or "\u51f9\u5751" in text:
+        if _contains_keyword(text, "fill"):
             rows.append(("ACT fill a little more", _with(current, close_kernel=min(31, max(3, current_close + 2)), morph_pixels=0), "Increase close without changing line width"))
-        if "\u7c98\u8fde" in text or "\u51cf\u5c11" in text:
+        if _contains_keyword(text, "reduce_bridges"):
             rows.append(("ACT reduce bridges", _with(current, close_kernel=max(0, current_close - 2), morph_pixels=0), "Reduce close"))
         for close in (11, 13, 15, 17, 19):
             rows.append((f"ACT close={close}", _with(current, close_kernel=close, morph_pixels=0), "Fill small concavities without dilation"))
     elif profile == "GE1":
         for morph in (0, 1, 2):
             rows.append((f"GE1 morph={morph:+d}", _with(current, close_kernel=0, morph_pixels=morph), "Conservative line-width search"))
-        if "\u4e0d\u52a0\u7c97" in text and ("\u65ad" in text or "\u4fee\u8865" in text):
+        if _contains_keyword(text, "avoid_thicken") and ("\u65ad" in text or "\u4fee\u8865" in text):
             for close in (3, 5):
                 rows.append((f"GE1 close={close}", _with(current, close_kernel=close, morph_pixels=0), "Repair gaps without thickening"))
     elif profile == "GE2":
@@ -167,9 +180,9 @@ def build_candidates(
                 ("threshold+2", _with(current, threshold=min(255, current["threshold"] + 2)), "Only increase threshold"),
             ]
         )
-    if "\u6574\u4f53\u52a0\u7c97" in text or "\u52a0\u7c97" in text:
+    if _contains_keyword(text, "thicken") and not _contains_keyword(text, "avoid_thicken"):
         rows.insert(1, ("Thicken globally", _with(current, morph_pixels=min(31, current["morph_pixels"] + 1)), "Add 1 px dilation"))
-    if "\u4fdd\u7559\u5b54\u6d1e" in text:
+    if _contains_keyword(text, "preserve_holes"):
         rows.insert(1, ("Preserve holes", _with(current, close_kernel=0, morph_pixels=min(0, current["morph_pixels"])), "Disable close and dilation"))
 
     candidates = []

@@ -99,19 +99,19 @@ PVS bbox 不会立刻生成实例，需要点击 `批量生成 PVS 实例` 后�
 
 #### AI Mask repair assistant
 
-The optional assistant is a constrained VLM decision layer over the existing deterministic OpenCV pipeline:
+`AI Mask 修复助手`位于“版图截图转掩码”页签左侧栏，以聊天框方式操作：
 
-1. Upload a layout screenshot and explicitly confirm outbound sharing for that image.
-2. Choose Auto/ACT/GE1/GE2, then run automatic analysis or provide a short repair request.
-3. The backend generates at most six legal parameter candidates and sends only resized image/contact-sheet PNGs to Qwen3.5-122B.
-4. Qwen may select only one backend candidate ID. It cannot generate pixels, parameters, code, or tool calls.
-5. Red pixels in the Draft preview are additions, blue pixels are removals, and a yellow border requires manual review.
-6. Apply the recommended parameters to the existing seven controls.
-7. Click the existing generate button to create and persist the authoritative layout mask.
+1. 上传版图截图，并勾选允许发送当前图像的缩略图和候选对比图。
+2. 在聊天框输入“自动分析”“再填一点”“减少粘连”“不要加粗但修补断口”或“保留孔洞”等需求。
+3. Skill 的关键字路由先生成最多六个合法候选；Qwen3.5-122B 只能选择后端候选 ID。
+4. 发送后立即显示“正在分析”，输入框暂时禁用；单次请求超时上限为 180 秒。
+5. Draft 中红色表示新增、蓝色表示删除、黄色边界表示需要人工复核。
+6. 输入“应用推荐参数”可更新现有七个控件，再点击原有生成按钮保存权威 mask。
+7. “撤回”“重置”“应用推荐参数”是本地聊天命令，不调用付费 VLM。
 
-Agent Drafts, dialogue history, and undo versions remain in memory and never create a layout ID or write under
-`.runtime/layout_masks`. A new image or forced profile change clears the dialogue, Draft, undo stack, and outbound
-consent. Undo, reset, and apply are local operations and do not call the paid VLM endpoint.
+页面不再提供快捷操作或 Profile 选择按钮；profile 由 Auto 模式结合图像和对话识别。Agent Draft、对话历史
+和撤回版本只保存在内存中，不创建 layout ID，也不写入 `.runtime/layout_masks`。换图会清空对话、Draft、
+撤回栈和当前图像外发授权。服务端记录每轮请求耗时，但日志禁止写入图像、base64 或凭据。
 
 右侧先显示 `binary mask 预览` 和 `contour overlay`，其下方是独立的 `Region Annotation Layer`：
 

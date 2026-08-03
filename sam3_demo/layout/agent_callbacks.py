@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import time
 
 import numpy as np
 from PIL import Image
@@ -68,6 +69,17 @@ def _history_chat(history):
         if assistant_message:
             messages.append({"role": "assistant", "content": str(assistant_message)})
     return messages
+
+
+def classify_layout_agent_message(message):
+    compact = "".join(str(message or "").strip().casefold().split())
+    if compact in {"undo", "\u64a4\u56de", "\u6062\u590d\u4e0a\u4e00\u7248"}:
+        return "undo"
+    if compact in {"reset", "\u91cd\u7f6e", "\u91cd\u65b0\u5f00\u59cb"}:
+        return "reset"
+    if compact in {"apply", "\u5e94\u7528", "\u5e94\u7528\u53c2\u6570", "\u5e94\u7528\u63a8\u8350\u53c2\u6570"}:
+        return "apply"
+    return "vlm"
 
 
 def format_parameter_diff(baseline, current):
@@ -215,6 +227,7 @@ def run_layout_mask_agent_turn(
         current_mask,
         candidates,
     )
+    request_started = time.perf_counter()
     response, usage, cost, skill_version = vlm_call(
         image=computed_image,
         contact_sheet=contact_sheet,
@@ -224,6 +237,7 @@ def run_layout_mask_agent_turn(
         history=list(current_state.get("history") or [])[-6:],
         **vlm_options,
     )
+    latency_seconds = time.perf_counter() - request_started
     selected = next(
         item for item in candidates
         if item["candidate_id"] == response["selected_candidate_id"]
@@ -247,6 +261,7 @@ def run_layout_mask_agent_turn(
     updated["skill_version"] = skill_version
     updated["last_usage"] = usage
     updated["last_cost"] = cost
+    updated["last_latency_seconds"] = latency_seconds
     manual_review = bool(response["manual_review"] or selected_report["manual_review"])
     history = list(updated.get("history") or [])
     history.append(
@@ -279,6 +294,7 @@ def run_layout_mask_agent_turn(
         status_parts.append(f"tokens={tokens}")
     if cost is not None:
         status_parts.append(f"cost={cost:.6f}")
+    status_parts.append(f"latency={latency_seconds:.1f}s")
     return {
         "state": updated,
         "chat": _history_chat(updated["history"]),

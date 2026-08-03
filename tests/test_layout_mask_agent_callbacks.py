@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 
 from sam3_demo.layout.agent_callbacks import (
+    classify_layout_agent_message,
     apply_layout_mask_agent_params,
     run_layout_mask_agent_turn,
     undo_layout_mask_agent_draft,
@@ -82,6 +83,7 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
         result = self.run_turn()
         self.assertEqual(len(self.calls), 1)
         state = result["state"]
+        self.assertGreaterEqual(state["last_latency_seconds"], 0.0)
         self.assertEqual(state["current_draft_params"]["close_kernel"], 17)
         self.assertEqual(state["undo_stack"][-1]["close_kernel"], 15)
         self.assertEqual(state["turn_count"], 1)
@@ -155,6 +157,16 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
         self.assertEqual(result["state"]["current_draft_params"]["close_kernel"], 13)
         self.assertTrue(
             any(row.get("kind") == "manual_override" for row in result["state"]["history"])
+        )
+
+    def test_local_chat_commands_are_keyword_routed_without_vlm(self):
+        self.assertEqual(classify_layout_agent_message("撤回"), "undo")
+        self.assertEqual(classify_layout_agent_message("恢复 上一版"), "undo")
+        self.assertEqual(classify_layout_agent_message("重置"), "reset")
+        self.assertEqual(classify_layout_agent_message("应用推荐参数"), "apply")
+        self.assertEqual(
+            classify_layout_agent_message("不要加粗但修补断口"),
+            "vlm",
         )
 
 

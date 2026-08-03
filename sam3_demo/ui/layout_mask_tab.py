@@ -13,6 +13,52 @@ def build_layout_mask_tab(
     _LAYOUT_MASK_MORPH_LIMIT_PX,
 ):
     with gr.TabItem("版图截图转掩码", id="tab_layout_mask"):
+        with gr.Sidebar(
+            label="AI Mask \u4fee\u590d\u52a9\u624b",
+            open=True,
+            width=420,
+            position="left",
+            elem_id="layout-mask-agent-sidebar",
+        ):
+            gr.Markdown("### AI Mask \u4fee\u590d\u52a9\u624b")
+            gr.Markdown(
+                "\u7528\u5bf9\u8bdd\u63cf\u8ff0\u9700\u8981\u4fee\u590d\u7684\u7ed3\u6784\uff1bVLM \u53ea\u4f1a\u4ece\u540e\u7aef\u5019\u9009\u4e2d\u9009\u62e9\u3002"
+            )
+            layout_agent_consent = gr.Checkbox(
+                value=False,
+                label="\u5141\u8bb8\u53d1\u9001\u5f53\u524d\u56fe\u50cf\u7f29\u7565\u56fe\u548c\u5019\u9009\u5bf9\u6bd4\u56fe",
+            )
+            layout_agent_profile = gr.State("Auto")
+            layout_agent_pending_message = gr.State("")
+            layout_agent_chatbot = gr.Chatbot(
+                label="\u5bf9\u8bdd",
+                height=520,
+                buttons=[],
+                feedback_options=None,
+            )
+            with gr.Row():
+                layout_agent_prompt = gr.Textbox(
+                    label="",
+                    placeholder="\u4f8b\u5982\uff1a\u81ea\u52a8\u5206\u6790\u3001\u518d\u586b\u4e00\u70b9\u3001\u4fdd\u7559\u5b54\u6d1e\u3001\u5e94\u7528\u63a8\u8350\u53c2\u6570",
+                    max_lines=4,
+                    scale=6,
+                )
+                layout_agent_send_btn = gr.Button("\u53d1\u9001", variant="primary", scale=1)
+            layout_agent_status = gr.Markdown(
+                "\u4e0a\u4f20\u56fe\u7247\u5e76\u786e\u8ba4\u5916\u53d1\u540e\u5f00\u59cb\u5bf9\u8bdd\u3002"
+            )
+            with gr.Accordion("\u67e5\u770b Draft \u4e0e\u5019\u9009", open=False):
+                layout_agent_draft_preview = gr.Image(
+                    type="pil",
+                    label="Draft \u53d8\u5316：\u7ea2\u8272\u65b0\u589e\u3001\u84dd\u8272\u5220\u9664\u3001\u9ec4\u8272\u98ce\u9669",
+                    height=240,
+                )
+                layout_agent_candidate_preview = gr.Image(
+                    type="pil",
+                    label="\u5019\u9009\u5bf9\u6bd4\u56fe",
+                    height=240,
+                )
+                layout_agent_diff = gr.Markdown("\u5f53\u524d\u6ca1\u6709 Agent Draft\u3002")
         gr.Markdown("### 版图截图转二值 mask")
         gr.Markdown("binary mask 是唯一权威数据；contour 仅用于预览和导出。左右两侧预览使用相同高度。")
         with gr.Row():
@@ -56,68 +102,6 @@ def build_layout_mask_tab(
                         layout_overlay_preview = gr.Image(type="pil", label="contour overlay", show_label=False, height=430)
                         gr.Markdown("**contour overlay**")
                 gr.Markdown("左右滑动或拖动下方滚动条切换预览。")
-                with gr.Accordion("AI Mask \u4fee\u590d\u52a9\u624b", open=False):
-                    gr.Markdown(
-                        "VLM only selects backend-generated candidates. "
-                        "Drafts stay in memory until you apply parameters and use the existing generate button."
-                    )
-                    layout_agent_consent = gr.Checkbox(
-                        value=False,
-                        label="I confirm sending this image thumbnail and candidate sheet to Qwen3.5-122B",
-                    )
-                    layout_agent_profile = gr.Radio(
-                        choices=["Auto", "ACT", "GE1", "GE2"],
-                        value="Auto",
-                        label="Profile",
-                    )
-                    layout_agent_action_auto = gr.State("\u81ea\u52a8\u5206\u6790")
-                    layout_agent_action_fill = gr.State("\u586b\u8865\u51f9\u5751")
-                    layout_agent_action_bridge = gr.State("\u51cf\u5c11\u7c98\u8fde")
-                    layout_agent_action_thicken = gr.State("\u6574\u4f53\u52a0\u7c97")
-                    layout_agent_action_holes = gr.State("\u4fdd\u7559\u5b54\u6d1e")
-                    with gr.Row():
-                        layout_agent_auto_btn = gr.Button("\u81ea\u52a8\u5206\u6790")
-                        layout_agent_fill_btn = gr.Button("\u586b\u8865\u51f9\u5751")
-                        layout_agent_bridge_btn = gr.Button("\u51cf\u5c11\u7c98\u8fde")
-                    with gr.Row():
-                        layout_agent_thicken_btn = gr.Button("\u6574\u4f53\u52a0\u7c97")
-                        layout_agent_holes_btn = gr.Button("\u4fdd\u7559\u5b54\u6d1e")
-                        layout_agent_undo_btn = gr.Button("\u64a4\u56de")
-                        layout_agent_reset_btn = gr.Button("\u91cd\u7f6e")
-                    layout_agent_chatbot = gr.Chatbot(
-                        label="\u591a\u8f6e\u5bf9\u8bdd",
-                        height=280,
-                    )
-                    with gr.Row():
-                        layout_agent_prompt = gr.Textbox(
-                            label="\u4fee\u590d\u53cd\u9988",
-                            placeholder="\u4f8b\u5982\uff1a\u518d\u586b\u4e00\u70b9\uff0c\u4f46\u4e0d\u8981\u53d8\u7c97",
-                            max_lines=3,
-                            scale=5,
-                        )
-                        layout_agent_send_btn = gr.Button("\u53d1\u9001", variant="primary", scale=1)
-                    with gr.Row():
-                        layout_agent_draft_preview = gr.Image(
-                            type="pil",
-                            label="Agent Draft delta: red added, blue removed, yellow risk",
-                            height=330,
-                        )
-                        layout_agent_candidate_preview = gr.Image(
-                            type="pil",
-                            label="Candidate comparison",
-                            height=330,
-                        )
-                    layout_agent_diff = gr.Markdown("No active Agent Draft.")
-                    layout_agent_status = gr.Textbox(
-                        label="Model / tokens / cost / manual review",
-                        interactive=False,
-                        lines=3,
-                    )
-                    layout_agent_apply_btn = gr.Button(
-                        "\u5e94\u7528\u63a8\u8350\u53c2\u6570",
-                        variant="primary",
-                        interactive=False,
-                    )
                 gr.Markdown("### Label Annotation Layer")
                 gr.Markdown("黄色表示未保存 Draft；绿色表示已保存 Label。一个套索对应一个独立 Label；Label 可选留空并自动按序号命名。")
                 if LayoutRegionAnnotator is not None:
@@ -177,18 +161,7 @@ def build_layout_mask_tab(
         layout_mask_preview=layout_mask_preview,
         layout_agent_consent=layout_agent_consent,
         layout_agent_profile=layout_agent_profile,
-        layout_agent_action_auto=layout_agent_action_auto,
-        layout_agent_action_fill=layout_agent_action_fill,
-        layout_agent_action_bridge=layout_agent_action_bridge,
-        layout_agent_action_thicken=layout_agent_action_thicken,
-        layout_agent_action_holes=layout_agent_action_holes,
-        layout_agent_auto_btn=layout_agent_auto_btn,
-        layout_agent_fill_btn=layout_agent_fill_btn,
-        layout_agent_bridge_btn=layout_agent_bridge_btn,
-        layout_agent_thicken_btn=layout_agent_thicken_btn,
-        layout_agent_holes_btn=layout_agent_holes_btn,
-        layout_agent_undo_btn=layout_agent_undo_btn,
-        layout_agent_reset_btn=layout_agent_reset_btn,
+        layout_agent_pending_message=layout_agent_pending_message,
         layout_agent_chatbot=layout_agent_chatbot,
         layout_agent_prompt=layout_agent_prompt,
         layout_agent_send_btn=layout_agent_send_btn,
@@ -196,7 +169,6 @@ def build_layout_mask_tab(
         layout_agent_candidate_preview=layout_agent_candidate_preview,
         layout_agent_diff=layout_agent_diff,
         layout_agent_status=layout_agent_status,
-        layout_agent_apply_btn=layout_agent_apply_btn,
         layout_overlay_preview=layout_overlay_preview,
         layout_region_annotator=layout_region_annotator,
         layout_region_label=layout_region_label,

@@ -455,6 +455,7 @@ from sam3_demo.layout.mask_callbacks import (
 )
 from sam3_demo.layout.agent_callbacks import (
     apply_layout_mask_agent_params,
+    classify_layout_agent_message,
     format_parameter_diff,
     mark_layout_mask_agent_saved,
     reset_layout_mask_agent,
@@ -2813,10 +2814,11 @@ def _layout_mask_agent_reset_callback(
         [],
         None,
         None,
-        "No active Agent Draft.",
-        "Confirm outbound sharing before the next VLM request.",
-        gr.update(interactive=False),
+        "当前没有 Agent Draft。",
+        "已重置对话；下次请求前需重新确认图像外发。",
         "",
+        gr.update(value="", interactive=True),
+        gr.update(interactive=True),
     )
 
 
@@ -2837,6 +2839,52 @@ def _layout_mask_agent_consent_callback(
     )
 
 
+def _layout_mask_agent_turn_result(
+    session_state,
+    agent_state,
+    input_image,
+    consent,
+    profile_mode,
+    user_message,
+    threshold,
+    invert,
+    open_kernel,
+    close_kernel,
+    min_component_area,
+    region_mode,
+    morph_pixels,
+):
+    image = _pil_image(input_image)
+    controls = _layout_mask_agent_controls(
+        threshold,
+        invert,
+        open_kernel,
+        close_kernel,
+        min_component_area,
+        region_mode,
+        morph_pixels,
+    )
+    return run_layout_mask_agent_turn(
+        state=agent_state,
+        session_id=_session_id_from_state(session_state),
+        image=image,
+        consent=consent,
+        profile_mode=profile_mode,
+        user_message=user_message,
+        controls=controls,
+        compute_draft=_compute_layout_mask_draft,
+        vlm_options={
+            "skill_dir": layout_mask_agent_skill_dir,
+            "base_url": _LAYOUT_MASK_VLM_BASE_URL,
+            "model": _LAYOUT_MASK_VLM_MODEL,
+            "timeout_seconds": _LAYOUT_MASK_VLM_TIMEOUT_SECONDS,
+            "max_tokens": _LAYOUT_MASK_VLM_MAX_TOKENS,
+            "temperature": _LAYOUT_MASK_VLM_TEMPERATURE,
+            "api_key": _LAYOUT_MASK_VLM_API_KEY,
+        },
+    )
+
+
 def _layout_mask_agent_run_callback(
     session_state,
     agent_state,
@@ -2853,8 +2901,13 @@ def _layout_mask_agent_run_callback(
     morph_pixels,
 ):
     try:
-        image = _pil_image(input_image)
-        controls = _layout_mask_agent_controls(
+        result = _layout_mask_agent_turn_result(
+            session_state,
+            agent_state,
+            input_image,
+            consent,
+            profile_mode,
+            user_message,
             threshold,
             invert,
             open_kernel,
@@ -2862,25 +2915,6 @@ def _layout_mask_agent_run_callback(
             min_component_area,
             region_mode,
             morph_pixels,
-        )
-        result = run_layout_mask_agent_turn(
-            state=agent_state,
-            session_id=_session_id_from_state(session_state),
-            image=image,
-            consent=consent,
-            profile_mode=profile_mode,
-            user_message=user_message,
-            controls=controls,
-            compute_draft=_compute_layout_mask_draft,
-            vlm_options={
-                "skill_dir": layout_mask_agent_skill_dir,
-                "base_url": _LAYOUT_MASK_VLM_BASE_URL,
-                "model": _LAYOUT_MASK_VLM_MODEL,
-                "timeout_seconds": _LAYOUT_MASK_VLM_TIMEOUT_SECONDS,
-                "max_tokens": _LAYOUT_MASK_VLM_MAX_TOKENS,
-                "temperature": _LAYOUT_MASK_VLM_TEMPERATURE,
-                "api_key": _LAYOUT_MASK_VLM_API_KEY,
-            },
         )
         return (
             result["state"],
@@ -2902,6 +2936,201 @@ def _layout_mask_agent_run_callback(
             f"AI Mask assistant failed: {exc}",
             gr.update(),
             gr.update(),
+        )
+
+
+_LAYOUT_AGENT_WAITING_MESSAGE = (
+    "正在分析图像与候选，请稍候。"
+    f"当前请求超时上限为 {_LAYOUT_MASK_VLM_TIMEOUT_SECONDS:g} 秒。"
+)
+
+
+def _layout_mask_agent_begin_chat_callback(chat, user_message):
+    message = str(user_message or "").strip()
+    messages = list(chat or [])
+    if not message:
+        return (
+            messages,
+            "",
+            gr.update(value="", interactive=True),
+            "请输入修复需求后发送。",
+            gr.update(interactive=True),
+        )
+    messages.append({"role": "user", "content": message})
+    messages.append({"role": "assistant", "content": _LAYOUT_AGENT_WAITING_MESSAGE})
+    return (
+        messages,
+        message,
+        gr.update(value="", interactive=False),
+        _LAYOUT_AGENT_WAITING_MESSAGE,
+        gr.update(interactive=False),
+    )
+
+
+def _layout_mask_agent_finish_chat(chat, assistant_message):
+    messages = list(chat or [])
+    response = {"role": "assistant", "content": str(assistant_message)}
+    last_role = messages[-1].get("role") if messages and isinstance(messages[-1], dict) else None
+    if last_role == "assistant":
+        messages[-1] = response
+    else:
+        messages.append(response)
+    return messages
+
+
+def _layout_mask_agent_chat_callback(
+    session_state,
+    agent_state,
+    input_image,
+    consent,
+    profile_mode,
+    user_message,
+    chat,
+    threshold,
+    invert,
+    open_kernel,
+    close_kernel,
+    min_component_area,
+    region_mode,
+    morph_pixels,
+):
+    unchanged_controls = (gr.update(),) * 7
+    if not str(user_message or "").strip():
+        return (
+            agent_state,
+            chat,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            "请输入修复需求后发送。",
+            consent,
+            "",
+            gr.update(value="", interactive=True),
+            gr.update(interactive=True),
+            *unchanged_controls,
+        )
+    try:
+        command = classify_layout_agent_message(user_message)
+        if command == "reset":
+            image = _pil_image(input_image) if input_image is not None else None
+            updated = reset_layout_mask_agent(
+                _session_id_from_state(session_state),
+                image,
+                profile_mode,
+            )
+            reset_chat = _layout_mask_agent_finish_chat(
+                list(chat or [])[-2:],
+                "已重置对话和 Draft，且已取消当前图像的外发授权。",
+            )
+            return (
+                updated,
+                reset_chat,
+                None,
+                None,
+                "当前没有 Agent Draft。",
+                "已重置；下次请求前请重新确认图像外发。",
+                False,
+                "",
+                gr.update(value="", interactive=True),
+                gr.update(interactive=True),
+                *unchanged_controls,
+            )
+        if command == "undo":
+            result = undo_layout_mask_agent_draft(
+                agent_state,
+                _pil_image(input_image),
+                _compute_layout_mask_draft,
+            )
+            return (
+                result["state"],
+                _layout_mask_agent_finish_chat(
+                    chat,
+                    "已恢复上一版 Agent Draft，未调用 VLM。",
+                ),
+                result["draft_preview"],
+                gr.update(),
+                result["diff"],
+                result["status"],
+                consent,
+                "",
+                gr.update(value="", interactive=True),
+                gr.update(interactive=True),
+                *unchanged_controls,
+            )
+        if command == "apply":
+            updated, params = apply_layout_mask_agent_params(agent_state)
+            return (
+                updated,
+                _layout_mask_agent_finish_chat(
+                    chat,
+                    "推荐参数已应用到页面控件。"
+                    "请点击现有的“生成并保存当前版图 mask”产生权威 mask。",
+                ),
+                gr.update(),
+                gr.update(),
+                format_parameter_diff(
+                    updated.get("baseline_params"),
+                    updated.get("current_draft_params"),
+                ),
+                "参数已应用；未写入 layout mask。",
+                consent,
+                "",
+                gr.update(value="", interactive=True),
+                gr.update(interactive=True),
+                params["threshold"],
+                params["invert"],
+                params["open_kernel"],
+                params["close_kernel"],
+                params["min_component_area"],
+                params["region_mode"],
+                params["morph_pixels"],
+            )
+
+        result = _layout_mask_agent_turn_result(
+            session_state,
+            agent_state,
+            input_image,
+            consent,
+            profile_mode,
+            user_message,
+            threshold,
+            invert,
+            open_kernel,
+            close_kernel,
+            min_component_area,
+            region_mode,
+            morph_pixels,
+        )
+        latest = (result["state"].get("history") or [])[-1]
+        return (
+            result["state"],
+            _layout_mask_agent_finish_chat(chat, latest["assistant_message"]),
+            result["draft_preview"],
+            result["candidate_preview"],
+            result["diff"],
+            result["status"],
+            consent,
+            "",
+            gr.update(value="", interactive=True),
+            gr.update(interactive=True),
+            *unchanged_controls,
+        )
+    except Exception as exc:
+        return (
+            agent_state,
+            _layout_mask_agent_finish_chat(
+                chat,
+                f"请求失败：{exc}",
+            ),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            f"AI Mask assistant failed: {exc}",
+            consent,
+            "",
+            gr.update(value="", interactive=True),
+            gr.update(interactive=True),
+            *unchanged_controls,
         )
 
 
@@ -2978,7 +3207,7 @@ def _layout_mask_agent_mark_saved_callback(
     morph_pixels,
 ):
     if not isinstance(layout_state, dict) or not layout_state.get("enabled"):
-        return agent_state, gr.update(), gr.update(), gr.update()
+        return agent_state, gr.update(), gr.update()
     controls = _layout_mask_agent_controls(
         threshold,
         invert,
@@ -2996,7 +3225,6 @@ def _layout_mask_agent_mark_saved_callback(
             updated.get("current_draft_params"),
         ),
         "Current controls were saved as the authoritative layout mask baseline.",
-        gr.update(interactive=False),
     )
 
 
