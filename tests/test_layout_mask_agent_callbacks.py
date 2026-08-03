@@ -10,6 +10,7 @@ from sam3_demo.layout.agent_callbacks import (
     run_layout_mask_agent_turn,
     undo_layout_mask_agent_draft,
     set_layout_mask_agent_consent,
+    validate_layout_mask_agent_context,
 )
 from sam3_demo.layout.preprocess_registry import params_from_controls
 from sam3_demo.state import _new_layout_mask_agent_state
@@ -43,15 +44,12 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
         self.calls.append(kwargs)
         return (
             {
-                "schema_version": 1,
-                "intent": "revise",
+                "schema_version": 2,
                 "profile": "ACT",
                 "confidence": 0.92,
-                "selected_candidate_id": "C2",
-                "observations": ["small hole"],
-                "assistant_message": "Fill a little more.",
+                "parameters": dict(self.controls, close_kernel=17),
+                "explanation": "建议将 close 增加到 17 并保持线宽。",
                 "manual_review": False,
-                "warnings": [],
             },
             {"total_tokens": 55},
             0.002,
@@ -90,7 +88,7 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
         self.assertEqual(state["last_usage"]["total_tokens"], 55)
         self.assertNotIn("mask", json_keys(state))
         self.assertIsNotNone(result["draft_preview"])
-        self.assertIsNotNone(result["candidate_preview"])
+        self.assertNotIn("candidate_preview", result)
 
     def test_consent_and_vlm_failure_do_not_mutate_input_state(self):
         state = _new_layout_mask_agent_state("session")
@@ -132,15 +130,12 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
             self.calls.append(kwargs)
             return (
                 {
-                    "schema_version": 1,
-                    "intent": "revise",
+                    "schema_version": 2,
                     "profile": "ACT",
                     "confidence": 0.8,
-                    "selected_candidate_id": "C1",
-                    "observations": [],
-                    "assistant_message": "Keep manual controls.",
+                    "parameters": dict(kwargs["current_parameters"]),
+                    "explanation": "保持当前手动参数。",
                     "manual_review": False,
-                    "warnings": [],
                 },
                 None,
                 None,
@@ -175,22 +170,16 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
 
         def select_fill_candidate(**kwargs):
             self.calls.append(kwargs)
-            candidate_id = next(
-                row["candidate_id"]
-                for row in kwargs["candidates"]
-                if row["label"] == "ACT fill a little more"
-            )
+            recommended = dict(kwargs["current_parameters"])
+            recommended["close_kernel"] += 2
             return (
                 {
-                    "schema_version": 1,
-                    "intent": "revise",
+                    "schema_version": 2,
                     "profile": "ACT",
                     "confidence": 0.9,
-                    "selected_candidate_id": candidate_id,
-                    "observations": [],
-                    "assistant_message": "Fill a little more.",
+                    "parameters": recommended,
+                    "explanation": "在当前 close 基础上增加 2。",
                     "manual_review": False,
-                    "warnings": [],
                 },
                 None,
                 None,
@@ -222,6 +211,33 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
                 compute_draft=self.compute_draft,
                 vlm_options={},
                 vlm_call=self.vlm,
+            )
+
+    def test_local_context_rejects_other_session_or_image(self):
+        state = set_layout_mask_agent_consent(
+            _new_layout_mask_agent_state("session"),
+            session_id="session",
+            image=self.image,
+            consent=True,
+            profile_mode="ACT",
+        )
+        validated = validate_layout_mask_agent_context(
+            state,
+            session_id="session",
+            image=self.image,
+        )
+        self.assertEqual(validated.size, self.image.size)
+        with self.assertRaisesRegex(ValueError, "different session"):
+            validate_layout_mask_agent_context(
+                state,
+                session_id="other",
+                image=self.image,
+            )
+        with self.assertRaisesRegex(ValueError, "current layout screenshot"):
+            validate_layout_mask_agent_context(
+                state,
+                session_id="session",
+                image=Image.new("RGB", self.image.size, "black"),
             )
 
 def json_keys(value):

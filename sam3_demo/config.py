@@ -55,7 +55,7 @@ _LAYOUT_MASK_VLM_BASE_URL = os.environ.get(
 ).rstrip("/")
 _LAYOUT_MASK_VLM_MODEL = os.environ.get("LAYOUT_MASK_VLM_MODEL", "qwen3.5-122b")
 _LAYOUT_MASK_VLM_TIMEOUT_SECONDS = float(os.environ.get("LAYOUT_MASK_VLM_TIMEOUT_SECONDS", "180"))
-_LAYOUT_MASK_VLM_MAX_TOKENS = int(os.environ.get("LAYOUT_MASK_VLM_MAX_TOKENS", "1024"))
+_LAYOUT_MASK_VLM_MAX_TOKENS = int(os.environ.get("LAYOUT_MASK_VLM_MAX_TOKENS", "512"))
 _LAYOUT_MASK_VLM_TEMPERATURE = float(os.environ.get("LAYOUT_MASK_VLM_TEMPERATURE", "0.1"))
 _LAYOUT_MASK_VLM_API_KEY = os.environ.get("LAYOUT_MASK_VLM_API_KEY", "").strip()
 layout_mask_agent_skill_dir = current_dir / "sam3_demo" / "layout" / "skills" / "layout-mask-preprocess"

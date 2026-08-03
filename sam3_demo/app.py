@@ -461,6 +461,7 @@ from sam3_demo.layout.agent_callbacks import (
     reset_layout_mask_agent,
     run_layout_mask_agent_turn,
     undo_layout_mask_agent_draft,
+    validate_layout_mask_agent_context,
     set_layout_mask_agent_consent,
 )
 from sam3_demo.layout.preprocess_registry import params_from_controls
@@ -2920,7 +2921,7 @@ def _layout_mask_agent_run_callback(
             result["state"],
             result["chat"],
             result["draft_preview"],
-            result["candidate_preview"],
+            None,
             result["diff"],
             result["status"],
             gr.update(interactive=True),
@@ -2940,9 +2941,10 @@ def _layout_mask_agent_run_callback(
 
 
 _LAYOUT_AGENT_WAITING_MESSAGE = (
-    "正在分析图像与候选，请稍候。"
+    "正在分析当前图像并生成参数建议，请稍候。"
     f"当前请求超时上限为 {_LAYOUT_MASK_VLM_TIMEOUT_SECONDS:g} 秒。"
 )
+_LAYOUT_AGENT_LOCAL_WAITING_MESSAGE = "正在执行本地操作，请稍候。"
 
 
 def _layout_mask_agent_begin_chat_callback(chat, user_message):
@@ -2956,13 +2958,19 @@ def _layout_mask_agent_begin_chat_callback(chat, user_message):
             "请输入修复需求后发送。",
             gr.update(interactive=True),
         )
+    command = classify_layout_agent_message(message)
+    waiting_message = (
+        _LAYOUT_AGENT_LOCAL_WAITING_MESSAGE
+        if command in {"apply", "undo", "reset"}
+        else _LAYOUT_AGENT_WAITING_MESSAGE
+    )
     messages.append({"role": "user", "content": message})
-    messages.append({"role": "assistant", "content": _LAYOUT_AGENT_WAITING_MESSAGE})
+    messages.append({"role": "assistant", "content": waiting_message})
     return (
         messages,
         message,
         gr.update(value="", interactive=False),
-        _LAYOUT_AGENT_WAITING_MESSAGE,
+        waiting_message,
         gr.update(interactive=False),
     )
 
@@ -3035,10 +3043,17 @@ def _layout_mask_agent_chat_callback(
                 gr.update(interactive=True),
                 *unchanged_controls,
             )
+        if command in {"undo", "apply"}:
+            local_image = validate_layout_mask_agent_context(
+                agent_state,
+                session_id=_session_id_from_state(session_state),
+                image=_pil_image(input_image) if input_image is not None else None,
+            )
+
         if command == "undo":
             result = undo_layout_mask_agent_draft(
                 agent_state,
-                _pil_image(input_image),
+                local_image,
                 _compute_layout_mask_draft,
             )
             return (
@@ -3051,7 +3066,7 @@ def _layout_mask_agent_chat_callback(
                 gr.update(),
                 result["diff"],
                 result["status"],
-                consent,
+                gr.update(),
                 "",
                 gr.update(value="", interactive=True),
                 gr.update(interactive=True),
@@ -3063,7 +3078,7 @@ def _layout_mask_agent_chat_callback(
                 updated,
                 _layout_mask_agent_finish_chat(
                     chat,
-                    "推荐参数已应用到页面控件。"
+                    "推荐参数已应用到页面控件，右侧 Draft 预览已刷新。"
                     "请点击现有的“生成并保存当前版图 mask”产生权威 mask。",
                 ),
                 gr.update(),
@@ -3072,8 +3087,8 @@ def _layout_mask_agent_chat_callback(
                     updated.get("baseline_params"),
                     updated.get("current_draft_params"),
                 ),
-                "参数已应用；未写入 layout mask。",
-                consent,
+                "参数已应用，右侧 Draft 预览已刷新；未写入 layout mask。",
+                gr.update(),
                 "",
                 gr.update(value="", interactive=True),
                 gr.update(interactive=True),
@@ -3106,10 +3121,10 @@ def _layout_mask_agent_chat_callback(
             result["state"],
             _layout_mask_agent_finish_chat(chat, latest["assistant_message"]),
             result["draft_preview"],
-            result["candidate_preview"],
+            None,
             result["diff"],
             result["status"],
-            consent,
+            gr.update(),
             "",
             gr.update(value="", interactive=True),
             gr.update(interactive=True),
@@ -3126,12 +3141,51 @@ def _layout_mask_agent_chat_callback(
             gr.update(),
             gr.update(),
             f"AI Mask assistant failed: {exc}",
-            consent,
+            gr.update(),
             "",
             gr.update(value="", interactive=True),
             gr.update(interactive=True),
             *unchanged_controls,
         )
+
+
+def _layout_mask_agent_applied_preview_callback(
+    session_state,
+    agent_state,
+    input_image,
+):
+    """Refresh the page previews only after a local parameter apply."""
+    try:
+        image = validate_layout_mask_agent_context(
+            agent_state,
+            session_id=_session_id_from_state(session_state),
+            image=_pil_image(input_image) if input_image is not None else None,
+        )
+        params = (
+            agent_state.get("current_draft_params")
+            if isinstance(agent_state, dict)
+            else None
+        )
+        revision = int(agent_state.get("conversation_revision") or 0)
+        applied_revision = int(agent_state.get("applied_revision") or 0)
+        if not params or applied_revision != revision:
+            return gr.update(), gr.update()
+        computed_image, mask, contours, _ = _compute_layout_mask_draft(
+            image,
+            params["threshold"],
+            params["invert"],
+            params["open_kernel"],
+            params["close_kernel"],
+            params["min_component_area"],
+            params["region_mode"],
+            params["morph_pixels"],
+        )
+        return (
+            _layout_mask_to_preview(mask),
+            _layout_contour_overlay(computed_image, mask, contours),
+        )
+    except Exception:
+        return gr.update(), gr.update()
 
 
 def _layout_mask_agent_undo_callback(agent_state, input_image):

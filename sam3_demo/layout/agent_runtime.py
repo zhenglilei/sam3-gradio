@@ -1,4 +1,4 @@
-"""Strict Qwen VLM client and visual payload helpers for layout-mask drafts."""
+"""Strict single-image Qwen VLM client for layout-mask parameter drafts."""
 
 from __future__ import annotations
 
@@ -12,23 +12,21 @@ import urllib.request
 from numbers import Real
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image
+
+from sam3_demo.layout.preprocess_registry import PARAM_KEYS, normalize_params
 
 
 ALLOWED_RESPONSE_KEYS = {
     "schema_version",
-    "intent",
     "profile",
     "confidence",
-    "selected_candidate_id",
-    "observations",
-    "assistant_message",
+    "parameters",
+    "explanation",
     "manual_review",
-    "warnings",
 }
-ALLOWED_INTENTS = {"analyze", "revise", "compare", "explain"}
 ALLOWED_PROFILES = {"ACT", "GE1", "GE2", "Unknown"}
+VALID_MORPH_KERNELS = {0, *range(3, 32, 2)}
 
 
 class LayoutMaskVLMError(RuntimeError):
@@ -36,31 +34,30 @@ class LayoutMaskVLMError(RuntimeError):
 
 
 def load_skill_bundle(skill_dir):
+    """Load only the single-image instructions used by the paid request."""
     root = Path(skill_dir)
     relative_paths = (
         "SKILL.md",
         "references/operation-catalog.md",
         "references/profile-priors.md",
-        "references/keyword-routing.md",
         "references/response-schema.json",
-        "references/dialogue-examples.md",
     )
     sections = []
     digest = hashlib.sha256()
+    response_schema = None
     for relative_path in relative_paths:
         path = root / relative_path
         data = path.read_bytes()
         digest.update(relative_path.encode("utf-8"))
         digest.update(b"\0")
         digest.update(data)
-        sections.append(f"## {relative_path}\n{data.decode('utf-8')}")
-    return "\n\n".join(sections), digest.hexdigest()[:16]
-
-
-def _fit_image(image, max_size):
-    image = image.convert("RGB")
-    image.thumbnail((int(max_size[0]), int(max_size[1])), Image.Resampling.LANCZOS)
-    return image
+        text = data.decode("utf-8")
+        if relative_path.endswith(".json"):
+            response_schema = json.loads(text)
+        sections.append(f"## {relative_path}\n{text}")
+    if not isinstance(response_schema, dict):
+        raise LayoutMaskVLMError("Layout mask response schema is missing")
+    return "\n\n".join(sections), digest.hexdigest()[:16], response_schema
 
 
 def _png_data_url(image, max_side):
@@ -73,65 +70,34 @@ def _png_data_url(image, max_side):
         )
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True)
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def build_candidate_contact_sheet(image, baseline_mask, candidates):
-    """Render candidate IDs and deltas; RLE or full masks never enter JSON."""
-    image = image.convert("RGB")
-    baseline = np.asarray(baseline_mask, dtype=bool)
-    tile_width, image_height, header_height = 360, 240, 64
-    columns = 2
-    rows = max(1, math.ceil(len(candidates) / columns))
-    sheet = Image.new("RGB", (tile_width * columns, (image_height + header_height) * rows), "white")
-    draw = ImageDraw.Draw(sheet)
-    for index, candidate in enumerate(candidates):
-        column = index % columns
-        row = index // columns
-        left = column * tile_width
-        top = row * (image_height + header_height)
-        mask = np.asarray(candidate["mask"], dtype=bool)
-        rgb = np.asarray(image, dtype=np.uint8).astype(np.float32)
-        green = mask
-        rgb[green] = rgb[green] * 0.50 + np.array([40, 220, 80], dtype=np.float32) * 0.50
-        added = mask & ~baseline
-        removed = baseline & ~mask
-        rgb[added] = rgb[added] * 0.25 + np.array([255, 40, 40], dtype=np.float32) * 0.75
-        rgb[removed] = rgb[removed] * 0.25 + np.array([40, 90, 255], dtype=np.float32) * 0.75
-        tile = _fit_image(Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8)), (tile_width, image_height))
-        tile_left = left + (tile_width - tile.width) // 2
-        tile_top = top + header_height + (image_height - tile.height) // 2
-        sheet.paste(tile, (tile_left, tile_top))
-        report = candidate.get("report") or {}
-        risk = bool(candidate.get("error") or report.get("manual_review"))
-        border = (240, 190, 0) if risk else (70, 130, 180)
-        draw.rectangle((left + 1, top + 1, left + tile_width - 2, top + image_height + header_height - 2), outline=border, width=4 if risk else 2)
-        title = f"{candidate['candidate_id']}  {candidate['label']}"
-        draw.text((left + 8, top + 7), title[:50], fill=(20, 20, 20))
-        params = candidate["params"]
-        summary = (
-            f"thr={params['threshold']} open={params['open_kernel']} "
-            f"close={params['close_kernel']} morph={params['morph_pixels']}"
-        )
-        draw.text((left + 8, top + 29), summary, fill=(45, 45, 45))
-        warning = candidate.get("error") or ("manual review" if risk else "safe")
-        draw.text((left + 8, top + 47), str(warning)[:56], fill=(140, 90, 0) if risk else (40, 110, 50))
-    return sheet
+def _validate_raw_parameters(value):
+    if not isinstance(value, dict) or set(value) != set(PARAM_KEYS):
+        raise LayoutMaskVLMError("VLM parameters do not match the canonical schema")
+    integer_fields = (
+        "threshold",
+        "open_kernel",
+        "close_kernel",
+        "morph_pixels",
+        "min_component_area",
+    )
+    for field in integer_fields:
+        if isinstance(value[field], bool) or not isinstance(value[field], int):
+            raise LayoutMaskVLMError(f"VLM {field} must be an integer")
+    if not isinstance(value["invert"], bool):
+        raise LayoutMaskVLMError("VLM invert must be boolean")
+    if not isinstance(value["region_mode"], str):
+        raise LayoutMaskVLMError("VLM region_mode must be a string")
+    for field in ("open_kernel", "close_kernel"):
+        if value[field] not in VALID_MORPH_KERNELS:
+            raise LayoutMaskVLMError(
+                f"VLM {field} must be 0 or an odd integer from 3 to 31"
+            )
 
 
-def _validate_text_list(value, field_name):
-    if not isinstance(value, list) or len(value) > 6:
-        raise LayoutMaskVLMError(f"{field_name} must be a list with at most six items")
-    result = []
-    for item in value:
-        if not isinstance(item, str) or len(item) > 160:
-            raise LayoutMaskVLMError(f"{field_name} contains an invalid item")
-        result.append(item)
-    return result
-
-
-def validate_vlm_response(content, candidate_ids, profile_mode):
+def validate_vlm_response(content, profile_mode, image_shape=None):
     try:
         payload = json.loads(content)
     except (TypeError, json.JSONDecodeError) as exc:
@@ -140,10 +106,8 @@ def validate_vlm_response(content, candidate_ids, profile_mode):
         raise LayoutMaskVLMError("VLM response must be a JSON object")
     if set(payload) != ALLOWED_RESPONSE_KEYS:
         raise LayoutMaskVLMError("VLM response fields do not match the canonical schema")
-    if payload["schema_version"] != 1:
+    if payload["schema_version"] != 2:
         raise LayoutMaskVLMError("Unsupported VLM response schema")
-    if payload["intent"] not in ALLOWED_INTENTS:
-        raise LayoutMaskVLMError("Unknown VLM intent")
     if payload["profile"] not in ALLOWED_PROFILES:
         raise LayoutMaskVLMError("Unknown VLM profile")
     if profile_mode in {"ACT", "GE1", "GE2"} and payload["profile"] != profile_mode:
@@ -154,19 +118,63 @@ def validate_vlm_response(content, candidate_ids, profile_mode):
     confidence = float(confidence)
     if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
         raise LayoutMaskVLMError("VLM confidence is outside [0, 1]")
-    candidate_id = payload["selected_candidate_id"]
-    if not isinstance(candidate_id, str) or candidate_id not in set(candidate_ids):
-        raise LayoutMaskVLMError("VLM selected an unknown candidate")
-    message = payload["assistant_message"]
-    if not isinstance(message, str) or not message.strip() or len(message) > 500:
-        raise LayoutMaskVLMError("VLM assistant message is invalid")
+    _validate_raw_parameters(payload["parameters"])
+    try:
+        parameters = normalize_params(payload["parameters"], image_shape=image_shape)
+    except (TypeError, ValueError) as exc:
+        raise LayoutMaskVLMError(f"VLM parameters are invalid: {exc}") from exc
+    explanation = payload["explanation"]
+    if (
+        not isinstance(explanation, str)
+        or not explanation.strip()
+        or len(explanation) > 240
+        or "\n" in explanation
+        or "\r" in explanation
+    ):
+        raise LayoutMaskVLMError("VLM explanation must be one concise line")
     if not isinstance(payload["manual_review"], bool):
         raise LayoutMaskVLMError("VLM manual_review must be boolean")
     result = dict(payload)
     result["confidence"] = confidence
-    result["observations"] = _validate_text_list(payload["observations"], "observations")
-    result["warnings"] = _validate_text_list(payload["warnings"], "warnings")
+    result["parameters"] = parameters
+    result["explanation"] = explanation.strip()
     return result
+
+
+def _validate_request_constraints(response, message):
+    compact = "".join(str(message or "").casefold().split())
+    avoid_thickening = any(
+        keyword in compact
+        for keyword in ("不要加粗", "不加粗", "不要变粗", "保持线宽")
+    )
+    if avoid_thickening and response["parameters"]["morph_pixels"] > 0:
+        raise LayoutMaskVLMError(
+            "VLM recommendation conflicts with the request to preserve line width"
+        )
+    largest_requested = any(
+        keyword in compact
+        for keyword in ("只保留最大", "最大主体", "最大连通")
+    )
+    if response["parameters"]["region_mode"] == "largest" and not largest_requested:
+        raise LayoutMaskVLMError(
+            "VLM selected largest region without an explicit user request"
+        )
+
+
+def _history_summaries(history):
+    allowed = (
+        "user_message",
+        "assistant_message",
+        "profile",
+        "params",
+        "manual_review",
+    )
+    rows = []
+    for item in list(history or [])[-6:]:
+        if not isinstance(item, dict):
+            continue
+        rows.append({key: item[key] for key in allowed if key in item})
+    return rows
 
 
 def _usage_summary(result):
@@ -181,15 +189,20 @@ def _usage_summary(result):
     if not isinstance(cost, Real) or isinstance(cost, bool) or not math.isfinite(float(cost)):
         hidden = result.get("_hidden_params") if isinstance(result, dict) else None
         cost = hidden.get("response_cost") if isinstance(hidden, dict) else None
-    cost = float(cost) if isinstance(cost, Real) and not isinstance(cost, bool) and math.isfinite(float(cost)) else None
+    cost = (
+        float(cost)
+        if isinstance(cost, Real)
+        and not isinstance(cost, bool)
+        and math.isfinite(float(cost))
+        else None
+    )
     return usage or None, cost
 
 
 def call_qwen_layout_mask(
     *,
     image,
-    contact_sheet,
-    candidates,
+    current_parameters,
     message,
     profile_mode,
     history,
@@ -202,36 +215,27 @@ def call_qwen_layout_mask(
     api_key="",
     urlopen=urllib.request.urlopen,
 ):
-    skill_text, skill_version = load_skill_bundle(skill_dir)
-    public_candidates = [
-        {
-            "candidate_id": item["candidate_id"],
-            "label": item["label"],
-            "params": item["params"],
-            "reason": item["reason"],
-            "report": item.get("report"),
-            "error": item.get("error"),
-        }
-        for item in candidates
-    ]
-    prior_turns = list(history or [])[-6:]
+    """Send exactly one image and receive strict preprocessing parameters."""
+    image = image.convert("RGB")
+    current_parameters = normalize_params(
+        current_parameters,
+        image_shape=(image.height, image.width),
+    )
+    skill_text, skill_version, response_schema = load_skill_bundle(skill_dir)
+    response_schema = dict(response_schema)
+    response_schema.pop("$schema", None)
     system_prompt = (
         skill_text
-        + "\n\nReturn one raw JSON object only. Never wrap it in markdown. "
-        + "Candidate IDs and backend warnings are authoritative."
+        + "\n\n只返回一个原始 JSON 对象，不要使用 Markdown 代码块。"
+        + "VLM 只推荐参数；4090 后端执行图像处理和 mask 生成。"
     )
     user_text = json.dumps(
         {
-            "latest_user_message": str(message or ""),
+            "request": str(message or ""),
             "profile_mode": profile_mode,
-            "candidate_registry": public_candidates,
-            "prior_turn_summaries": prior_turns,
-            "color_legend": {
-                "green": "candidate foreground",
-                "red": "new pixels",
-                "blue": "removed pixels",
-                "yellow": "manual review or rejected topology",
-            },
+            "current_parameters": current_parameters,
+            "image_size": [image.width, image.height],
+            "prior_turn_summaries": _history_summaries(history),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -244,13 +248,24 @@ def call_qwen_layout_mask(
                 "role": "user",
                 "content": [
                     {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": _png_data_url(image, 1024)}},
-                    {"type": "image_url", "image_url": {"url": _png_data_url(contact_sheet, 1400)}},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _png_data_url(image, 1024)},
+                    },
                 ],
             },
         ],
         "temperature": float(temperature),
         "max_tokens": int(max_tokens),
+        "reasoning": {"effort": "none", "exclude": True},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "layout_mask_recommendation",
+                "strict": True,
+                "schema": response_schema,
+            },
+        },
         "stream": False,
     }
     headers = {"Content-Type": "application/json; charset=utf-8"}
@@ -280,8 +295,9 @@ def call_qwen_layout_mask(
         raise LayoutMaskVLMError("LiteLLM response content is missing")
     validated = validate_vlm_response(
         content,
-        [item["candidate_id"] for item in candidates],
         profile_mode,
+        image_shape=(image.height, image.width),
     )
+    _validate_request_constraints(validated, message)
     usage, cost = _usage_summary(result)
     return validated, usage, cost, skill_version

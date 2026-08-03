@@ -22,11 +22,11 @@ def build_layout_mask_tab(
         ):
             gr.Markdown("### AI Mask \u4fee\u590d\u52a9\u624b")
             gr.Markdown(
-                "\u7528\u5bf9\u8bdd\u63cf\u8ff0\u9700\u8981\u4fee\u590d\u7684\u7ed3\u6784\uff1bVLM \u53ea\u4f1a\u4ece\u540e\u7aef\u5019\u9009\u4e2d\u9009\u62e9\u3002"
+                "\u7528\u5bf9\u8bdd\u63cf\u8ff0\u9700\u8981\u4fee\u590d\u7684\u7ed3\u6784\uff1bVLM \u53ea\u5206\u6790\u5f53\u524d\u622a\u56fe\u5e76\u63a8\u8350\u53c2\u6570\uff0c4090 \u540e\u7aef\u751f\u6210 Draft\u3002"
             )
             layout_agent_consent = gr.Checkbox(
                 value=False,
-                label="\u5141\u8bb8\u53d1\u9001\u5f53\u524d\u56fe\u50cf\u7f29\u7565\u56fe\u548c\u5019\u9009\u5bf9\u6bd4\u56fe",
+                label="\u5141\u8bb8\u53d1\u9001\u5f53\u524d\u56fe\u50cf\u7f29\u7565\u56fe",
             )
             layout_agent_profile = gr.State("Auto")
             layout_agent_pending_message = gr.State("")
@@ -44,20 +44,21 @@ def build_layout_mask_tab(
                     scale=6,
                 )
                 layout_agent_send_btn = gr.Button("\u53d1\u9001", variant="primary", scale=1)
+            layout_agent_apply_command = gr.State("\u5e94\u7528\u63a8\u8350\u53c2\u6570")
+            layout_agent_apply_btn = gr.Button(
+                "\u5e94\u7528\u63a8\u8350\u53c2\u6570",
+                variant="secondary",
+            )
             layout_agent_status = gr.Markdown(
                 "\u4e0a\u4f20\u56fe\u7247\u5e76\u786e\u8ba4\u5916\u53d1\u540e\u5f00\u59cb\u5bf9\u8bdd\u3002"
             )
-            with gr.Accordion("\u67e5\u770b Draft \u4e0e\u5019\u9009", open=False):
+            with gr.Accordion("\u67e5\u770b Draft", open=False):
                 layout_agent_draft_preview = gr.Image(
                     type="pil",
                     label="Draft \u53d8\u5316：\u7ea2\u8272\u65b0\u589e\u3001\u84dd\u8272\u5220\u9664\u3001\u9ec4\u8272\u98ce\u9669",
                     height=240,
                 )
-                layout_agent_candidate_preview = gr.Image(
-                    type="pil",
-                    label="\u5019\u9009\u5bf9\u6bd4\u56fe",
-                    height=240,
-                )
+                layout_agent_candidate_preview = gr.State(None)
                 layout_agent_diff = gr.Markdown("\u5f53\u524d\u6ca1\u6709 Agent Draft\u3002")
         gr.Markdown("### 版图截图转二值 mask")
         gr.Markdown("binary mask 是唯一权威数据；contour 仅用于预览和导出。左右两侧预览使用相同高度。")
@@ -165,6 +166,8 @@ def build_layout_mask_tab(
         layout_agent_chatbot=layout_agent_chatbot,
         layout_agent_prompt=layout_agent_prompt,
         layout_agent_send_btn=layout_agent_send_btn,
+        layout_agent_apply_command=layout_agent_apply_command,
+        layout_agent_apply_btn=layout_agent_apply_btn,
         layout_agent_draft_preview=layout_agent_draft_preview,
         layout_agent_candidate_preview=layout_agent_candidate_preview,
         layout_agent_diff=layout_agent_diff,

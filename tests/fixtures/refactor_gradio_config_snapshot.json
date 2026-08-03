@@ -1,5 +1,5 @@
 {
-  "component_count": 229,
+  "component_count": 231,
   "components": [
     {
       "props": {
@@ -1464,14 +1464,14 @@
     {
       "props": {
         "show_label": false,
-        "value": "用对话描述需要修复的结构；VLM 只会从后端候选中选择。",
+        "value": "用对话描述需要修复的结构；VLM 只分析当前截图并推荐参数，4090 后端生成 Draft。",
         "visible": true
       },
       "type": "markdown"
     },
     {
       "props": {
-        "label": "允许发送当前图像缩略图和候选对比图",
+        "label": "允许发送当前图像缩略图",
         "show_label": true,
         "value": false,
         "visible": true
@@ -1524,6 +1524,18 @@
       "type": "form"
     },
     {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "应用推荐参数",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
       "props": {
         "show_label": false,
         "value": "上传图片并确认外发后开始对话。",
@@ -1533,7 +1545,7 @@
     },
     {
       "props": {
-        "label": "查看 Draft 与候选",
+        "label": "查看 Draft",
         "visible": true
       },
       "type": "accordion"
@@ -1553,18 +1565,8 @@
       "type": "image"
     },
     {
-      "props": {
-        "height": 240,
-        "label": "候选对比图",
-        "show_label": true,
-        "sources": [
-          "upload",
-          "webcam",
-          "clipboard"
-        ],
-        "visible": true
-      },
-      "type": "image"
+      "props": {},
+      "type": "state"
     },
     {
       "props": {
@@ -2035,7 +2037,7 @@
       "cancels": [],
       "inputs": [
         3,
-        183,
+        185,
         165
       ],
       "max_batch_size": 4,
@@ -2043,10 +2045,10 @@
         13,
         164,
         167,
-        174,
-        175,
         176,
-        172,
+        177,
+        178,
+        174,
         166,
         169,
         170
@@ -2056,7 +2058,7 @@
       "show_progress": "full",
       "targets": [
         [
-          183,
+          185,
           "change"
         ]
       ],
@@ -2071,7 +2073,7 @@
       "inputs": [
         3,
         13,
-        183,
+        185,
         164,
         165
       ],
@@ -2079,7 +2081,7 @@
       "outputs": [
         13
       ],
-      "queue": false,
+      "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
@@ -2105,7 +2107,7 @@
         167,
         166,
         169,
-        172,
+        174,
         170
       ],
       "queue": false,
@@ -2128,38 +2130,38 @@
       "inputs": [
         3,
         13,
-        183,
+        185,
         164,
         165,
         166,
         167,
-        184,
-        185,
+        186,
         187,
-        188,
-        191,
-        192,
-        190
+        189,
+        190,
+        193,
+        194,
+        192
       ],
       "max_batch_size": 4,
       "outputs": [
         13,
         167,
-        174,
-        175,
         176,
-        172,
+        177,
+        178,
+        174,
         164,
         166,
         169,
         170,
-        184,
-        185,
+        186,
         187,
-        188,
-        191,
-        192,
-        190
+        189,
+        190,
+        193,
+        194,
+        192
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2171,6 +2173,33 @@
         ]
       ],
       "trigger_after": 2,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_applied_preview_callback",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        3,
+        13,
+        185
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        210,
+        213
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 3,
       "trigger_only_on_success": false
     },
     {
@@ -2187,7 +2216,7 @@
         167,
         166,
         169,
-        172,
+        174,
         170
       ],
       "queue": false,
@@ -2210,38 +2239,38 @@
       "inputs": [
         3,
         13,
-        183,
+        185,
         164,
         165,
         166,
         167,
-        184,
-        185,
+        186,
         187,
-        188,
-        191,
-        192,
-        190
+        189,
+        190,
+        193,
+        194,
+        192
       ],
       "max_batch_size": 4,
       "outputs": [
         13,
         167,
-        174,
-        175,
         176,
-        172,
+        177,
+        178,
+        174,
         164,
         166,
         169,
         170,
-        184,
-        185,
+        186,
         187,
-        188,
-        191,
-        192,
-        190
+        189,
+        190,
+        193,
+        194,
+        192
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2252,7 +2281,143 @@
           "then"
         ]
       ],
-      "trigger_after": 4,
+      "trigger_after": 5,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_applied_preview_callback_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        3,
+        13,
+        185
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        210,
+        213
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 6,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_begin_chat_callback_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        167,
+        172
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        167,
+        166,
+        169,
+        174,
+        170
+      ],
+      "queue": false,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          173,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_chat_callback_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        3,
+        13,
+        185,
+        164,
+        165,
+        166,
+        167,
+        186,
+        187,
+        189,
+        190,
+        193,
+        194,
+        192
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        13,
+        167,
+        176,
+        177,
+        178,
+        174,
+        164,
+        166,
+        169,
+        170,
+        186,
+        187,
+        189,
+        190,
+        193,
+        194,
+        192
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "minimal",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 8,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_applied_preview_callback_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        3,
+        13,
+        185
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        210,
+        213
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 9,
       "trigger_only_on_success": false
     },
     {
@@ -2263,32 +2428,32 @@
       "inputs": [
         3,
         4,
-        183,
-        184,
         185,
+        186,
         187,
-        188,
-        191,
-        192,
-        190
+        189,
+        190,
+        193,
+        194,
+        192
       ],
       "max_batch_size": 4,
       "outputs": [
         10,
         123,
-        204,
-        208,
-        211,
-        198,
-        199,
-        196
+        206,
+        210,
+        213,
+        200,
+        201,
+        198
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          193,
+          195,
           "click"
         ]
       ],
@@ -2303,19 +2468,19 @@
       "inputs": [
         13,
         10,
-        184,
-        185,
+        186,
         187,
-        188,
-        191,
-        192,
-        190
+        189,
+        190,
+        193,
+        194,
+        192
       ],
       "max_batch_size": 4,
       "outputs": [
         13,
-        176,
-        172
+        178,
+        174
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2326,7 +2491,7 @@
           "success"
         ]
       ],
-      "trigger_after": 6,
+      "trigger_after": 11,
       "trigger_only_on_success": true
     },
     {
@@ -2340,12 +2505,12 @@
       "max_batch_size": 4,
       "outputs": [
         11,
-        216,
-        217,
-        219,
         218,
+        219,
+        221,
         220,
-        221
+        222,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2356,7 +2521,7 @@
           "then"
         ]
       ],
-      "trigger_after": 6,
+      "trigger_after": 11,
       "trigger_only_on_success": false
     },
     {
@@ -2383,7 +2548,7 @@
           "then"
         ]
       ],
-      "trigger_after": 8,
+      "trigger_after": 13,
       "trigger_only_on_success": false
     },
     {
@@ -2396,16 +2561,16 @@
       ],
       "max_batch_size": 4,
       "outputs": [
-        198,
-        199,
-        196
+        200,
+        201,
+        198
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          194,
+          196,
           "click"
         ]
       ],
@@ -2425,19 +2590,19 @@
       "outputs": [
         10,
         123,
-        204,
-        208,
-        211,
-        198,
-        199,
-        196
+        206,
+        210,
+        213,
+        200,
+        201,
+        198
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          195,
+          197,
           "click"
         ]
       ],
@@ -2455,12 +2620,12 @@
       "max_batch_size": 4,
       "outputs": [
         11,
-        216,
-        217,
-        219,
         218,
+        219,
+        221,
         220,
-        221
+        222,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2471,7 +2636,7 @@
           "then"
         ]
       ],
-      "trigger_after": 11,
+      "trigger_after": 16,
       "trigger_only_on_success": false
     },
     {
@@ -2498,7 +2663,7 @@
           "then"
         ]
       ],
-      "trigger_after": 12,
+      "trigger_after": 17,
       "trigger_only_on_success": false
     },
     {
@@ -2509,21 +2674,21 @@
       "inputs": [
         10,
         11,
-        216
+        218
       ],
       "max_batch_size": 4,
       "outputs": [
         11,
-        216,
         218,
-        221
+        220,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          216,
+          218,
           "input"
         ]
       ],
@@ -2538,25 +2703,25 @@
       "inputs": [
         10,
         11,
-        216,
-        217
+        218,
+        219
       ],
       "max_batch_size": 4,
       "outputs": [
         11,
-        216,
-        217,
-        219,
         218,
+        219,
+        221,
         220,
-        221
+        222,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          218,
+          220,
           "click"
         ]
       ],
@@ -2587,7 +2752,7 @@
           "then"
         ]
       ],
-      "trigger_after": 15,
+      "trigger_after": 20,
       "trigger_only_on_success": false
     },
     {
@@ -2598,22 +2763,22 @@
       "inputs": [
         10,
         11,
-        219
+        221
       ],
       "max_batch_size": 4,
       "outputs": [
         11,
-        216,
         218,
         220,
-        221
+        222,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          219,
+          221,
           "input"
         ]
       ],
@@ -2628,25 +2793,25 @@
       "inputs": [
         10,
         11,
-        216,
-        219
+        218,
+        221
       ],
       "max_batch_size": 4,
       "outputs": [
         11,
-        216,
-        217,
-        219,
         218,
+        219,
+        221,
         220,
-        221
+        222,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          220,
+          222,
           "click"
         ]
       ],
@@ -2677,7 +2842,7 @@
           "then"
         ]
       ],
-      "trigger_after": 18,
+      "trigger_after": 23,
       "trigger_only_on_success": false
     },
     {
@@ -2691,15 +2856,15 @@
       ],
       "max_batch_size": 4,
       "outputs": [
-        223,
-        221
+        225,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          222,
+          224,
           "click"
         ]
       ],
@@ -2758,7 +2923,7 @@
           "then"
         ]
       ],
-      "trigger_after": 21,
+      "trigger_after": 26,
       "trigger_only_on_success": false
     },
     {
@@ -2770,7 +2935,7 @@
         3,
         4,
         106,
-        192
+        194
       ],
       "max_batch_size": 4,
       "outputs": [
@@ -2814,7 +2979,7 @@
           "then"
         ]
       ],
-      "trigger_after": 23,
+      "trigger_after": 28,
       "trigger_only_on_success": false
     },
     {
@@ -3030,7 +3195,7 @@
           "then"
         ]
       ],
-      "trigger_after": 29,
+      "trigger_after": 34,
       "trigger_only_on_success": false
     },
     {
@@ -3259,7 +3424,7 @@
           "then"
         ]
       ],
-      "trigger_after": 31,
+      "trigger_after": 36,
       "trigger_only_on_success": false
     },
     {
@@ -3282,7 +3447,7 @@
           "then"
         ]
       ],
-      "trigger_after": 31,
+      "trigger_after": 36,
       "trigger_only_on_success": false
     },
     {
@@ -3309,7 +3474,7 @@
           "then"
         ]
       ],
-      "trigger_after": 31,
+      "trigger_after": 36,
       "trigger_only_on_success": false
     },
     {
@@ -3335,7 +3500,7 @@
           "then"
         ]
       ],
-      "trigger_after": 31,
+      "trigger_after": 36,
       "trigger_only_on_success": false
     },
     {
@@ -3360,7 +3525,7 @@
           "then"
         ]
       ],
-      "trigger_after": 31,
+      "trigger_after": 36,
       "trigger_only_on_success": false
     },
     {
@@ -3382,7 +3547,7 @@
           "then"
         ]
       ],
-      "trigger_after": 32,
+      "trigger_after": 37,
       "trigger_only_on_success": false
     },
     {
@@ -3405,7 +3570,7 @@
           "then"
         ]
       ],
-      "trigger_after": 32,
+      "trigger_after": 37,
       "trigger_only_on_success": false
     },
     {
@@ -3432,7 +3597,7 @@
           "then"
         ]
       ],
-      "trigger_after": 32,
+      "trigger_after": 37,
       "trigger_only_on_success": false
     },
     {
@@ -3458,7 +3623,7 @@
           "then"
         ]
       ],
-      "trigger_after": 32,
+      "trigger_after": 37,
       "trigger_only_on_success": false
     },
     {
@@ -3483,7 +3648,7 @@
           "then"
         ]
       ],
-      "trigger_after": 32,
+      "trigger_after": 37,
       "trigger_only_on_success": false
     },
     {
@@ -3505,7 +3670,7 @@
           "then"
         ]
       ],
-      "trigger_after": 34,
+      "trigger_after": 39,
       "trigger_only_on_success": false
     },
     {
@@ -3528,7 +3693,7 @@
           "then"
         ]
       ],
-      "trigger_after": 34,
+      "trigger_after": 39,
       "trigger_only_on_success": false
     },
     {
@@ -3555,7 +3720,7 @@
           "then"
         ]
       ],
-      "trigger_after": 34,
+      "trigger_after": 39,
       "trigger_only_on_success": false
     },
     {
@@ -3581,7 +3746,7 @@
           "then"
         ]
       ],
-      "trigger_after": 34,
+      "trigger_after": 39,
       "trigger_only_on_success": false
     },
     {
@@ -3606,7 +3771,7 @@
           "then"
         ]
       ],
-      "trigger_after": 34,
+      "trigger_after": 39,
       "trigger_only_on_success": false
     },
     {
@@ -3628,7 +3793,7 @@
           "then"
         ]
       ],
-      "trigger_after": 35,
+      "trigger_after": 40,
       "trigger_only_on_success": false
     },
     {
@@ -3651,7 +3816,7 @@
           "then"
         ]
       ],
-      "trigger_after": 35,
+      "trigger_after": 40,
       "trigger_only_on_success": false
     },
     {
@@ -3678,7 +3843,7 @@
           "then"
         ]
       ],
-      "trigger_after": 35,
+      "trigger_after": 40,
       "trigger_only_on_success": false
     },
     {
@@ -3704,7 +3869,7 @@
           "then"
         ]
       ],
-      "trigger_after": 35,
+      "trigger_after": 40,
       "trigger_only_on_success": false
     },
     {
@@ -3729,7 +3894,7 @@
           "then"
         ]
       ],
-      "trigger_after": 35,
+      "trigger_after": 40,
       "trigger_only_on_success": false
     },
     {
@@ -4048,7 +4213,7 @@
           "then"
         ]
       ],
-      "trigger_after": 63,
+      "trigger_after": 68,
       "trigger_only_on_success": false
     },
     {
@@ -4101,7 +4266,7 @@
           "then"
         ]
       ],
-      "trigger_after": 65,
+      "trigger_after": 70,
       "trigger_only_on_success": false
     },
     {
@@ -4527,7 +4692,7 @@
           "then"
         ]
       ],
-      "trigger_after": 63,
+      "trigger_after": 68,
       "trigger_only_on_success": false
     },
     {
@@ -4552,7 +4717,7 @@
           "then"
         ]
       ],
-      "trigger_after": 61,
+      "trigger_after": 66,
       "trigger_only_on_success": false
     },
     {
@@ -4577,7 +4742,7 @@
           "then"
         ]
       ],
-      "trigger_after": 69,
+      "trigger_after": 74,
       "trigger_only_on_success": false
     },
     {
@@ -4602,7 +4767,7 @@
           "then"
         ]
       ],
-      "trigger_after": 72,
+      "trigger_after": 77,
       "trigger_only_on_success": false
     },
     {
@@ -4627,7 +4792,7 @@
           "then"
         ]
       ],
-      "trigger_after": 73,
+      "trigger_after": 78,
       "trigger_only_on_success": false
     },
     {
@@ -4652,7 +4817,7 @@
           "then"
         ]
       ],
-      "trigger_after": 74,
+      "trigger_after": 79,
       "trigger_only_on_success": false
     },
     {
@@ -4677,7 +4842,7 @@
           "then"
         ]
       ],
-      "trigger_after": 75,
+      "trigger_after": 80,
       "trigger_only_on_success": false
     },
     {
@@ -4702,7 +4867,7 @@
           "then"
         ]
       ],
-      "trigger_after": 76,
+      "trigger_after": 81,
       "trigger_only_on_success": false
     },
     {
@@ -4727,7 +4892,7 @@
           "then"
         ]
       ],
-      "trigger_after": 77,
+      "trigger_after": 82,
       "trigger_only_on_success": false
     },
     {
@@ -4848,7 +5013,7 @@
       "trigger_only_on_success": false
     }
   ],
-  "dependency_count": 90,
+  "dependency_count": 95,
   "layout": {
     "children": [
       {
@@ -4898,7 +5063,7 @@
                 "component": 15
               }
             ],
-            "component": 227
+            "component": 229
           },
           {
             "component": 13
@@ -5458,7 +5623,7 @@
                             "component": 164
                           }
                         ],
-                        "component": 177
+                        "component": 179
                       },
                       {
                         "component": 165
@@ -5489,92 +5654,51 @@
                         "component": 172
                       },
                       {
+                        "component": 173
+                      },
+                      {
+                        "component": 174
+                      },
+                      {
                         "children": [
                           {
-                            "component": 174
-                          },
-                          {
-                            "component": 175
-                          },
-                          {
                             "component": 176
+                          },
+                          {
+                            "component": 177
+                          },
+                          {
+                            "component": 178
                           }
                         ],
-                        "component": 173
+                        "component": 175
                       }
                     ],
                     "component": 161
                   },
                   {
-                    "component": 178
+                    "component": 180
                   },
                   {
-                    "component": 179
+                    "component": 181
                   },
                   {
                     "children": [
                       {
                         "children": [
                           {
-                            "component": 182
+                            "component": 184
                           },
                           {
-                            "component": 183
+                            "component": 185
                           },
                           {
                             "children": [
                               {
-                                "component": 184
+                                "component": 186
                               },
                               {
-                                "component": 185
-                              }
-                            ],
-                            "component": 200
-                          },
-                          {
-                            "children": [
-                              {
-                                "children": [
-                                  {
-                                    "component": 187
-                                  },
-                                  {
-                                    "component": 188
-                                  }
-                                ],
-                                "component": 189
-                              }
-                            ],
-                            "component": 186
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 190
-                              },
-                              {
-                                "component": 191
-                              },
-                              {
-                                "component": 192
-                              }
-                            ],
-                            "component": 201
-                          },
-                          {
-                            "component": 193
-                          },
-                          {
-                            "component": 194
-                          },
-                          {
-                            "component": 195
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 196
+                                "component": 187
                               }
                             ],
                             "component": 202
@@ -5582,57 +5706,98 @@
                           {
                             "children": [
                               {
-                                "component": 198
-                              },
-                              {
-                                "component": 199
+                                "children": [
+                                  {
+                                    "component": 189
+                                  },
+                                  {
+                                    "component": 190
+                                  }
+                                ],
+                                "component": 191
                               }
                             ],
+                            "component": 188
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 192
+                              },
+                              {
+                                "component": 193
+                              },
+                              {
+                                "component": 194
+                              }
+                            ],
+                            "component": 203
+                          },
+                          {
+                            "component": 195
+                          },
+                          {
+                            "component": 196
+                          },
+                          {
                             "component": 197
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 198
+                              }
+                            ],
+                            "component": 204
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 200
+                              },
+                              {
+                                "component": 201
+                              }
+                            ],
+                            "component": 199
                           }
                         ],
-                        "component": 181
+                        "component": 183
                       },
                       {
                         "children": [
                           {
-                            "component": 204
+                            "component": 206
                           },
                           {
-                            "component": 205
+                            "component": 207
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 208
+                                    "component": 210
                                   },
                                   {
-                                    "component": 209
+                                    "component": 211
                                   }
                                 ],
-                                "component": 207
+                                "component": 209
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 211
+                                    "component": 213
                                   },
                                   {
-                                    "component": 212
+                                    "component": 214
                                   }
                                 ],
-                                "component": 210
+                                "component": 212
                               }
                             ],
-                            "component": 206
-                          },
-                          {
-                            "component": 213
-                          },
-                          {
-                            "component": 214
+                            "component": 208
                           },
                           {
                             "component": 215
@@ -5641,12 +5806,7 @@
                             "component": 216
                           },
                           {
-                            "children": [
-                              {
-                                "component": 217
-                              }
-                            ],
-                            "component": 224
+                            "component": 217
                           },
                           {
                             "component": 218
@@ -5657,7 +5817,7 @@
                                 "component": 219
                               }
                             ],
-                            "component": 225
+                            "component": 226
                           },
                           {
                             "component": 220
@@ -5668,19 +5828,30 @@
                                 "component": 221
                               }
                             ],
-                            "component": 226
+                            "component": 227
                           },
                           {
                             "component": 222
                           },
                           {
-                            "component": 223
+                            "children": [
+                              {
+                                "component": 223
+                              }
+                            ],
+                            "component": 228
+                          },
+                          {
+                            "component": 224
+                          },
+                          {
+                            "component": 225
                           }
                         ],
-                        "component": 203
+                        "component": 205
                       }
                     ],
-                    "component": 180
+                    "component": 182
                   }
                 ],
                 "component": 160
@@ -5692,7 +5863,7 @@
         "component": 0
       },
       {
-        "component": 228
+        "component": 230
       }
     ],
     "component": "root"

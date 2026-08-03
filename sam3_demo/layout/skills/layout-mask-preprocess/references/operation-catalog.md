@@ -1,19 +1,71 @@
-# Deterministic operation catalog
+# Layout Mask 参数说明
 
-The backend always executes the existing pipeline in this exact order:
+4090 后端按 `threshold -> invert -> open -> close -> morph_pixels -> min_component_area -> region_mode` 的顺序执行。
 
-1. saturation/color threshold
-2. optional invert
-3. morphological open
-4. morphological close
-5. signed dilation or erosion (`morph_pixels`)
-6. 8-connected component filtering
+## threshold
 
-- `open_kernel`: removes small foreground noise but may break thin lines.
-- `close_kernel`: fills small concavities and short gaps while broadly preserving line width; excessive values can bridge separate devices or erase holes.
-- positive `morph_pixels`: dilates and thickens all foreground edges.
-- negative `morph_pixels`: erodes and thins all foreground edges.
-- `min_component_area`: removes small connected foreground components.
-- `region_mode=largest`: keeps only the largest foreground component.
+范围 `0-255`，默认 `12`。这是色彩/饱和度提取阈值，不是普通灰度二值化阈值。
 
-Candidate parameters are backend-owned. Select only by candidate ID.
+- 增大通常减少低饱和度背景和浅色噪声，也可能丢失颜色较浅的有效结构。
+- 减小会保留更多低饱和度结构，也可能引入更多背景。
+- 每轮通常调整 `2-5`；结果基本正确或无法判断时保持当前值。
+
+## invert
+
+取值 `true/false`，默认 `false`。只在主体成为背景、背景成为大面积前景时设为 `true`。不能用 invert 修复凹坑、断口、噪点或线宽问题。
+
+## open_kernel
+
+范围 `0-31`，默认 `0`。Open 先腐蚀再膨胀，用于去除孤立小噪点、细小毛刺和狭窄错误连接。
+
+- `0`：关闭。
+- `1`：无实际效果，禁止推荐。
+- `3`：轻微去噪。
+- `5-7`：中等去噪。
+- `9-15`：较强，可能切断细线。
+- `17-31`：高风险。
+
+优先使用 `0,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31`。Open 不能填补凹坑；不确定噪点是否属于真实结构时保持 `0` 并人工复核。
+
+## close_kernel
+
+范围 `0-31`，默认 `0`。Close 先膨胀再腐蚀，用于填补边缘小凹坑、短断口、狭小缝隙和小型内部孔洞，比全局 dilation 更适合保持整体线宽。
+
+- `0`：关闭。
+- `1`：无实际效果，禁止推荐。
+- `3-5`：非常小的缺口或断口。
+- `7-11`：轻度凹坑。
+- `13-17`：ACT 常见小凹坑，常用起点 `15`。
+- `19-23`：较深凹坑，存在器件粘连风险。
+- `25-31`：高风险，可能连接不同器件或抹掉孔洞。
+
+优先使用奇数。第一次发现轻度凹坑可用 `11/13`；常见 ACT 小凹坑用 `15`；“再填一点”通常增加 `2`，例如 `15 -> 17`；“减少粘连”通常减少 `2-4`。不要直接从 `0` 跳到 `25+`。
+
+## morph_pixels
+
+范围 `-31` 到 `31`，默认 `0`。正数执行全局膨胀，负数执行全局腐蚀。
+
+- `+1`：约整体加粗 1 px。
+- `+2`：约整体加粗 2 px。
+- `-1`：约整体变细 1 px。
+- `-2`：约整体变细 2 px。
+- `0`：不改变整体线宽。
+
+线条整体偏细时先尝试 `+1`，明显偏细时最多先尝试 `+2`；整体偏粗时先尝试 `-1`。小凹坑不能用正 morph 代替 close。用户说不要变粗时保持 `0` 或负值。一般每轮不要改变超过 2 px。
+
+## min_component_area
+
+非负整数，默认 `0`，单位为前景像素面积。删除面积小于该值的独立连通组件。
+
+- 适合清除与主体完全断开的孤立小点或碎片。
+- 不能修复与主体连接的毛刺、边缘凹坑、线宽或内部孔洞。
+- 不知道噪声面积时保持 `0`；过大会删除真实小器件。
+
+## region_mode
+
+默认 `all`。
+
+- `all`：保留所有满足面积条件的连通组件，是版图截图默认值。
+- `largest`：只保留最大连通组件。
+
+只有用户明确要求“只保留最大主体”时才使用 `largest`，否则会删除真实的独立器件。

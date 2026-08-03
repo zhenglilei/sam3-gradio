@@ -4,7 +4,12 @@ import inspect
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 from sam3_demo import app as demo
+from sam3_demo.layout.agent_callbacks import set_layout_mask_agent_consent
+from sam3_demo.layout.preprocess_registry import params_from_controls
+from sam3_demo.state import _new_layout_mask_agent_state
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,8 +37,15 @@ class LayoutMaskAgentUITests(unittest.TestCase):
         self.assertEqual(sidebar["props"]["label"], "AI Mask 修复助手")
         self.assertEqual(sidebar["props"]["position"], "left")
         layout_tab_source = (ROOT / "sam3_demo" / "ui" / "layout_mask_tab.py").read_text(encoding="utf-8")
-        for removed in ("layout_agent_auto_btn", "layout_agent_apply_btn", "layout_agent_undo_btn", "layout_agent_reset_btn"):
+        for removed in ("layout_agent_auto_btn", "layout_agent_undo_btn", "layout_agent_reset_btn"):
             self.assertNotIn(removed, layout_tab_source)
+        apply_button = next(
+            component
+            for component in self.config["components"]
+            if component.get("type") == "button"
+            and (component.get("props") or {}).get("value") == "应用推荐参数"
+        )
+        self.assertEqual(apply_button["props"]["variant"], "secondary")
         chatbot = next(
             component
             for component in self.config["components"]
@@ -42,6 +54,8 @@ class LayoutMaskAgentUITests(unittest.TestCase):
         )
         self.assertEqual(chatbot["props"]["buttons"], [])
         self.assertNotIn("feedback_options", chatbot["props"])
+        self.assertNotIn("候选对比图", layout_tab_source)
+        self.assertIn(r"VLM \u53ea\u5206\u6790\u5f53\u524d\u622a\u56fe", layout_tab_source)
 
     def test_paid_callback_has_dedicated_serial_concurrency(self):
         dependency = next(
@@ -53,6 +67,12 @@ class LayoutMaskAgentUITests(unittest.TestCase):
         binding_source = (ROOT / "sam3_demo" / "ui" / "bindings.py").read_text(encoding="utf-8")
         self.assertIn('concurrency_id="layout-mask-vlm"', binding_source)
         self.assertIn("concurrency_limit=1", binding_source)
+        self.assertNotIn("layout-mask-agent-local", binding_source)
+        self.assertGreaterEqual(
+            binding_source.count('concurrency_id="layout-mask-vlm"'),
+            4,
+        )
+        consent_binding = binding_source.split("layout_agent_consent.change(", 1)[1].split("def bind_layout_agent_chat", 1)[0]
 
     def test_agent_callbacks_do_not_accept_layout_state(self):
         run_parameters = inspect.signature(
@@ -102,6 +122,33 @@ class LayoutMaskAgentUITests(unittest.TestCase):
         self.assertEqual(len(finished), 2)
         self.assertEqual(finished[-1]["content"], "完成")
 
+    def test_local_apply_command_does_not_show_vlm_waiting_state(self):
+        result = demo._layout_mask_agent_begin_chat_callback([], "应用推荐参数")
+        self.assertIn("本地操作", result[0][1]["content"])
+        self.assertNotIn("180", result[0][1]["content"])
+
+    def test_applied_params_refresh_page_previews(self):
+        image = Image.new("RGB", (80, 60), "white")
+        state = set_layout_mask_agent_consent(
+            _new_layout_mask_agent_state("ui-test"),
+            session_id="ui-test",
+            image=image,
+            consent=True,
+            profile_mode="ACT",
+        )
+        params = params_from_controls(12, False, 0, 15, 0, "all", 0)
+        state["baseline_params"] = dict(params)
+        state["current_draft_params"] = dict(params)
+        state["conversation_revision"] = 2
+        state["applied_revision"] = 2
+        mask_preview, contour_preview = (
+            demo._layout_mask_agent_applied_preview_callback(
+                {"session_id": "ui-test"}, state, image
+            )
+        )
+        self.assertIsInstance(mask_preview, Image.Image)
+        self.assertIsInstance(contour_preview, Image.Image)
+
     def test_empty_chat_message_does_not_enter_waiting_state(self):
         result = demo._layout_mask_agent_begin_chat_callback([], "   ")
         self.assertEqual(result[0], [])
@@ -113,6 +160,8 @@ class LayoutMaskAgentUITests(unittest.TestCase):
     def test_saved_baseline_only_runs_after_successful_generation(self):
         binding_source = (ROOT / "sam3_demo" / "ui" / "bindings.py").read_text(encoding="utf-8")
         self.assertIn("run_layout_mask_event.success(", binding_source)
+        self.assertIn("layout_agent_apply_btn.click", binding_source)
+        self.assertIn("_layout_mask_agent_applied_preview_callback", binding_source)
 
     def test_consent_callback_binds_authorization_to_image(self):
         binding_source = (ROOT / "sam3_demo" / "ui" / "bindings.py").read_text(encoding="utf-8")

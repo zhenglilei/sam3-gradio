@@ -126,6 +126,8 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     layout_agent_chatbot = layout_refs.layout_agent_chatbot
     layout_agent_prompt = layout_refs.layout_agent_prompt
     layout_agent_send_btn = layout_refs.layout_agent_send_btn
+    layout_agent_apply_command = layout_refs.layout_agent_apply_command
+    layout_agent_apply_btn = layout_refs.layout_agent_apply_btn
     layout_agent_draft_preview = layout_refs.layout_agent_draft_preview
     layout_agent_candidate_preview = layout_refs.layout_agent_candidate_preview
     layout_agent_diff = layout_refs.layout_agent_diff
@@ -142,6 +144,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     _layout_mask_agent_run_callback = callbacks["_layout_mask_agent_run_callback"]
     _layout_mask_agent_begin_chat_callback = callbacks["_layout_mask_agent_begin_chat_callback"]
     _layout_mask_agent_chat_callback = callbacks["_layout_mask_agent_chat_callback"]
+    _layout_mask_agent_applied_preview_callback = callbacks["_layout_mask_agent_applied_preview_callback"]
     _layout_mask_agent_mark_saved_callback = callbacks["_layout_mask_agent_mark_saved_callback"]
     _load_layout_region_context = callbacks["_load_layout_region_context"]
     _reset_layout_prompt_selection = callbacks["_reset_layout_prompt_selection"]
@@ -230,7 +233,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         inputs=[session_state, layout_input, layout_agent_profile],
         outputs=layout_agent_reset_outputs,
         concurrency_limit=1,
-        concurrency_id="layout-mask-agent-local",
+        concurrency_id="layout-mask-vlm",
     )
     layout_agent_consent.change(
         fn=_layout_mask_agent_consent_callback,
@@ -242,13 +245,14 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
             layout_agent_profile,
         ],
         outputs=[layout_mask_agent_state],
-        queue=False,
+        concurrency_limit=1,
+        concurrency_id="layout-mask-vlm",
     )
 
-    def bind_layout_agent_chat(event_method, api_name=None):
+    def bind_layout_agent_chat(event_method, message_input, api_name=None):
         begin_event = event_method(
             fn=_layout_mask_agent_begin_chat_callback,
-            inputs=[layout_agent_chatbot, layout_agent_prompt],
+            inputs=[layout_agent_chatbot, message_input],
             outputs=[
                 layout_agent_chatbot,
                 layout_agent_pending_message,
@@ -258,7 +262,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
             ],
             queue=False,
         )
-        begin_event.then(
+        chat_event = begin_event.then(
             fn=_layout_mask_agent_chat_callback,
             inputs=[
                 session_state,
@@ -276,12 +280,32 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
             show_progress="minimal",
             api_name=api_name,
         )
+        chat_event.then(
+            fn=_layout_mask_agent_applied_preview_callback,
+            inputs=[
+                session_state,
+                layout_mask_agent_state,
+                layout_input,
+            ],
+            outputs=[
+                layout_mask_preview,
+                layout_overlay_preview,
+            ],
+            concurrency_limit=1,
+            concurrency_id="layout-mask-vlm",
+            show_progress="hidden",
+        )
 
     bind_layout_agent_chat(
         layout_agent_send_btn.click,
+        layout_agent_prompt,
         api_name="_layout_mask_agent_run",
     )
-    bind_layout_agent_chat(layout_agent_prompt.submit)
+    bind_layout_agent_chat(layout_agent_prompt.submit, layout_agent_prompt)
+    bind_layout_agent_chat(
+        layout_agent_apply_btn.click,
+        layout_agent_apply_command,
+    )
 
     run_layout_mask_event = run_layout_mask_btn.click(
         fn=_run_layout_mask_page_with_downloads,
@@ -304,7 +328,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
             layout_agent_status,
         ],
         concurrency_limit=1,
-        concurrency_id="layout-mask-agent-local",
+        concurrency_id="layout-mask-vlm",
     )
     run_layout_region_event = run_layout_mask_event.then(
         fn=_load_layout_region_context,

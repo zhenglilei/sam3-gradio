@@ -10,20 +10,13 @@ import time
 import numpy as np
 from PIL import Image
 
-from sam3_demo.layout.agent_runtime import (
-    build_candidate_contact_sheet,
-    call_qwen_layout_mask,
-)
+from sam3_demo.layout.agent_runtime import call_qwen_layout_mask
 from sam3_demo.layout.mask_quality import (
     compare_masks,
     render_mask_delta,
     validate_candidate_transition,
 )
-from sam3_demo.layout.preprocess_registry import (
-    PARAM_KEYS,
-    build_candidates,
-    normalize_params,
-)
+from sam3_demo.layout.preprocess_registry import PARAM_KEYS, normalize_params
 from sam3_demo.state import _new_layout_mask_agent_state
 
 
@@ -33,6 +26,23 @@ def layout_agent_image_sha256(image):
     digest.update(f"{image.width}x{image.height}:RGB".encode("ascii"))
     digest.update(image.tobytes())
     return digest.hexdigest()
+
+def validate_layout_mask_agent_context(state, *, session_id, image):
+    """Return the current image only when an Agent Draft belongs to it."""
+    if image is None:
+        raise ValueError("Upload a layout screenshot first")
+    image = image.convert("RGB")
+    if not isinstance(state, dict):
+        raise ValueError("No Agent Draft is available")
+    if state.get("session_id") != session_id:
+        raise ValueError("Agent Draft belongs to a different session")
+    image_hash = layout_agent_image_sha256(image)
+    if state.get("image_sha256") != image_hash:
+        raise ValueError(
+            "Agent Draft does not belong to the current layout screenshot"
+        )
+    return image
+
 
 
 def _compute_mask(compute_draft, image, params):
@@ -73,7 +83,15 @@ def _history_chat(history):
 
 def classify_layout_agent_message(message):
     compact = "".join(str(message or "").strip().casefold().split())
-    if compact in {"undo", "\u64a4\u56de", "\u6062\u590d\u4e0a\u4e00\u7248"}:
+    for prefix in ("\u8bf7\u5e2e\u6211", "\u9ebb\u70e6\u5e2e\u6211", "\u9ebb\u70e6", "\u5e2e\u6211", "\u8bf7"):
+        if compact.startswith(prefix):
+            compact = compact[len(prefix) :]
+            break
+    for suffix in ("\u4e00\u4e0b", "\u5427", "\u3002", "\uff01", "!"):
+        if compact.endswith(suffix):
+            compact = compact[: -len(suffix)]
+            break
+    if compact in {"undo", "\u64a4\u56de", "\u64a4\u56de\u4e0a\u4e00\u7248", "\u6062\u590d\u4e0a\u4e00\u7248"}:
         return "undo"
     if compact in {"reset", "\u91cd\u7f6e", "\u91cd\u65b0\u5f00\u59cb"}:
         return "reset"
@@ -92,22 +110,6 @@ def format_parameter_diff(baseline, current):
         marker = "changed" if before != after else "same"
         rows.append(f"- {key}: {before} -> {after} ({marker})")
     return "\n".join(rows)
-
-
-def _candidate_rows(compute_draft, image, current_mask, registry_rows):
-    candidates = []
-    for row in registry_rows:
-        candidate = dict(row)
-        _, mask = _compute_mask(compute_draft, image, row["params"])
-        candidate["mask"] = mask
-        candidate["report"] = compare_masks(current_mask, mask)
-        candidate["error"] = None
-        try:
-            validate_candidate_transition(current_mask, mask)
-        except ValueError as exc:
-            candidate["error"] = str(exc)
-        candidates.append(candidate)
-    return candidates
 
 
 def _manual_override(state, controls):
@@ -204,55 +206,43 @@ def run_layout_mask_agent_turn(
         current_state["current_draft_params"],
         image_shape=(image.height, image.width),
     )
-    previous_params = None
-    if current_state.get("undo_stack"):
-        previous_params = current_state["undo_stack"][-1]
     computed_image, current_mask = _compute_mask(compute_draft, image, current_params)
-    registry_rows = build_candidates(
-        current_params,
-        profile_mode=profile_mode,
-        detected_profile=current_state.get("detected_profile") or "Unknown",
-        message=message,
-        previous_params=previous_params,
-        image_shape=(computed_image.height, computed_image.width),
-    )
-    candidates = _candidate_rows(
-        compute_draft,
-        computed_image,
-        current_mask,
-        registry_rows,
-    )
-    contact_sheet = build_candidate_contact_sheet(
-        computed_image,
-        current_mask,
-        candidates,
-    )
+
     request_started = time.perf_counter()
     response, usage, cost, skill_version = vlm_call(
         image=computed_image,
-        contact_sheet=contact_sheet,
-        candidates=candidates,
+        current_parameters=current_params,
         message=message,
         profile_mode=profile_mode,
         history=list(current_state.get("history") or [])[-6:],
         **vlm_options,
     )
     latency_seconds = time.perf_counter() - request_started
-    selected = next(
-        item for item in candidates
-        if item["candidate_id"] == response["selected_candidate_id"]
+
+    recommended_params = normalize_params(
+        response["parameters"],
+        image_shape=(computed_image.height, computed_image.width),
     )
-    # Recompute the selected candidate at full resolution after strict VLM validation.
-    _, selected_mask = _compute_mask(compute_draft, computed_image, selected["params"])
-    selected_report = validate_candidate_transition(current_mask, selected_mask)
+    # The VLM recommends parameters only. The 4090 host computes the full-resolution Draft.
+    _, recommended_mask = _compute_mask(
+        compute_draft,
+        computed_image,
+        recommended_params,
+    )
+    transition_report = validate_candidate_transition(
+        current_mask,
+        recommended_mask,
+    )
+
     updated = copy.deepcopy(current_state)
-    intent = response["intent"]
-    params_changed = _params_signature(selected["params"]) != _params_signature(current_params)
-    if intent != "explain" and params_changed:
+    params_changed = (
+        _params_signature(recommended_params) != _params_signature(current_params)
+    )
+    if params_changed:
         undo_stack = list(updated.get("undo_stack") or [])
         undo_stack.append(dict(current_params))
         updated["undo_stack"] = undo_stack[-6:]
-        updated["current_draft_params"] = dict(selected["params"])
+        updated["current_draft_params"] = dict(recommended_params)
     updated["conversation_revision"] = int(updated.get("conversation_revision") or 0) + 1
     updated["turn_count"] = int(updated.get("turn_count") or 0) + 1
     updated["profile_mode"] = profile_mode
@@ -262,32 +252,31 @@ def run_layout_mask_agent_turn(
     updated["last_usage"] = usage
     updated["last_cost"] = cost
     updated["last_latency_seconds"] = latency_seconds
-    manual_review = bool(response["manual_review"] or selected_report["manual_review"])
+    manual_review = bool(
+        response["manual_review"] or transition_report["manual_review"]
+    )
     history = list(updated.get("history") or [])
     history.append(
         {
-            "kind": intent,
+            "kind": "recommendation",
             "user_message": message,
-            "assistant_message": response["assistant_message"],
+            "assistant_message": response["explanation"],
             "profile": response["profile"],
             "confidence": response["confidence"],
-            "candidate_id": selected["candidate_id"],
             "params": dict(updated["current_draft_params"]),
             "manual_review": manual_review,
-            "warnings": list(response["warnings"]),
         }
     )
     updated["history"] = history[-6:]
     preview_array = render_mask_delta(
         computed_image,
         current_mask,
-        selected_mask,
+        recommended_mask,
         manual_review=manual_review,
     )
     tokens = (usage or {}).get("total_tokens")
     status_parts = [
         f"profile={response['profile']} confidence={response['confidence']:.2f}",
-        f"candidate={selected['candidate_id']}",
         "manual review required" if manual_review else "topology checks passed",
     ]
     if tokens is not None:
@@ -299,7 +288,6 @@ def run_layout_mask_agent_turn(
         "state": updated,
         "chat": _history_chat(updated["history"]),
         "draft_preview": Image.fromarray(preview_array),
-        "candidate_preview": contact_sheet,
         "diff": format_parameter_diff(
             updated.get("baseline_params"),
             updated.get("current_draft_params"),
