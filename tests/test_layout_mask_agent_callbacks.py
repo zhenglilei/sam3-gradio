@@ -44,9 +44,11 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
         self.calls.append(kwargs)
         return (
             {
-                "schema_version": 2,
+                "schema_version": 4,
                 "profile": "ACT",
                 "confidence": 0.92,
+                "period_total": 4,
+                "period_rows": 2,
                 "parameters": dict(self.controls, close_kernel=17),
                 "explanation": "建议将 close 增加到 17 并保持线宽。",
                 "manual_review": False,
@@ -130,9 +132,11 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
             self.calls.append(kwargs)
             return (
                 {
-                    "schema_version": 2,
+                    "schema_version": 4,
                     "profile": "ACT",
                     "confidence": 0.8,
+                    "period_total": 4,
+                    "period_rows": 2,
                     "parameters": dict(kwargs["current_parameters"]),
                     "explanation": "保持当前手动参数。",
                     "manual_review": False,
@@ -174,9 +178,11 @@ class LayoutMaskAgentCallbackTests(unittest.TestCase):
             recommended["close_kernel"] += 2
             return (
                 {
-                    "schema_version": 2,
+                    "schema_version": 4,
                     "profile": "ACT",
                     "confidence": 0.9,
+                    "period_total": 4,
+                    "period_rows": 2,
                     "parameters": recommended,
                     "explanation": "在当前 close 基础上增加 2。",
                     "manual_review": False,

@@ -16,6 +16,7 @@ from sam3_demo.config import (
 )
 from sam3_demo.layout.agent_runtime import (
     LayoutMaskVLMError,
+    _estimate_act_period_grid,
     call_qwen_layout_mask,
     load_skill_bundle,
     validate_vlm_response,
@@ -24,9 +25,11 @@ from sam3_demo.layout.agent_runtime import (
 
 def canonical_response(**updates):
     payload = {
-        "schema_version": 2,
+        "schema_version": 4,
         "profile": "ACT",
         "confidence": 0.9,
+        "period_total": 4,
+        "period_rows": 2,
         "parameters": {
             "threshold": 12,
             "invert": False,
@@ -90,6 +93,61 @@ class LayoutMaskAgentRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(LayoutMaskVLMError, "odd integer"):
             validate_vlm_response(json.dumps(invalid), "Auto")
 
+    def test_period_grid_must_match_profile(self):
+        missing_period = canonical_response(period_total=0)
+        with self.assertRaisesRegex(LayoutMaskVLMError, "positive period counts"):
+            validate_vlm_response(json.dumps(missing_period), "Auto")
+        non_act = canonical_response(
+            profile="GE1",
+            period_total=4,
+            period_rows=2,
+        )
+        with self.assertRaisesRegex(LayoutMaskVLMError, "zero period counts"):
+            validate_vlm_response(json.dumps(non_act), "Auto")
+
+    def test_act_period_grid_estimator_counts_rows_and_ignores_legs(self):
+        image = Image.new("L", (240, 200), 255)
+        pixels = image.load()
+        for row_y in (5, 100):
+            for column_x in (10, 125):
+                for y in range(row_y + 40, row_y + 65):
+                    for x in range(column_x, column_x + 95):
+                        pixels[x, y] = 0
+                for offset_x in (35, 52):
+                    for y in range(row_y, row_y + 25):
+                        for x in range(column_x + offset_x, column_x + offset_x + 9):
+                            pixels[x, y] = 0
+                for y in range(row_y + 23, row_y + 31):
+                    for x in range(column_x + 35, column_x + 61):
+                        pixels[x, y] = 0
+                for y in range(row_y + 23, row_y + 45):
+                    for x in range(column_x + 44, column_x + 52):
+                        pixels[x, y] = 0
+                for leg_x in (column_x + 15, column_x + 70):
+                    for y in range(row_y + 70, min(image.height, row_y + 88)):
+                        for x in range(leg_x, leg_x + 8):
+                            pixels[x, y] = 0
+        grid = _estimate_act_period_grid(image.convert("RGB"))
+        self.assertEqual(
+            grid,
+            {"period_total": 4, "period_columns": 2, "period_rows": 2},
+        )
+
+    def test_act_period_counts_deterministically_set_close(self):
+        response = canonical_response(
+            period_total=24,
+            period_rows=4,
+        )
+        response["parameters"]["close_kernel"] = 9
+        validated = validate_vlm_response(
+            json.dumps(response),
+            "Auto",
+            image_shape=(60, 80),
+        )
+        self.assertEqual(validated["period_columns"], 6)
+        self.assertEqual(validated["parameters"]["close_kernel"], 5)
+        self.assertIn("数据中台按周期尺度规则采用close=5", validated["explanation"])
+
     def test_explanation_must_be_one_concise_line(self):
         with self.assertRaisesRegex(LayoutMaskVLMError, "one concise line"):
             validate_vlm_response(
@@ -103,7 +161,9 @@ class LayoutMaskAgentRuntimeTests(unittest.TestCase):
         self.assertIn("references/operation-catalog.md", text)
         self.assertNotIn("references/dialogue-examples.md", text)
         self.assertNotIn("references/keyword-routing.md", text)
-        self.assertEqual(schema["properties"]["schema_version"]["const"], 2)
+        self.assertEqual(schema["properties"]["schema_version"]["const"], 4)
+        self.assertIn("period_total", schema["required"])
+        self.assertIn("period_rows", schema["required"])
         self.assertEqual(len(version), 16)
 
     def test_call_sends_one_image_and_strict_parameter_schema(self):
@@ -150,10 +210,36 @@ class LayoutMaskAgentRuntimeTests(unittest.TestCase):
             )
         )
         user_payload = json.loads(user_content[0]["text"])
+        system_prompt = request_body["messages"][0]["content"]
+        self.assertIn("禁止默认 ACT", system_prompt)
+        self.assertIn("不足两个证据时才返回 Unknown", system_prompt)
+        self.assertIn("解释若写符合某类", system_prompt)
+        self.assertIn("单元内部拓扑优先于整图排列", system_prompt)
+        self.assertIn("开口 U 槽不是 GE2", system_prompt)
+        self.assertIn("先定位单个重复单元", user_payload["classification_policy"])
+        self.assertIn("直接可见缺陷", user_payload["parameter_policy"])
+        self.assertIn("period_total只数全图", user_payload["kernel_scale_policy"])
+        self.assertIn("period_rows只数", user_payload["kernel_scale_policy"])
+        self.assertIn("period_total/period_rows", user_payload["kernel_scale_policy"])
+        self.assertIn("1-2列取15", user_payload["kernel_scale_policy"])
+        self.assertIn("5-7列取5", user_payload["kernel_scale_policy"])
+        prompt_text = system_prompt + user_content[0]["text"]
+        self.assertNotIn("ACTMASK", prompt_text)
+        self.assertNotIn("AST_ccfill", prompt_text)
+        self.assertIn("不得用“可能、常见、通常”", system_prompt)
         self.assertEqual(user_payload["current_parameters"], self.current_parameters)
         self.assertNotIn("candidate_registry", user_payload)
-        self.assertNotIn("candidate_id", user_payload["prior_turn_summaries"][0])
-        self.assertNotIn("warnings", user_payload["prior_turn_summaries"][0])
+        history_summary = user_payload["prior_turn_summaries"][0]
+        self.assertNotIn("candidate_id", history_summary)
+        self.assertNotIn("warnings", history_summary)
+        self.assertNotIn("profile", history_summary)
+        self.assertNotIn("assistant_message", history_summary)
+        self.assertEqual(
+            set(history_summary),
+            {"user_message", "params"},
+        )
+        self.assertIn("不得从历史继承profile", user_payload["history_policy"])
+        self.assertIn("禁止继承历史 profile", system_prompt)
         self.assertEqual(
             request_body["reasoning"],
             {"effort": "none", "exclude": True},

@@ -140,7 +140,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
 
     _run_layout_mask_page_with_downloads = callbacks["_run_layout_mask_page_with_downloads"]
     _layout_mask_agent_reset_callback = callbacks["_layout_mask_agent_reset_callback"]
-    _layout_mask_agent_consent_callback = callbacks["_layout_mask_agent_consent_callback"]
+    _layout_mask_agent_prepare_upload_callback = callbacks["_layout_mask_agent_prepare_upload_callback"]
     _layout_mask_agent_run_callback = callbacks["_layout_mask_agent_run_callback"]
     _layout_mask_agent_begin_chat_callback = callbacks["_layout_mask_agent_begin_chat_callback"]
     _layout_mask_agent_chat_callback = callbacks["_layout_mask_agent_chat_callback"]
@@ -228,40 +228,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         *layout_agent_control_inputs,
     ]
 
-    layout_input.change(
-        fn=_layout_mask_agent_reset_callback,
-        inputs=[session_state, layout_input, layout_agent_profile],
-        outputs=layout_agent_reset_outputs,
-        concurrency_limit=1,
-        concurrency_id="layout-mask-vlm",
-    )
-    layout_agent_consent.change(
-        fn=_layout_mask_agent_consent_callback,
-        inputs=[
-            session_state,
-            layout_mask_agent_state,
-            layout_input,
-            layout_agent_consent,
-            layout_agent_profile,
-        ],
-        outputs=[layout_mask_agent_state],
-        concurrency_limit=1,
-        concurrency_id="layout-mask-vlm",
-    )
-
-    def bind_layout_agent_chat(event_method, message_input, api_name=None):
-        begin_event = event_method(
-            fn=_layout_mask_agent_begin_chat_callback,
-            inputs=[layout_agent_chatbot, message_input],
-            outputs=[
-                layout_agent_chatbot,
-                layout_agent_pending_message,
-                layout_agent_prompt,
-                layout_agent_status,
-                layout_agent_send_btn,
-            ],
-            queue=False,
-        )
+    def bind_layout_agent_result(begin_event, api_name=None):
         chat_event = begin_event.then(
             fn=_layout_mask_agent_chat_callback,
             inputs=[
@@ -277,7 +244,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
             outputs=layout_agent_chat_outputs,
             concurrency_limit=1,
             concurrency_id="layout-mask-vlm",
-            show_progress="minimal",
+            show_progress="hidden",
             api_name=api_name,
         )
         chat_event.then(
@@ -295,6 +262,33 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
             concurrency_id="layout-mask-vlm",
             show_progress="hidden",
         )
+        return chat_event
+
+    def bind_layout_agent_chat(event_method, message_input, api_name=None):
+        begin_event = event_method(
+            fn=_layout_mask_agent_begin_chat_callback,
+            inputs=[layout_agent_chatbot, message_input],
+            outputs=[
+                layout_agent_chatbot,
+                layout_agent_pending_message,
+                layout_agent_prompt,
+                layout_agent_status,
+                layout_agent_send_btn,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        return bind_layout_agent_result(begin_event, api_name=api_name)
+
+    layout_agent_upload_event = layout_input.change(
+        fn=_layout_mask_agent_prepare_upload_callback,
+        inputs=[session_state, layout_input, layout_agent_profile],
+        outputs=layout_agent_reset_outputs,
+        concurrency_limit=1,
+        concurrency_id="layout-mask-vlm",
+        show_progress="hidden",
+    )
+    bind_layout_agent_result(layout_agent_upload_event)
 
     bind_layout_agent_chat(
         layout_agent_send_btn.click,
@@ -329,6 +323,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         ],
         concurrency_limit=1,
         concurrency_id="layout-mask-vlm",
+        show_progress="hidden",
     )
     run_layout_region_event = run_layout_mask_event.then(
         fn=_load_layout_region_context,

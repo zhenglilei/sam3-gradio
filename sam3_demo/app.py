@@ -2811,32 +2811,15 @@ def _layout_mask_agent_reset_callback(
     )
     return (
         state,
-        False,
+        True,
         [],
         None,
         None,
         "当前没有 Agent Draft。",
-        "已重置对话；下次请求前需重新确认图像外发。",
+        "已重置对话，可直接继续使用 AI Mask 修复助手。",
         "",
         gr.update(value="", interactive=True),
         gr.update(interactive=True),
-    )
-
-
-def _layout_mask_agent_consent_callback(
-    session_state,
-    agent_state,
-    input_image,
-    consent,
-    profile_mode,
-):
-    image = _pil_image(input_image) if input_image is not None else None
-    return set_layout_mask_agent_consent(
-        agent_state,
-        session_id=_session_id_from_state(session_state),
-        image=image,
-        consent=consent,
-        profile_mode=profile_mode,
     )
 
 
@@ -2856,6 +2839,14 @@ def _layout_mask_agent_turn_result(
     morph_pixels,
 ):
     image = _pil_image(input_image)
+    session_id = _session_id_from_state(session_state)
+    agent_state = set_layout_mask_agent_consent(
+        agent_state,
+        session_id=session_id,
+        image=image,
+        consent=True,
+        profile_mode=profile_mode,
+    )
     controls = _layout_mask_agent_controls(
         threshold,
         invert,
@@ -2867,9 +2858,9 @@ def _layout_mask_agent_turn_result(
     )
     return run_layout_mask_agent_turn(
         state=agent_state,
-        session_id=_session_id_from_state(session_state),
+        session_id=session_id,
         image=image,
-        consent=consent,
+        consent=True,
         profile_mode=profile_mode,
         user_message=user_message,
         controls=controls,
@@ -2975,6 +2966,32 @@ def _layout_mask_agent_begin_chat_callback(chat, user_message):
     )
 
 
+def _layout_mask_agent_prepare_upload_callback(
+    session_state,
+    input_image,
+    profile_mode,
+):
+    """Reset the image-bound Draft and immediately stage one automatic analysis."""
+    result = list(
+        _layout_mask_agent_reset_callback(
+            session_state,
+            input_image,
+            profile_mode,
+        )
+    )
+    if input_image is None:
+        return tuple(result)
+    chat, pending, prompt_update, status, send_update = (
+        _layout_mask_agent_begin_chat_callback([], "自动分析")
+    )
+    result[2] = chat
+    result[6] = status
+    result[7] = pending
+    result[8] = prompt_update
+    result[9] = send_update
+    return tuple(result)
+
+
 def _layout_mask_agent_finish_chat(chat, assistant_message):
     messages = list(chat or [])
     response = {"role": "assistant", "content": str(assistant_message)}
@@ -2984,6 +3001,29 @@ def _layout_mask_agent_finish_chat(chat, assistant_message):
     else:
         messages.append(response)
     return messages
+
+
+def _layout_mask_agent_error_message(exc):
+    """Translate deterministic mask-safety failures into actionable UI text."""
+    messages = {
+        "Candidate merges previously separate components": (
+            "推荐参数会把原本分离的图形粘连，已拦截本次推荐并保留当前参数和已有 Draft。"
+            "请降低 close kernel 或 morph pixels，或发送“减少粘连”后重试。"
+        ),
+        "Candidate removes a large hole": (
+            "推荐参数会填掉原图中的较大孔洞，已拦截本次推荐并保留当前参数和已有 Draft。"
+            "请降低 close kernel，或发送“保留孔洞”后重试。"
+        ),
+        "Candidate mask is empty": (
+            "推荐参数会产生空 mask，已拦截本次推荐并保留当前参数和已有 Draft。"
+            "请检查 threshold 与 invert 后重试。"
+        ),
+        "Candidate mask covers the full image": (
+            "推荐参数会使 mask 覆盖整张图，已拦截本次推荐并保留当前参数和已有 Draft。"
+            "请检查 threshold 与 invert 后重试。"
+        ),
+    }
+    return messages.get(str(exc), f"请求失败：{exc}")
 
 
 def _layout_mask_agent_chat_callback(
@@ -3028,7 +3068,7 @@ def _layout_mask_agent_chat_callback(
             )
             reset_chat = _layout_mask_agent_finish_chat(
                 list(chat or [])[-2:],
-                "已重置对话和 Draft，且已取消当前图像的外发授权。",
+                "已重置对话和 Draft，可直接继续发送新的修复需求。",
             )
             return (
                 updated,
@@ -3036,8 +3076,8 @@ def _layout_mask_agent_chat_callback(
                 None,
                 None,
                 "当前没有 Agent Draft。",
-                "已重置；下次请求前请重新确认图像外发。",
-                False,
+                "已重置，可直接继续使用 AI Mask 修复助手。",
+                True,
                 "",
                 gr.update(value="", interactive=True),
                 gr.update(interactive=True),
@@ -3131,16 +3171,17 @@ def _layout_mask_agent_chat_callback(
             *unchanged_controls,
         )
     except Exception as exc:
+        error_message = _layout_mask_agent_error_message(exc)
         return (
             agent_state,
             _layout_mask_agent_finish_chat(
                 chat,
-                f"请求失败：{exc}",
+                error_message,
             ),
             gr.update(),
             gr.update(),
             gr.update(),
-            f"AI Mask assistant failed: {exc}",
+            error_message,
             gr.update(),
             "",
             gr.update(value="", interactive=True),

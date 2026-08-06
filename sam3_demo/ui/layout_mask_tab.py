@@ -22,12 +22,9 @@ def build_layout_mask_tab(
         ):
             gr.Markdown("### AI Mask \u4fee\u590d\u52a9\u624b")
             gr.Markdown(
-                "\u7528\u5bf9\u8bdd\u63cf\u8ff0\u9700\u8981\u4fee\u590d\u7684\u7ed3\u6784\uff1bVLM \u53ea\u5206\u6790\u5f53\u524d\u622a\u56fe\u5e76\u63a8\u8350\u53c2\u6570\uff0c4090 \u540e\u7aef\u751f\u6210 Draft\u3002"
+                "\u4e0a\u4f20\u7248\u56fe\u622a\u56fe\u540e\u4f1a\u81ea\u52a8\u8c03\u7528 VLM \u5206\u6790\u5e76\u63a8\u8350\u53c2\u6570\uff0c\u6570\u636e\u4e2d\u53f0 \u540e\u7aef\u751f\u6210 Draft\uff1b\u4ecd\u53ef\u7528\u5bf9\u8bdd\u7ee7\u7eed\u4fee\u6b63\u3002"
             )
-            layout_agent_consent = gr.Checkbox(
-                value=False,
-                label="\u5141\u8bb8\u53d1\u9001\u5f53\u524d\u56fe\u50cf\u7f29\u7565\u56fe",
-            )
+            layout_agent_consent = gr.State(True)
             layout_agent_profile = gr.State("Auto")
             layout_agent_pending_message = gr.State("")
             layout_agent_chatbot = gr.Chatbot(
@@ -39,7 +36,7 @@ def build_layout_mask_tab(
             with gr.Row():
                 layout_agent_prompt = gr.Textbox(
                     label="",
-                    placeholder="\u4f8b\u5982\uff1a\u81ea\u52a8\u5206\u6790\u3001\u518d\u586b\u4e00\u70b9\u3001\u4fdd\u7559\u5b54\u6d1e\u3001\u5e94\u7528\u63a8\u8350\u53c2\u6570",
+                    placeholder="\u53ef\u9009\u540e\u7eed\u4fee\u6b63\uff1a\u518d\u586b\u4e00\u70b9\u3001\u6539\u6210 3\u3001\u4fdd\u7559\u5b54\u6d1e\u2026\u2026",
                     max_lines=4,
                     scale=6,
                 )
@@ -50,7 +47,7 @@ def build_layout_mask_tab(
                 variant="secondary",
             )
             layout_agent_status = gr.Markdown(
-                "\u4e0a\u4f20\u56fe\u7247\u5e76\u786e\u8ba4\u5916\u53d1\u540e\u5f00\u59cb\u5bf9\u8bdd\u3002"
+                "\u8bf7\u4e0a\u4f20\u7248\u56fe\u622a\u56fe\uff1b\u4e0a\u4f20\u6210\u529f\u540e\u5c06\u81ea\u52a8\u5206\u6790\u3002"
             )
             with gr.Accordion("\u67e5\u770b Draft", open=False):
                 layout_agent_draft_preview = gr.Image(

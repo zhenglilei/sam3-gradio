@@ -223,7 +223,7 @@ def run_layout_mask_agent_turn(
         response["parameters"],
         image_shape=(computed_image.height, computed_image.width),
     )
-    # The VLM recommends parameters only. The 4090 host computes the full-resolution Draft.
+    # The VLM recommends parameters only. The 数据中台 host computes the full-resolution Draft.
     _, recommended_mask = _compute_mask(
         compute_draft,
         computed_image,
