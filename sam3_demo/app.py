@@ -74,6 +74,7 @@ from sam3_demo.ui.image_tab import build_image_tab
 from sam3_demo.ui.refs import ComponentRefs
 from sam3_demo.ui.layout_mask_tab import build_layout_mask_tab
 from sam3_demo.ui.styles import CUSTOM_CSS, build_theme
+from sam3_demo.ui.top_bar import build_top_bar
 from sam3_demo.model_supervisor import SUPERVISOR
 
 def _model_lease_wrapper(reason):
@@ -3860,8 +3861,12 @@ def create_demo():
         delete_cache=(3600, _PUBLIC_DOWNLOAD_TTL_SECONDS),
     ) as demo:
         with gr.Column(elem_classes="container"):
-            gr.Markdown("# SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0")
-            gr.Markdown("\u57fa\u4e8e SAM3 \u7684 PCS \u81ea\u52a8\u6982\u5ff5\u5206\u5272\u4e0e PVS \u624b\u52a8\u5b9e\u4f8b\u5206\u5272\u5de5\u4f5c\u53f0", elem_classes="description")
+            build_top_bar(
+                snapshot_fn=SUPERVISOR.snapshot,
+                request_start_fn=SUPERVISOR.request_start,
+                title="SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0",
+                subtitle="\u57fa\u4e8e SAM3 \u7684 PCS \u81ea\u52a8\u6982\u5ff5\u5206\u5272\u4e0e PVS \u624b\u52a8\u5b9e\u4f8b\u5206\u5272\u5de5\u4f5c\u53f0",
+            )
             session_state = gr.State(_new_session_state())
             image_state = gr.State({"image_id": None, "width": 0, "height": 0})
             source_image_state = gr.State(_new_source_image_state())

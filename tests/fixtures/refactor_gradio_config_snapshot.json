@@ -1,6 +1,50 @@
 {
-  "component_count": 232,
+  "component_count": 241,
   "components": [
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "elem_id": "sam3_model_top_bar",
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "elem_id": "sam3_model_status",
+        "label": "模型状态",
+        "show_label": false,
+        "value": "<div class=\"sam3-model-status-card\" style=\"display:flex;align-items:center;gap:8px;min-height:38px;padding:6px 10px;border:1px solid #d9e2f3;border-radius:8px;background:#fff;white-space:nowrap;\" aria-label=\"模型未加载\"><span aria-hidden=\"true\" style=\"display:inline-block;width:12px;height:12px;border-radius:50%;background:#dc2626;flex:0 0 auto;\"></span><span>模型未加载</span></div>",
+        "visible": true
+      },
+      "type": "html"
+    },
+    {
+      "props": {
+        "elem_id": "sam3_model_start",
+        "interactive": true,
+        "value": "启动模型",
+        "visible": true
+      },
+      "type": "button"
+    },
     {
       "props": {
         "visible": true
@@ -22,6 +66,26 @@
         "visible": true
       },
       "type": "markdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "value": 2
+      },
+      "type": "timer"
     },
     {
       "props": {},
@@ -2036,34 +2100,80 @@
   ],
   "dependencies": [
     {
+      "api_name": "lambda",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        4,
+        5
+      ],
+      "queue": false,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          11,
+          "tick"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "lambda_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        4,
+        5
+      ],
+      "queue": false,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          5,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
       "api_name": "_layout_mask_agent_prepare_upload_callback",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        3,
-        186,
-        167
+        12,
+        195,
+        176
       ],
       "max_batch_size": 4,
       "outputs": [
-        13,
-        166,
-        169,
+        22,
+        175,
         178,
-        179,
+        187,
+        188,
+        189,
+        185,
+        177,
         180,
-        176,
-        168,
-        171,
-        172
+        181
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "hidden",
       "targets": [
         [
-          186,
+          195,
           "change"
         ]
       ],
@@ -2076,40 +2186,40 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        3,
-        13,
-        186,
-        166,
-        167,
-        168,
-        169,
-        187,
-        188,
-        190,
-        191,
-        194,
+        12,
+        22,
         195,
-        193
+        175,
+        176,
+        177,
+        178,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
       ],
       "max_batch_size": 4,
       "outputs": [
-        13,
-        169,
+        22,
         178,
-        179,
-        180,
-        176,
-        166,
-        168,
-        171,
-        172,
         187,
         188,
-        190,
-        191,
-        194,
-        195,
-        193
+        189,
+        185,
+        175,
+        177,
+        180,
+        181,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2120,7 +2230,7 @@
           "then"
         ]
       ],
-      "trigger_after": 0,
+      "trigger_after": 2,
       "trigger_only_on_success": false
     },
     {
@@ -2129,96 +2239,14 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        3,
-        13,
-        186
+        12,
+        22,
+        195
       ],
       "max_batch_size": 4,
       "outputs": [
-        211,
-        214
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "hidden",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 1,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_layout_mask_agent_begin_chat_callback",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        169,
-        171
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        169,
-        168,
-        171,
-        176,
-        172
-      ],
-      "queue": false,
-      "scroll_to_output": false,
-      "show_progress": "hidden",
-      "targets": [
-        [
-          172,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_layout_mask_agent_run",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        3,
-        13,
-        186,
-        166,
-        167,
-        168,
-        169,
-        187,
-        188,
-        190,
-        191,
-        194,
-        195,
-        193
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        13,
-        169,
-        178,
-        179,
-        180,
-        176,
-        166,
-        168,
-        171,
-        172,
-        187,
-        188,
-        190,
-        191,
-        194,
-        195,
-        193
+        220,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2233,19 +2261,74 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_layout_mask_agent_applied_preview_callback_1",
+      "api_name": "_layout_mask_agent_begin_chat_callback",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        3,
-        13,
-        186
+        178,
+        180
       ],
       "max_batch_size": 4,
       "outputs": [
-        211,
-        214
+        178,
+        177,
+        180,
+        185,
+        181
+      ],
+      "queue": false,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          181,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_run",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        12,
+        22,
+        195,
+        175,
+        176,
+        177,
+        178,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        22,
+        178,
+        187,
+        188,
+        189,
+        185,
+        175,
+        177,
+        180,
+        181,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2256,78 +2339,23 @@
           "then"
         ]
       ],
-      "trigger_after": 4,
+      "trigger_after": 5,
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_layout_mask_agent_begin_chat_callback_1",
+      "api_name": "_layout_mask_agent_applied_preview_callback_1",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        169,
-        171
+        12,
+        22,
+        195
       ],
       "max_batch_size": 4,
       "outputs": [
-        169,
-        168,
-        171,
-        176,
-        172
-      ],
-      "queue": false,
-      "scroll_to_output": false,
-      "show_progress": "hidden",
-      "targets": [
-        [
-          171,
-          "submit"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_layout_mask_agent_chat_callback_1",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        3,
-        13,
-        186,
-        166,
-        167,
-        168,
-        169,
-        187,
-        188,
-        190,
-        191,
-        194,
-        195,
-        193
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        13,
-        169,
-        178,
-        179,
-        180,
-        176,
-        166,
-        168,
-        171,
-        172,
-        187,
-        188,
-        190,
-        191,
-        194,
-        195,
-        193
+        220,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2342,19 +2370,74 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_layout_mask_agent_applied_preview_callback_2",
+      "api_name": "_layout_mask_agent_begin_chat_callback_1",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        3,
-        13,
-        186
+        178,
+        180
       ],
       "max_batch_size": 4,
       "outputs": [
-        211,
-        214
+        178,
+        177,
+        180,
+        185,
+        181
+      ],
+      "queue": false,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          180,
+          "submit"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_chat_callback_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        12,
+        22,
+        195,
+        175,
+        176,
+        177,
+        178,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        22,
+        178,
+        187,
+        188,
+        189,
+        185,
+        175,
+        177,
+        180,
+        181,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2365,78 +2448,23 @@
           "then"
         ]
       ],
-      "trigger_after": 7,
+      "trigger_after": 8,
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_layout_mask_agent_begin_chat_callback_2",
+      "api_name": "_layout_mask_agent_applied_preview_callback_2",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        169,
-        174
+        12,
+        22,
+        195
       ],
       "max_batch_size": 4,
       "outputs": [
-        169,
-        168,
-        171,
-        176,
-        172
-      ],
-      "queue": false,
-      "scroll_to_output": false,
-      "show_progress": "hidden",
-      "targets": [
-        [
-          175,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_layout_mask_agent_chat_callback_2",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        3,
-        13,
-        186,
-        166,
-        167,
-        168,
-        169,
-        187,
-        188,
-        190,
-        191,
-        194,
-        195,
-        193
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        13,
-        169,
-        178,
-        179,
-        180,
-        176,
-        166,
-        168,
-        171,
-        172,
-        187,
-        188,
-        190,
-        191,
-        194,
-        195,
-        193
+        220,
+        223
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2451,19 +2479,74 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_layout_mask_agent_applied_preview_callback_3",
+      "api_name": "_layout_mask_agent_begin_chat_callback_2",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        3,
-        13,
-        186
+        178,
+        183
       ],
       "max_batch_size": 4,
       "outputs": [
-        211,
-        214
+        178,
+        177,
+        180,
+        185,
+        181
+      ],
+      "queue": false,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          184,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_chat_callback_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        12,
+        22,
+        195,
+        175,
+        176,
+        177,
+        178,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        22,
+        178,
+        187,
+        188,
+        189,
+        185,
+        175,
+        177,
+        180,
+        181,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2474,7 +2557,34 @@
           "then"
         ]
       ],
-      "trigger_after": 10,
+      "trigger_after": 11,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_mask_agent_applied_preview_callback_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        12,
+        22,
+        195
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        220,
+        223
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 12,
       "trigger_only_on_success": false
     },
     {
@@ -2483,34 +2593,34 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        3,
-        4,
-        186,
-        187,
-        188,
-        190,
-        191,
-        194,
+        12,
+        13,
         195,
-        193
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        125,
-        207,
+        19,
+        134,
+        216,
+        220,
+        223,
+        210,
         211,
-        214,
-        201,
-        202,
-        199
+        208
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          196,
+          205,
           "click"
         ]
       ],
@@ -2523,21 +2633,21 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        13,
-        10,
-        187,
-        188,
-        190,
-        191,
-        194,
-        195,
-        193
+        22,
+        19,
+        196,
+        197,
+        199,
+        200,
+        203,
+        204,
+        202
       ],
       "max_batch_size": 4,
       "outputs": [
-        13,
-        180,
-        176
+        22,
+        189,
+        185
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2548,7 +2658,7 @@
           "success"
         ]
       ],
-      "trigger_after": 12,
+      "trigger_after": 14,
       "trigger_only_on_success": true
     },
     {
@@ -2557,44 +2667,17 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        10
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        11,
-        219,
-        220,
-        222,
-        221,
-        223,
-        224
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 12,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_reset_layout_prompt_selection",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        10,
-        125,
-        106
+        20,
+        228,
+        229,
+        231,
+        230,
+        232,
+        233
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2609,25 +2692,52 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_save_current_layout_mask",
+      "api_name": "_reset_layout_prompt_selection",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        10
+        13,
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        201,
-        202,
-        199
+        19,
+        134,
+        115
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          197,
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 16,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_save_current_layout_mask",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        210,
+        211,
+        208
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          206,
           "click"
         ]
       ],
@@ -2640,26 +2750,26 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        10
+        13,
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        125,
-        207,
+        19,
+        134,
+        216,
+        220,
+        223,
+        210,
         211,
-        214,
-        201,
-        202,
-        199
+        208
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          198,
+          207,
           "click"
         ]
       ],
@@ -2672,17 +2782,17 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        10
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        11,
-        219,
-        220,
-        222,
-        221,
-        223,
-        224
+        20,
+        228,
+        229,
+        231,
+        230,
+        232,
+        233
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2693,7 +2803,7 @@
           "then"
         ]
       ],
-      "trigger_after": 17,
+      "trigger_after": 19,
       "trigger_only_on_success": false
     },
     {
@@ -2702,14 +2812,14 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        10
+        13,
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        125,
-        106
+        19,
+        134,
+        115
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2720,7 +2830,7 @@
           "then"
         ]
       ],
-      "trigger_after": 18,
+      "trigger_after": 20,
       "trigger_only_on_success": false
     },
     {
@@ -2729,23 +2839,23 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        10,
-        11,
-        219
+        19,
+        20,
+        228
       ],
       "max_batch_size": 4,
       "outputs": [
-        11,
-        219,
-        221,
-        224
+        20,
+        228,
+        230,
+        233
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          219,
+          228,
           "input"
         ]
       ],
@@ -2758,27 +2868,27 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        10,
-        11,
-        219,
-        220
+        19,
+        20,
+        228,
+        229
       ],
       "max_batch_size": 4,
       "outputs": [
-        11,
-        219,
-        220,
-        222,
-        221,
-        223,
-        224
+        20,
+        228,
+        229,
+        231,
+        230,
+        232,
+        233
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          221,
+          230,
           "click"
         ]
       ],
@@ -2791,14 +2901,14 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        10
+        13,
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        125,
-        106
+        19,
+        134,
+        115
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2809,7 +2919,7 @@
           "then"
         ]
       ],
-      "trigger_after": 21,
+      "trigger_after": 23,
       "trigger_only_on_success": false
     },
     {
@@ -2818,24 +2928,24 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        10,
-        11,
-        222
+        19,
+        20,
+        231
       ],
       "max_batch_size": 4,
       "outputs": [
-        11,
-        219,
-        221,
-        223,
-        224
+        20,
+        228,
+        230,
+        232,
+        233
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          222,
+          231,
           "input"
         ]
       ],
@@ -2848,27 +2958,27 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        10,
-        11,
-        219,
-        222
+        19,
+        20,
+        228,
+        231
       ],
       "max_batch_size": 4,
       "outputs": [
-        11,
-        219,
-        220,
-        222,
-        221,
-        223,
-        224
+        20,
+        228,
+        229,
+        231,
+        230,
+        232,
+        233
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          223,
+          232,
           "click"
         ]
       ],
@@ -2881,14 +2991,14 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        10
+        13,
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        125,
-        106
+        19,
+        134,
+        115
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2899,7 +3009,7 @@
           "then"
         ]
       ],
-      "trigger_after": 24,
+      "trigger_after": 26,
       "trigger_only_on_success": false
     },
     {
@@ -2908,20 +3018,20 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        10,
-        11
+        19,
+        20
       ],
       "max_batch_size": 4,
       "outputs": [
-        226,
-        224
+        235,
+        233
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          225,
+          234,
           "click"
         ]
       ],
@@ -2934,21 +3044,21 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        10
+        13,
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        125,
-        141
+        19,
+        134,
+        150
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          104,
+          113,
           "click"
         ]
       ],
@@ -2961,71 +3071,15 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        10
+        13,
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        125,
-        106,
-        141
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 27,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_load_layout_binary_mask_png",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        3,
-        4,
-        108,
-        195
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        10,
-        125,
-        141
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          105,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_reset_layout_prompt_selection_4",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        10,
-        125,
-        106
+        19,
+        134,
+        115,
+        150
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3040,34 +3094,90 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_select_layout_prompt_mask",
+      "api_name": "_load_layout_binary_mask_png",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        10,
-        106
+        12,
+        13,
+        117,
+        204
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        125,
-        106,
-        141,
-        126,
-        129,
-        130,
-        133,
+        19,
         134,
-        136
+        150
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          106,
+          114,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_4",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        19,
+        134,
+        115
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 31,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_select_layout_prompt_mask",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        19,
+        115
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        19,
+        134,
+        115,
+        150,
+        135,
+        138,
+        139,
+        142,
+        143,
+        145
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          115,
           "input"
         ]
       ],
@@ -3080,38 +3190,38 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        6,
-        7,
-        39,
-        10,
-        126,
-        129,
-        130,
-        133,
-        134,
-        136,
-        125
+        13,
+        15,
+        16,
+        48,
+        19,
+        135,
+        138,
+        139,
+        142,
+        143,
+        145,
+        134
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        43,
-        125,
-        126,
-        129,
-        130,
-        133,
+        19,
+        52,
         134,
-        136,
-        141
+        135,
+        138,
+        139,
+        142,
+        143,
+        145,
+        150
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          139,
+          148,
           "click"
         ]
       ],
@@ -3124,26 +3234,26 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        10,
-        125
+        19,
+        134
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        126,
-        129,
-        130,
-        133,
-        134,
-        136,
-        141
+        19,
+        135,
+        138,
+        139,
+        142,
+        143,
+        145,
+        150
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          125,
+          134,
           "change"
         ]
       ],
@@ -3156,27 +3266,27 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        10
+        13,
+        19
       ],
       "max_batch_size": 4,
       "outputs": [
-        10,
-        126,
-        129,
-        130,
-        133,
+        19,
+        135,
+        138,
+        139,
+        142,
+        143,
+        145,
         134,
-        136,
-        125,
-        141
+        150
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          138,
+          147,
           "click"
         ]
       ],
@@ -3189,1496 +3299,34 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        6,
-        7,
-        39,
-        10,
-        126,
-        129,
-        130,
-        133,
-        134,
-        136,
-        125,
-        106
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        7,
-        10,
-        125,
-        141,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          140,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 35,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_source_upload_workspace",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        21,
-        39,
-        3,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        5,
-        22,
-        26,
-        4,
-        6,
-        7,
-        9,
-        50,
-        78,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77,
-        154,
-        125
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          21,
-          "upload"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_source_upload_workspace_1",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        21,
-        39,
-        3,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        5,
-        22,
-        26,
-        4,
-        6,
-        7,
-        9,
-        50,
-        78,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77,
-        154,
-        125
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          21,
-          "clear"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_record_source_crop_gesture",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        5,
-        22
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        5,
-        22,
-        26
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          22,
-          "input"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_apply_source_crop",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        5,
-        39,
-        3,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        5,
-        22,
-        26,
-        4,
-        6,
-        7,
-        9,
-        50,
-        78,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77,
-        154,
-        125
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          24,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_use_full_source_image",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        5,
-        39,
-        3,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        5,
-        22,
-        26,
-        4,
-        6,
-        7,
-        9,
-        50,
-        78,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77,
-        154,
-        125
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          25,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_pending_point_payload",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        15
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 37,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_bbox_polygon_payloads",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        12,
-        14
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 37,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_reset_layout_prompt_selection_5",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        10,
-        125,
-        106
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 37,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_workspace_gesture_payload",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        39,
-        47
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        44
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 37,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_1",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 37,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_pending_point_payload_1",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        15
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 38,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_bbox_polygon_payloads_1",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        12,
-        14
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 38,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_reset_layout_prompt_selection_6",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        10,
-        125,
-        106
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 38,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_workspace_gesture_payload_1",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        39,
-        47
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        44
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 38,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_2",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 38,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_pending_point_payload_2",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        15
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 40,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_bbox_polygon_payloads_2",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        12,
-        14
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 40,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_reset_layout_prompt_selection_7",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        10,
-        125,
-        106
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 40,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_workspace_gesture_payload_2",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        39,
-        47
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        44
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 40,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_3",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 40,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_pending_point_payload_3",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        15
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 41,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_bbox_polygon_payloads_3",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        12,
-        14
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 41,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_reset_layout_prompt_selection_8",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        10,
-        125,
-        106
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 41,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_workspace_gesture_payload_3",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        39,
-        47
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        44
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 41,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_4",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 41,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_workspace_gesture_input",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39,
-        47,
-        49,
-        9,
-        44
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        9,
-        12,
+        13,
         15,
-        14,
-        6,
-        7,
-        50,
-        78,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77,
-        44
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          44,
-          "input"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_run_template_matching",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        5,
-        4,
-        7,
-        39,
-        28,
-        29,
-        30
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          36,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_5",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          28,
-          "change"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_6",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          29,
-          "change"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_7",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          30,
-          "change"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_finish_native_polygon",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        9,
-        6,
-        7,
-        39,
-        91,
-        94
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        9,
-        14,
-        7,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          92,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_prompt_selection",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        9,
-        12,
-        15,
-        14,
-        6,
-        7,
-        50,
-        78,
-        64,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          54,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_switch_mode_with_layout_editor",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        39,
-        4,
-        6,
-        7,
-        10
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        9,
-        12,
-        15,
-        14,
-        47,
-        92,
+        16,
         48,
-        62,
-        73,
+        19,
+        135,
+        138,
+        139,
+        142,
+        143,
         145,
-        120,
-        100,
-        123,
-        75,
-        84,
-        89,
-        50,
-        78,
-        57,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77,
-        125
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          39,
-          "change"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_workspace_gesture_payload_4",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        39,
-        47
+        134,
+        115
       ],
       "max_batch_size": 4,
       "outputs": [
-        44
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 69,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_switch_click_tool",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        47,
-        39
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        75,
-        84,
-        89
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          47,
-          "change"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_workspace_gesture_payload_5",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        39,
-        47
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        44
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 71,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_delete_selected_pcs_bbox",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39,
-        50
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        6,
-        50,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          51,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_pcs_instances",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        6,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          68,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_run_pcs",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39,
+        16,
+        19,
+        134,
+        150,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
         64,
-        65
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        6,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          66,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_create_pvs_from_pending_boxes",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        7,
-        78,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          79,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_delete_selected_pending_pvs_bbox",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39,
-        78
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        7,
-        78,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          81,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_pending_pvs_boxes",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        7,
-        78,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          82,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_pvs_point_prompt",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39,
-        15,
         86
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        7,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          87,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_layout_point_refine",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39,
-        15,
-        58,
-        9
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        9,
-        15,
-        7,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          59,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_set_active_pvs",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39,
-        147
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        7,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          147,
-          "change"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_undo_pvs",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        7,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4693,34 +3341,1496 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_delete_pvs",
+      "api_name": "_clear_template_match_outputs",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39
-      ],
+      "inputs": [],
       "max_batch_size": 4,
       "outputs": [
-        7,
+        17,
         43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
+        47,
+        46
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          150,
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 37,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_source_upload_workspace",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        30,
+        48,
+        12,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        14,
+        31,
+        35,
+        13,
+        15,
+        16,
+        18,
+        59,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86,
+        163,
+        134
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          30,
+          "upload"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_source_upload_workspace_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        30,
+        48,
+        12,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        14,
+        31,
+        35,
+        13,
+        15,
+        16,
+        18,
+        59,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86,
+        163,
+        134
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          30,
+          "clear"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_record_source_crop_gesture",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        14,
+        31
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        14,
+        31,
+        35
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          31,
+          "input"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_apply_source_crop",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        14,
+        48,
+        12,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        14,
+        31,
+        35,
+        13,
+        15,
+        16,
+        18,
+        59,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86,
+        163,
+        134
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          33,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_use_full_source_image",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        14,
+        48,
+        12,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        14,
+        31,
+        35,
+        13,
+        15,
+        16,
+        18,
+        59,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86,
+        163,
+        134
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          34,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_point_payload",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        24
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 39,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_bbox_polygon_payloads",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        21,
+        23
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 39,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_5",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        19,
+        134,
+        115
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 39,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        48,
+        56
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        53
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 39,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 39,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_point_payload_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        24
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 40,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_bbox_polygon_payloads_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        21,
+        23
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 40,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_6",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        19,
+        134,
+        115
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 40,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        48,
+        56
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        53
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 40,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 40,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_point_payload_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        24
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 42,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_bbox_polygon_payloads_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        21,
+        23
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 42,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_7",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        19,
+        134,
+        115
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 42,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        48,
+        56
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        53
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 42,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 42,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_point_payload_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        24
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 43,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_bbox_polygon_payloads_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        21,
+        23
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 43,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_reset_layout_prompt_selection_8",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        19,
+        134,
+        115
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 43,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_3",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        48,
+        56
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        53
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 43,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_4",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 43,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_input",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48,
+        56,
+        58,
+        18,
+        53
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        18,
+        21,
+        24,
+        23,
+        15,
+        16,
+        59,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86,
+        53
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          53,
+          "input"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_run_template_matching",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        14,
+        13,
+        16,
+        48,
+        37,
+        38,
+        39
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          45,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_5",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          37,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_6",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          38,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_7",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          39,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_finish_native_polygon",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        18,
+        15,
+        16,
+        48,
+        100,
+        103
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        18,
+        23,
+        16,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          101,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_prompt_selection",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        18,
+        21,
+        24,
+        23,
+        15,
+        16,
+        59,
+        87,
+        73,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          63,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_switch_mode_with_layout_editor",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        48,
+        13,
+        15,
+        16,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        18,
+        21,
+        24,
+        23,
+        56,
+        101,
+        57,
+        71,
+        82,
+        154,
+        129,
+        109,
+        132,
+        84,
+        93,
+        98,
+        59,
+        87,
+        66,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86,
+        134
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          48,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_4",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        48,
+        56
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        53
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 71,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_switch_click_tool",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        56,
+        48
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        84,
+        93,
+        98
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          56,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_workspace_gesture_payload_5",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        48,
+        56
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        53
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 73,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_delete_selected_pcs_bbox",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48,
+        59
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        15,
+        59,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          60,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pcs_instances",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        15,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          77,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_run_pcs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48,
+        73,
+        74
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        15,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          75,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_create_pvs_from_pending_boxes",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        16,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          88,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_delete_selected_pending_pvs_bbox",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48,
+        87
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        16,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          90,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_pending_pvs_boxes",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        16,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          91,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_pvs_point_prompt",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48,
+        24,
+        95
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        16,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          96,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_layout_point_refine",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48,
+        24,
+        67,
+        18
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        18,
+        24,
+        16,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          68,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_set_active_pvs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48,
+        156
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        16,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          156,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_undo_pvs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        16,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          158,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_delete_pvs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        16,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          159,
           "click"
         ]
       ],
@@ -4733,29 +4843,29 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        6,
-        7,
-        39
+        13,
+        15,
+        16,
+        48
       ],
       "max_batch_size": 4,
       "outputs": [
-        7,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
+        16,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          151,
+          160,
           "click"
         ]
       ],
@@ -4770,10 +4880,35 @@
       "inputs": [],
       "max_batch_size": 4,
       "outputs": [
-        8,
-        34,
-        38,
-        37
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 71,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_9",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4788,31 +4923,6 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_clear_template_match_outputs_9",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 67,
-      "trigger_only_on_success": false
-    },
-    {
       "api_name": "_clear_template_match_outputs_10",
       "backend_fn": true,
       "batch": false,
@@ -4820,10 +4930,10 @@
       "inputs": [],
       "max_batch_size": 4,
       "outputs": [
-        8,
-        34,
-        38,
-        37
+        17,
+        43,
+        47,
+        46
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4834,7 +4944,7 @@
           "then"
         ]
       ],
-      "trigger_after": 76,
+      "trigger_after": 78,
       "trigger_only_on_success": false
     },
     {
@@ -4845,60 +4955,10 @@
       "inputs": [],
       "max_batch_size": 4,
       "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 79,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_12",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "then"
-        ]
-      ],
-      "trigger_after": 80,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_clear_template_match_outputs_13",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        8,
-        34,
-        38,
-        37
+        17,
+        43,
+        47,
+        46
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4913,17 +4973,17 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_clear_template_match_outputs_14",
+      "api_name": "_clear_template_match_outputs_12",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [],
       "max_batch_size": 4,
       "outputs": [
-        8,
-        34,
-        38,
-        37
+        17,
+        43,
+        47,
+        46
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4938,17 +4998,17 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_clear_template_match_outputs_15",
+      "api_name": "_clear_template_match_outputs_13",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [],
       "max_batch_size": 4,
       "outputs": [
-        8,
-        34,
-        38,
-        37
+        17,
+        43,
+        47,
+        46
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4963,17 +5023,17 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_clear_template_match_outputs_16",
+      "api_name": "_clear_template_match_outputs_14",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [],
       "max_batch_size": 4,
       "outputs": [
-        8,
-        34,
-        38,
-        37
+        17,
+        43,
+        47,
+        46
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4988,39 +5048,89 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_export_pcs",
+      "api_name": "_clear_template_match_outputs_15",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
-      "inputs": [
-        4,
-        6,
-        7,
-        39,
-        111,
-        112,
-        113,
-        114,
-        115
-      ],
+      "inputs": [],
       "max_batch_size": 4,
       "outputs": [
-        154,
+        17,
         43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
+        47,
+        46
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          69,
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 85,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_clear_template_match_outputs_16",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        17,
+        43,
+        47,
+        46
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 86,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_export_pcs",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        13,
+        15,
+        16,
+        48,
+        120,
+        121,
+        122,
+        123,
+        124
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        163,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          78,
           "click"
         ]
       ],
@@ -5033,34 +5143,34 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        6,
-        7,
-        39,
-        111,
-        112,
-        113,
-        114,
-        115
+        13,
+        15,
+        16,
+        48,
+        120,
+        121,
+        122,
+        123,
+        124
       ],
       "max_batch_size": 4,
       "outputs": [
-        154,
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
+        163,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          152,
+          161,
           "click"
         ]
       ],
@@ -5073,31 +5183,31 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        4,
-        6,
-        7,
-        39,
-        156,
-        157,
-        158
+        13,
+        15,
+        16,
+        48,
+        165,
+        166,
+        167
       ],
       "max_batch_size": 4,
       "outputs": [
-        43,
-        119,
-        121,
-        70,
-        98,
-        147,
-        55,
-        77
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          159,
+          168,
           "click"
         ]
       ],
@@ -5105,60 +5215,98 @@
       "trigger_only_on_success": false
     }
   ],
-  "dependency_count": 97,
+  "dependency_count": 99,
   "layout": {
     "children": [
       {
         "children": [
           {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "children": [],
+                        "component": 4
+                      },
+                      {
+                        "component": 5
+                      }
+                    ],
+                    "component": 3
+                  }
+                ],
+                "component": 2
+              },
+              {
+                "children": [
+                  {
+                    "component": 7
+                  },
+                  {
+                    "component": 8
+                  }
+                ],
+                "component": 6
+              },
+              {
+                "children": [
+                  {
+                    "component": 10
+                  }
+                ],
+                "component": 9
+              }
+            ],
             "component": 1
-          },
-          {
-            "component": 2
-          },
-          {
-            "component": 3
-          },
-          {
-            "component": 4
-          },
-          {
-            "component": 5
-          },
-          {
-            "component": 6
-          },
-          {
-            "component": 7
-          },
-          {
-            "component": 8
-          },
-          {
-            "component": 9
-          },
-          {
-            "component": 10
           },
           {
             "component": 11
           },
           {
-            "children": [
-              {
-                "component": 12
-              },
-              {
-                "component": 14
-              },
-              {
-                "component": 15
-              }
-            ],
-            "component": 230
+            "component": 12
           },
           {
             "component": 13
+          },
+          {
+            "component": 14
+          },
+          {
+            "component": 15
+          },
+          {
+            "component": 16
+          },
+          {
+            "component": 17
+          },
+          {
+            "component": 18
+          },
+          {
+            "component": 19
+          },
+          {
+            "component": 20
+          },
+          {
+            "children": [
+              {
+                "component": 21
+              },
+              {
+                "component": 23
+              },
+              {
+                "component": 24
+              }
+            ],
+            "component": 239
+          },
+          {
+            "component": 22
           },
           {
             "children": [
@@ -5169,86 +5317,50 @@
                       {
                         "children": [
                           {
-                            "component": 20
+                            "component": 29
                           },
                           {
-                            "component": 21
+                            "component": 30
                           },
                           {
-                            "component": 22
+                            "component": 31
                           },
                           {
                             "children": [
                               {
-                                "component": 24
+                                "component": 33
                               },
                               {
-                                "component": 25
+                                "component": 34
                               }
                             ],
-                            "component": 23
+                            "component": 32
                           },
                           {
-                            "component": 26
+                            "component": 35
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 28
+                                    "component": 37
                                   },
                                   {
-                                    "component": 29
+                                    "component": 38
                                   },
                                   {
-                                    "component": 30
+                                    "component": 39
                                   }
                                 ],
-                                "component": 31
+                                "component": 40
                               }
                             ],
-                            "component": 27
-                          }
-                        ],
-                        "component": 19
-                      },
-                      {
-                        "children": [
-                          {
-                            "component": 33
-                          },
-                          {
-                            "component": 34
-                          },
-                          {
-                            "component": 35
-                          },
-                          {
                             "component": 36
-                          },
-                          {
-                            "component": 37
-                          },
-                          {
-                            "component": 38
                           }
                         ],
-                        "component": 32
-                      }
-                    ],
-                    "component": 18
-                  },
-                  {
-                    "children": [
-                      {
-                        "component": 39
-                      }
-                    ],
-                    "component": 161
-                  },
-                  {
-                    "children": [
+                        "component": 28
+                      },
                       {
                         "children": [
                           {
@@ -5261,147 +5373,150 @@
                             "component": 44
                           },
                           {
+                            "component": 45
+                          },
+                          {
+                            "component": 46
+                          },
+                          {
+                            "component": 47
+                          }
+                        ],
+                        "component": 41
+                      }
+                    ],
+                    "component": 27
+                  },
+                  {
+                    "children": [
+                      {
+                        "component": 48
+                      }
+                    ],
+                    "component": 170
+                  },
+                  {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "component": 51
+                          },
+                          {
+                            "component": 52
+                          },
+                          {
+                            "component": 53
+                          },
+                          {
                             "children": [
                               {
-                                "component": 46
+                                "component": 55
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 47
+                                    "component": 56
                                   }
                                 ],
-                                "component": 56
+                                "component": 65
                               },
                               {
                                 "children": [
                                   {
                                     "children": [
                                       {
-                                        "component": 49
+                                        "component": 58
                                       },
                                       {
-                                        "component": 50
+                                        "component": 59
                                       }
                                     ],
-                                    "component": 52
+                                    "component": 61
                                   },
                                   {
-                                    "component": 51
+                                    "component": 60
                                   }
                                 ],
-                                "component": 48
+                                "component": 57
                               },
-                              {
-                                "children": [
-                                  {
-                                    "component": 54
-                                  }
-                                ],
-                                "component": 53
-                              },
-                              {
-                                "component": 55
-                              }
-                            ],
-                            "component": 45
-                          },
-                          {
-                            "children": [
-                              {
-                                "children": [
-                                  {
-                                    "component": 58
-                                  }
-                                ],
-                                "component": 60
-                              },
-                              {
-                                "component": 59
-                              }
-                            ],
-                            "component": 57
-                          },
-                          {
-                            "children": [
                               {
                                 "children": [
                                   {
                                     "component": 63
-                                  },
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 64
-                                      },
-                                      {
-                                        "component": 65
-                                      }
-                                    ],
-                                    "component": 71
-                                  },
-                                  {
-                                    "component": 66
-                                  },
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 68
-                                      },
-                                      {
-                                        "component": 69
-                                      }
-                                    ],
-                                    "component": 67
-                                  },
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 70
-                                      }
-                                    ],
-                                    "component": 72
                                   }
                                 ],
                                 "component": 62
                               },
                               {
+                                "component": 64
+                              }
+                            ],
+                            "component": 54
+                          },
+                          {
+                            "children": [
+                              {
                                 "children": [
                                   {
-                                    "component": 74
+                                    "component": 67
+                                  }
+                                ],
+                                "component": 69
+                              },
+                              {
+                                "component": 68
+                              }
+                            ],
+                            "component": 66
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 72
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 76
+                                        "component": 73
                                       },
+                                      {
+                                        "component": 74
+                                      }
+                                    ],
+                                    "component": 80
+                                  },
+                                  {
+                                    "component": 75
+                                  },
+                                  {
+                                    "children": [
                                       {
                                         "component": 77
                                       },
                                       {
-                                        "children": [
-                                          {
-                                            "component": 78
-                                          }
-                                        ],
-                                        "component": 83
-                                      },
-                                      {
-                                        "component": 79
-                                      },
-                                      {
-                                        "children": [
-                                          {
-                                            "component": 81
-                                          },
-                                          {
-                                            "component": 82
-                                          }
-                                        ],
-                                        "component": 80
+                                        "component": 78
                                       }
                                     ],
-                                    "component": 75
+                                    "component": 76
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 79
+                                      }
+                                    ],
+                                    "component": 81
+                                  }
+                                ],
+                                "component": 71
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 83
                                   },
                                   {
                                     "children": [
@@ -5409,15 +5524,29 @@
                                         "component": 85
                                       },
                                       {
+                                        "component": 86
+                                      },
+                                      {
                                         "children": [
                                           {
-                                            "component": 86
+                                            "component": 87
                                           }
                                         ],
+                                        "component": 92
+                                      },
+                                      {
                                         "component": 88
                                       },
                                       {
-                                        "component": 87
+                                        "children": [
+                                          {
+                                            "component": 90
+                                          },
+                                          {
+                                            "component": 91
+                                          }
+                                        ],
+                                        "component": 89
                                       }
                                     ],
                                     "component": 84
@@ -5425,95 +5554,78 @@
                                   {
                                     "children": [
                                       {
-                                        "component": 90
+                                        "component": 94
                                       },
                                       {
                                         "children": [
                                           {
-                                            "component": 91
+                                            "component": 95
                                           }
                                         ],
                                         "component": 97
                                       },
                                       {
-                                        "component": 92
+                                        "component": 96
+                                      }
+                                    ],
+                                    "component": 93
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 99
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "component": 100
+                                          }
+                                        ],
+                                        "component": 106
+                                      },
+                                      {
+                                        "component": 101
                                       },
                                       {
                                         "children": [
                                           {
                                             "children": [
                                               {
-                                                "component": 94
+                                                "component": 103
                                               }
                                             ],
-                                            "component": 96
+                                            "component": 105
                                           },
                                           {
-                                            "component": 95
+                                            "component": 104
                                           }
                                         ],
-                                        "component": 93
+                                        "component": 102
                                       }
                                     ],
-                                    "component": 89
+                                    "component": 98
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 98
+                                        "component": 107
                                       }
                                     ],
-                                    "component": 99
-                                  }
-                                ],
-                                "component": 73
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 101
-                                  },
-                                  {
-                                    "component": 102
-                                  },
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 104
-                                      },
-                                      {
-                                        "component": 105
-                                      }
-                                    ],
-                                    "component": 103
-                                  },
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 106
-                                      }
-                                    ],
-                                    "component": 109
-                                  },
-                                  {
-                                    "component": 107
-                                  },
-                                  {
                                     "component": 108
                                   }
                                 ],
-                                "component": 100
+                                "component": 82
                               },
                               {
                                 "children": [
                                   {
+                                    "component": 110
+                                  },
+                                  {
+                                    "component": 111
+                                  },
+                                  {
                                     "children": [
-                                      {
-                                        "component": 111
-                                      },
-                                      {
-                                        "component": 112
-                                      },
                                       {
                                         "component": 113
                                       },
@@ -5521,229 +5633,234 @@
                                         "component": 114
                                       }
                                     ],
+                                    "component": 112
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 115
+                                      }
+                                    ],
+                                    "component": 118
+                                  },
+                                  {
                                     "component": 116
                                   },
                                   {
-                                    "component": 115
+                                    "component": 117
                                   }
                                 ],
-                                "component": 110
+                                "component": 109
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 120
+                                      },
+                                      {
+                                        "component": 121
+                                      },
+                                      {
+                                        "component": 122
+                                      },
+                                      {
+                                        "component": 123
+                                      }
+                                    ],
+                                    "component": 125
+                                  },
+                                  {
+                                    "component": 124
+                                  }
+                                ],
+                                "component": 119
                               }
                             ],
-                            "component": 61
+                            "component": 70
                           }
                         ],
-                        "component": 41
+                        "component": 50
                       },
                       {
                         "children": [
                           {
-                            "component": 118
+                            "component": 127
                           },
                           {
-                            "component": 119
+                            "component": 128
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 121
+                                    "component": 130
                                   }
                                 ],
-                                "component": 122
+                                "component": 131
                               }
                             ],
-                            "component": 120
+                            "component": 129
                           },
                           {
                             "children": [
                               {
-                                "component": 124
+                                "component": 133
                               },
                               {
-                                "component": 125
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 126
-                                  }
-                                ],
-                                "component": 142
-                              },
-                              {
-                                "component": 127
+                                "component": 134
                               },
                               {
                                 "children": [
                                   {
-                                    "children": [
-                                      {
-                                        "component": 129
-                                      },
-                                      {
-                                        "component": 130
-                                      }
-                                    ],
-                                    "component": 131
-                                  }
-                                ],
-                                "component": 128
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 133
-                                      },
-                                      {
-                                        "component": 134
-                                      }
-                                    ],
                                     "component": 135
                                   }
                                 ],
-                                "component": 132
+                                "component": 151
+                              },
+                              {
+                                "component": 136
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 136
-                                  }
-                                ],
-                                "component": 143
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 138
-                                  },
-                                  {
-                                    "component": 139
+                                    "children": [
+                                      {
+                                        "component": 138
+                                      },
+                                      {
+                                        "component": 139
+                                      }
+                                    ],
+                                    "component": 140
                                   }
                                 ],
                                 "component": 137
                               },
                               {
-                                "component": 140
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 142
+                                      },
+                                      {
+                                        "component": 143
+                                      }
+                                    ],
+                                    "component": 144
+                                  }
+                                ],
+                                "component": 141
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 141
+                                    "component": 145
                                   }
                                 ],
-                                "component": 144
-                              }
-                            ],
-                            "component": 123
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 146
+                                "component": 152
                               },
                               {
                                 "children": [
                                   {
                                     "component": 147
+                                  },
+                                  {
+                                    "component": 148
                                   }
                                 ],
-                                "component": 153
+                                "component": 146
+                              },
+                              {
+                                "component": 149
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 149
-                                  },
-                                  {
                                     "component": 150
-                                  },
-                                  {
-                                    "component": 151
                                   }
                                 ],
-                                "component": 148
-                              },
-                              {
-                                "component": 152
+                                "component": 153
                               }
                             ],
-                            "component": 145
+                            "component": 132
                           },
                           {
+                            "children": [
+                              {
+                                "component": 155
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 156
+                                  }
+                                ],
+                                "component": 162
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 158
+                                  },
+                                  {
+                                    "component": 159
+                                  },
+                                  {
+                                    "component": 160
+                                  }
+                                ],
+                                "component": 157
+                              },
+                              {
+                                "component": 161
+                              }
+                            ],
                             "component": 154
+                          },
+                          {
+                            "component": 163
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 156
+                                    "component": 165
                                   },
                                   {
-                                    "component": 157
+                                    "component": 166
                                   },
                                   {
-                                    "component": 158
+                                    "component": 167
                                   }
                                 ],
-                                "component": 160
+                                "component": 169
                               },
                               {
-                                "component": 159
+                                "component": 168
                               }
                             ],
-                            "component": 155
+                            "component": 164
                           }
                         ],
-                        "component": 117
+                        "component": 126
                       }
                     ],
-                    "component": 40
+                    "component": 49
                   }
                 ],
-                "component": 17
+                "component": 26
               },
               {
                 "children": [
                   {
                     "children": [
                       {
-                        "component": 164
-                      },
-                      {
-                        "component": 165
-                      },
-                      {
-                        "component": 166
-                      },
-                      {
-                        "component": 167
-                      },
-                      {
-                        "component": 168
-                      },
-                      {
-                        "component": 169
-                      },
-                      {
-                        "children": [
-                          {
-                            "children": [
-                              {
-                                "component": 171
-                              }
-                            ],
-                            "component": 173
-                          },
-                          {
-                            "component": 172
-                          }
-                        ],
-                        "component": 170
+                        "component": 173
                       },
                       {
                         "component": 174
@@ -5755,145 +5872,143 @@
                         "component": 176
                       },
                       {
+                        "component": 177
+                      },
+                      {
+                        "component": 178
+                      },
+                      {
                         "children": [
                           {
-                            "component": 178
+                            "children": [
+                              {
+                                "component": 180
+                              }
+                            ],
+                            "component": 182
                           },
                           {
-                            "component": 179
-                          },
-                          {
-                            "component": 180
+                            "component": 181
                           }
                         ],
-                        "component": 177
+                        "component": 179
+                      },
+                      {
+                        "component": 183
+                      },
+                      {
+                        "component": 184
+                      },
+                      {
+                        "component": 185
+                      },
+                      {
+                        "children": [
+                          {
+                            "component": 187
+                          },
+                          {
+                            "component": 188
+                          },
+                          {
+                            "component": 189
+                          }
+                        ],
+                        "component": 186
                       }
                     ],
-                    "component": 163
+                    "component": 172
                   },
                   {
-                    "component": 181
+                    "component": 190
                   },
                   {
-                    "component": 182
+                    "component": 191
                   },
                   {
                     "children": [
                       {
                         "children": [
                           {
-                            "component": 185
+                            "component": 194
                           },
                           {
-                            "component": 186
+                            "component": 195
                           },
                           {
                             "children": [
                               {
-                                "component": 187
+                                "component": 196
                               },
                               {
-                                "component": 188
+                                "component": 197
                               }
                             ],
-                            "component": 203
+                            "component": 212
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 190
+                                    "component": 199
                                   },
                                   {
-                                    "component": 191
+                                    "component": 200
                                   }
                                 ],
-                                "component": 192
+                                "component": 201
                               }
                             ],
-                            "component": 189
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 193
-                              },
-                              {
-                                "component": 194
-                              },
-                              {
-                                "component": 195
-                              }
-                            ],
-                            "component": 204
-                          },
-                          {
-                            "component": 196
-                          },
-                          {
-                            "component": 197
-                          },
-                          {
                             "component": 198
                           },
                           {
                             "children": [
                               {
-                                "component": 199
+                                "component": 202
+                              },
+                              {
+                                "component": 203
+                              },
+                              {
+                                "component": 204
                               }
                             ],
+                            "component": 213
+                          },
+                          {
                             "component": 205
                           },
                           {
-                            "children": [
-                              {
-                                "component": 201
-                              },
-                              {
-                                "component": 202
-                              }
-                            ],
-                            "component": 200
-                          }
-                        ],
-                        "component": 184
-                      },
-                      {
-                        "children": [
+                            "component": 206
+                          },
                           {
                             "component": 207
                           },
                           {
-                            "component": 208
+                            "children": [
+                              {
+                                "component": 208
+                              }
+                            ],
+                            "component": 214
                           },
                           {
                             "children": [
                               {
-                                "children": [
-                                  {
-                                    "component": 211
-                                  },
-                                  {
-                                    "component": 212
-                                  }
-                                ],
                                 "component": 210
                               },
                               {
-                                "children": [
-                                  {
-                                    "component": 214
-                                  },
-                                  {
-                                    "component": 215
-                                  }
-                                ],
-                                "component": 213
+                                "component": 211
                               }
                             ],
                             "component": 209
-                          },
+                          }
+                        ],
+                        "component": 193
+                      },
+                      {
+                        "children": [
                           {
                             "component": 216
                           },
@@ -5901,64 +6016,97 @@
                             "component": 217
                           },
                           {
-                            "component": 218
-                          },
-                          {
-                            "component": 219
-                          },
-                          {
                             "children": [
                               {
-                                "component": 220
-                              }
-                            ],
-                            "component": 227
-                          },
-                          {
-                            "component": 221
-                          },
-                          {
-                            "children": [
+                                "children": [
+                                  {
+                                    "component": 220
+                                  },
+                                  {
+                                    "component": 221
+                                  }
+                                ],
+                                "component": 219
+                              },
                               {
+                                "children": [
+                                  {
+                                    "component": 223
+                                  },
+                                  {
+                                    "component": 224
+                                  }
+                                ],
                                 "component": 222
                               }
                             ],
-                            "component": 228
-                          },
-                          {
-                            "component": 223
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 224
-                              }
-                            ],
-                            "component": 229
+                            "component": 218
                           },
                           {
                             "component": 225
                           },
                           {
                             "component": 226
+                          },
+                          {
+                            "component": 227
+                          },
+                          {
+                            "component": 228
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 229
+                              }
+                            ],
+                            "component": 236
+                          },
+                          {
+                            "component": 230
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 231
+                              }
+                            ],
+                            "component": 237
+                          },
+                          {
+                            "component": 232
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 233
+                              }
+                            ],
+                            "component": 238
+                          },
+                          {
+                            "component": 234
+                          },
+                          {
+                            "component": 235
                           }
                         ],
-                        "component": 206
+                        "component": 215
                       }
                     ],
-                    "component": 183
+                    "component": 192
                   }
                 ],
-                "component": 162
+                "component": 171
               }
             ],
-            "component": 16
+            "component": 25
           }
         ],
         "component": 0
       },
       {
-        "component": 231
+        "component": 240
       }
     ],
     "component": "root"
