@@ -11,6 +11,7 @@ import tempfile
 import json
 import uuid
 import copy
+import functools
 import hashlib
 
 from sam3_demo.config import (
@@ -59,7 +60,6 @@ from sam3_demo.config import (
 )
 
 import numpy as np
-import torch
 import gradio as gr
 from PIL import Image
 import cv2
@@ -74,6 +74,20 @@ from sam3_demo.ui.image_tab import build_image_tab
 from sam3_demo.ui.refs import ComponentRefs
 from sam3_demo.ui.layout_mask_tab import build_layout_mask_tab
 from sam3_demo.ui.styles import CUSTOM_CSS, build_theme
+from sam3_demo.model_supervisor import SUPERVISOR
+
+def _model_lease_wrapper(reason):
+    """Preserve callback signatures while holding a reentrant model lease."""
+
+    def decorate(function):
+        @functools.wraps(function)
+        def wrapped(*args, **kwargs):
+            with SUPERVISOR.lease(reason=reason):
+                return function(*args, **kwargs)
+        return wrapped
+    return decorate
+
+
 
 try:
     from gradio_layout_transform_editor import LayoutTransformEditor
@@ -165,12 +179,8 @@ def _publish_segmentation_zip(export_dir, zip_name):
 
 
 from sam3_demo.model_runtime import (
-    DEVICE,
-    FindStage,
-    box_ops,
     image_predictor,
-    initialize_models,
-    _PVS_PREDICT_LOCK,
+    _predict_pcs,
     _predict_inst,
     _prompt_mask_size,
     _polygon_lowres_logits,
@@ -270,6 +280,7 @@ from sam3_demo.workspace import (
     _SOURCE_IMAGE_CACHE_LOCK,
     _release_workspace_memory,
     _prune_workspace_cache,
+    _evict_workspace_images,
     _clear_workspace_cache,
     _prune_source_image_cache,
     _clear_source_image_cache,
@@ -1033,6 +1044,7 @@ def _workspace_gesture_input(
     )
 
 
+@_model_lease_wrapper("apply_polygon_to_pvs")
 def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refine", combine_mode="replace", progress=None):
     return _apply_polygon_to_pvs_impl(
         {
@@ -1059,6 +1071,7 @@ def _apply_polygon_to_pvs(image_state, pvs_state, polygon, polygon_action="refin
     )
 
 
+@_model_lease_wrapper("finish_native_polygon")
 def _finish_native_polygon(image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action="create", polygon_combine_mode="replace", progress=gr.Progress(track_tqdm=False)):
     return _finish_native_polygon_impl(
         {
@@ -1216,6 +1229,7 @@ def _init_workspace(input_image, mode, session_state=None):
             '_WORKSPACE_CACHE': _WORKSPACE_CACHE,
             '_WORKSPACE_CACHE_LOCK': _WORKSPACE_CACHE_LOCK,
             '_clear_workspace_cache': _clear_workspace_cache,
+            '_evict_workspace_images': _evict_workspace_images,
             '_new_pcs_state': _new_pcs_state,
             '_new_prompt_state': _new_prompt_state,
             '_new_pvs_state': _new_pvs_state,
@@ -1226,7 +1240,6 @@ def _init_workspace(input_image, mode, session_state=None):
             '_release_workspace_memory': _release_workspace_memory,
             '_session_id_from_state': _session_id_from_state,
             '_view': _view,
-            'image_predictor': image_predictor,
         },
         input_image,
         mode,
@@ -1412,16 +1425,17 @@ def _clear_pcs_instances(image_state, pcs_state, pvs_state, mode):
     )
 
 
+@_model_lease_wrapper("run_pcs")
 def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
     return _run_pcs_impl(
         {
             '_fresh_state': _fresh_state,
             '_make_inst': _make_inst,
             '_norm_box': _norm_box,
+            '_predict_pcs': _predict_pcs,
             '_view': _view,
             '_workspace': _workspace,
             '_xyxy_to_cxcywh_norm': _xyxy_to_cxcywh_norm,
-            'image_predictor': image_predictor,
         },
         image_state,
         pcs_state,
@@ -1432,6 +1446,7 @@ def _run_pcs(image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
     )
 
 
+@_model_lease_wrapper("create_pvs_from_pending_boxes")
 def _create_pvs_from_pending_boxes(image_state, pcs_state, pvs_state, mode, progress=gr.Progress(track_tqdm=False)):
     return _create_pvs_from_pending_boxes_impl(
         {
@@ -1494,6 +1509,7 @@ def _set_active_pvs(image_state, pcs_state, pvs_state, mode, selected_id):
         selected_id,
     )
 
+@_model_lease_wrapper("refine_active_pvs_with_point")
 def _refine_active_pvs_with_point(image_state, pvs_state, point, point_label, progress=None):
     return _refine_active_pvs_with_point_impl(
         {
@@ -1512,6 +1528,7 @@ def _refine_active_pvs_with_point(image_state, pvs_state, point, point_label, pr
         progress,
     )
 
+@_model_lease_wrapper("pvs_point_prompt")
 def _pvs_point_prompt(image_state, pcs_state, pvs_state, mode, point_payload, point_kind, progress=gr.Progress(track_tqdm=False)):
     return _pvs_point_prompt_impl(
         {
@@ -1577,6 +1594,7 @@ from sam3_demo.layout.prompt_callbacks import (
     _create_pvs_from_layout_selection_impl,
 )
 
+@_model_lease_wrapper("layout_point_refine")
 def _layout_point_refine(image_state, pcs_state, pvs_state, mode, point_payload, point_kind, prompt_state, progress=gr.Progress(track_tqdm=False)):
     return _layout_point_refine_impl(
         {
@@ -3553,6 +3571,7 @@ def _layout_prompt_metadata(image_state, layout_state):
     )
 
 
+@_model_lease_wrapper("create_pvs_from_layout_mask")
 def _create_pvs_from_layout_mask(image_state, pcs_state, pvs_state, mode, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, editor_payload, progress=gr.Progress(track_tqdm=False)):
     return _create_pvs_from_layout_mask_impl(
         {
@@ -3733,6 +3752,7 @@ def _reset_layout_prompt_selection(image_state, layout_state):
     )
 
 
+@_model_lease_wrapper("create_pvs_from_layout_selection")
 def _create_pvs_from_layout_selection(
     image_state,
     pcs_state,

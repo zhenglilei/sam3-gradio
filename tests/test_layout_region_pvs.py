@@ -1,4 +1,5 @@
 import copy
+import contextlib
 import json
 import sys
 import tempfile
@@ -31,6 +32,12 @@ def _signature(value):
 
 class LayoutRegionPvsTest(unittest.TestCase):
     def setUp(self):
+        self.lease_patcher = mock.patch.object(
+            demo_module.SUPERVISOR,
+            "lease",
+            side_effect=lambda **_kwargs: contextlib.nullcontext(),
+        )
+        self.lease_patcher.start()
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.layout_masks = self.root / "layout_masks"
@@ -73,6 +80,7 @@ class LayoutRegionPvsTest(unittest.TestCase):
         }
 
     def tearDown(self):
+        self.lease_patcher.stop()
         demo_module._LAYOUT_REGION_STORE = self.old_store
         self.temporary.cleanup()
 

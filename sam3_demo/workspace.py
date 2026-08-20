@@ -10,7 +10,6 @@ import time
 import uuid
 
 import numpy as np
-import torch
 from PIL import Image
 
 import image_crop_utils as _image_crop
@@ -31,13 +30,20 @@ _SOURCE_IMAGE_CACHE_LOCK = threading.RLock()
 
 def _release_workspace_memory():
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+
+
+def _evict_workspace_images(image_ids):
+    ids = [str(value) for value in image_ids or [] if value]
+    if not ids:
+        return
+    from sam3_demo.model_supervisor import SUPERVISOR
+
+    SUPERVISOR.evict(ids)
 
 def _prune_workspace_cache(now=None, protected_image_id=None):
     now = time.monotonic() if now is None else float(now)
     protected = str(protected_image_id) if protected_image_id else None
-    removed = 0
+    removed = []
     expired = [
         image_id
         for image_id, workspace in _WORKSPACE_CACHE.items()
@@ -45,7 +51,8 @@ def _prune_workspace_cache(now=None, protected_image_id=None):
         > _WORKSPACE_CACHE_TTL_SECONDS
     ]
     for image_id in expired:
-        removed += _WORKSPACE_CACHE.pop(image_id, None) is not None
+        if _WORKSPACE_CACHE.pop(image_id, None) is not None:
+            removed.append(image_id)
 
     while len(_WORKSPACE_CACHE) > _WORKSPACE_CACHE_MAX_ENTRIES:
         candidates = [
@@ -62,27 +69,29 @@ def _prune_workspace_cache(now=None, protected_image_id=None):
                 item[0],
             ),
         )
-        removed += _WORKSPACE_CACHE.pop(oldest_id, None) is not None
+        if _WORKSPACE_CACHE.pop(oldest_id, None) is not None:
+            removed.append(oldest_id)
     return removed
 
 def _clear_workspace_cache(session_id=None):
     with _WORKSPACE_CACHE_LOCK:
         if session_id is None:
-            removed = bool(_WORKSPACE_CACHE)
+            removed = list(_WORKSPACE_CACHE)
             _WORKSPACE_CACHE.clear()
         else:
             session_id = str(session_id)
-            keys = [
+            removed = [
                 image_id
                 for image_id, workspace in _WORKSPACE_CACHE.items()
                 if workspace.get("session_id") == session_id
             ]
-            removed = bool(keys)
-            for image_id in keys:
+            for image_id in removed:
                 _WORKSPACE_CACHE.pop(image_id, None)
     if not removed:
-        return
+        return []
     _release_workspace_memory()
+    _evict_workspace_images(removed)
+    return removed
 
 def _prune_source_image_cache(now=None, protected_source_id=None):
     now = time.monotonic() if now is None else float(now)
@@ -306,6 +315,7 @@ def _workspace(image_state):
             ws["last_accessed_at"] = now
     if removed:
         _release_workspace_memory()
+        _evict_workspace_images(removed)
     if ws is None:
         raise ValueError("Image state expired; reload the image")
     if ws.get("session_id") != session_id:
@@ -316,5 +326,32 @@ def _workspace(image_state):
     return ws
 
 def _fresh_state(image_state):
-    base = _workspace(image_state)["base_state"]
-    return {"original_height": base["original_height"], "original_width": base["original_width"], "backbone_out": dict(base["backbone_out"])}
+    ws = _workspace(image_state)
+    image = ws["image"]
+    from sam3_demo.model_supervisor import SUPERVISOR
+
+    return {
+        "image_id": str(image_state.get("image_id") or ""),
+        "session_id": str(image_state.get("session_id") or ""),
+        "target_image_sha256": str(image_state.get("target_image_sha256") or ""),
+        "original_width": int(image.width),
+        "original_height": int(image.height),
+        "generation": SUPERVISOR.generation,
+    }
+
+
+def _workspace_image_for_handle(handle):
+    image_state = {
+        "image_id": str((handle or {}).get("image_id") or ""),
+        "session_id": str((handle or {}).get("session_id") or ""),
+        "target_image_sha256": str((handle or {}).get("target_image_sha256") or ""),
+    }
+    ws = _workspace(image_state)
+    image = ws["image"]
+    expected = (
+        int((handle or {}).get("original_width") or 0),
+        int((handle or {}).get("original_height") or 0),
+    )
+    if expected != image.size:
+        raise ValueError("Workspace image dimensions changed; reload the image")
+    return image.copy()

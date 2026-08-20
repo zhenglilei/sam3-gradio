@@ -19,28 +19,12 @@ sys.path.insert(0, str(ROOT))
 from sam3_demo import app as demo
 
 
-class _FakeImagePredictor:
-    def set_image(self, image):
-        return {
-            "original_height": image.height,
-            "original_width": image.width,
-            "backbone_out": {},
-        }
-
-
-class _FailingImagePredictor:
-    def set_image(self, image):
-        raise RuntimeError("simulated set_image failure")
-
-
 class ImagePrepostIntegrationTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.old_predictor = demo.image_predictor
         self.old_runtime_export_dir = demo.runtime_export_dir
         self.old_public_download_dir = demo.public_download_dir
-        demo.image_predictor = _FakeImagePredictor()
         demo.runtime_export_dir = self.root / "internal_exports"
         demo.runtime_export_dir.mkdir()
         demo.public_download_dir = self.root / "public_downloads"
@@ -52,7 +36,6 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
     def tearDown(self):
         demo._clear_workspace_cache()
         demo._clear_source_image_cache()
-        demo.image_predictor = self.old_predictor
         demo.runtime_export_dir = self.old_runtime_export_dir
         demo.public_download_dir = self.old_public_download_dir
         self.temporary.cleanup()
@@ -148,16 +131,19 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
         ).copy()
         gesture = self._gesture(source_state, "drag", [3, 2], [13, 10])
         source_state, _, _ = demo._record_source_crop_gesture(source_state, gesture)
-        demo.image_predictor = _FailingImagePredictor()
+        with mock.patch.object(
+            demo,
+            "_source_image_cache_get",
+            side_effect=RuntimeError("simulated source cache failure"),
+        ):
+            failed = demo._apply_source_crop(
+                source_state,
+                demo.MODE_PVS,
+                self.session_state,
+                self.layout_state,
+            )
 
-        failed = demo._apply_source_crop(
-            source_state,
-            demo.MODE_PVS,
-            self.session_state,
-            self.layout_state,
-        )
-
-        self.assertIn("simulated set_image failure", failed[2])
+        self.assertIn("simulated source cache failure", failed[2])
         self.assertEqual(failed[0]["crop_bbox_xyxy"], [0, 0, 20, 12])
         self.assertEqual(failed[0]["pending_crop_bbox_xyxy"], [3, 2, 13, 10])
         np.testing.assert_array_equal(

@@ -1,4 +1,5 @@
 import copy
+import contextlib
 import json
 import sys
 import unittest
@@ -26,6 +27,17 @@ def _signature(value):
 
 class LayoutPointRefinementTest(unittest.TestCase):
     image_state = {"image_id": "image", "width": 8, "height": 6}
+
+    def setUp(self):
+        self.lease_patcher = mock.patch.object(
+            demo_module.SUPERVISOR,
+            "lease",
+            side_effect=lambda **_kwargs: contextlib.nullcontext(),
+        )
+        self.lease_patcher.start()
+
+    def tearDown(self):
+        self.lease_patcher.stop()
 
     @staticmethod
     def _prediction(offset=0.0):

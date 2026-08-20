@@ -1,4 +1,6 @@
 import copy
+import contextlib
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -18,11 +20,33 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         with demo_module._WORKSPACE_CACHE_LOCK:
             self.previous_cache = dict(demo_module._WORKSPACE_CACHE)
             demo_module._WORKSPACE_CACHE.clear()
+        self.lease_patcher = mock.patch.object(
+            demo_module.SUPERVISOR,
+            "lease",
+            side_effect=lambda **_kwargs: contextlib.nullcontext(),
+        )
+        self.lease_patcher.start()
 
     def tearDown(self):
+        self.lease_patcher.stop()
         with demo_module._WORKSPACE_CACHE_LOCK:
             demo_module._WORKSPACE_CACHE.clear()
             demo_module._WORKSPACE_CACHE.update(self.previous_cache)
+
+    def test_controller_runtime_import_is_cuda_lazy(self):
+        script = (
+            "import sys;"
+            "import sam3_demo.model_runtime as runtime;"
+            "snapshot=runtime.SUPERVISOR.snapshot();"
+            "print(int('torch' in sys.modules), snapshot['state'], snapshot['worker_pid'])"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.stdout.strip(), "0 UNLOADED None")
 
     @staticmethod
     def _workspace_entry(image_id, session_id, color):
@@ -38,7 +62,6 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         now = demo_module.time.monotonic()
         workspace = {
             "image": image,
-            "base_state": {"owner": session_id},
             "session_id": session_id,
             "target_image_sha256": target_hash,
             "created_at": now,
@@ -65,19 +88,12 @@ class WorkspaceTransactionsTest(unittest.TestCase):
                 }
             )
 
-        predictor = mock.Mock()
-        predictor.set_image.return_value = {
-            "original_height": 10,
-            "original_width": 12,
-            "backbone_out": {},
-        }
         input_image = np.full((10, 12, 3), 90, dtype=np.uint8)
-        with mock.patch.object(demo_module, "image_predictor", predictor):
-            result = demo_module._init_workspace(
-                input_image,
-                demo_module.MODE_PVS,
-                {"session_id": "session-a"},
-            )
+        result = demo_module._init_workspace(
+            input_image,
+            demo_module.MODE_PVS,
+            {"session_id": "session-a"},
+        )
 
         new_state = result[0]
         with demo_module._WORKSPACE_CACHE_LOCK:
@@ -166,6 +182,57 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         self.assertEqual(pvs_state["active_instance_id"], 9)
         self.assertEqual(pvs_state["pending_bbox_records"], [])
         self.assertEqual(pvs_state["pending_boxes"], [])
+
+    def test_pcs_worker_response_commits_atomically(self):
+        pcs_state = demo_module._new_pcs_state()
+        pcs_state["instances"] = {7: {"id": 7, "sentinel": True}}
+        pcs_state["next_instance_id"] = 8
+        before = copy.deepcopy(pcs_state)
+        workspace = {"image": Image.new("RGB", (12, 10), (0, 0, 0))}
+
+        with (
+            mock.patch.object(demo_module, "_workspace", return_value=workspace),
+            mock.patch.object(demo_module, "_fresh_state", return_value={}),
+            mock.patch.object(
+                demo_module,
+                "_predict_pcs",
+                side_effect=RuntimeError("worker died"),
+            ),
+            mock.patch.object(demo_module, "_view", return_value=(None,) * 8),
+        ):
+            demo_module._run_pcs(
+                {"image_id": "unused"},
+                pcs_state,
+                demo_module._new_pvs_state(),
+                demo_module.MODE_PCS,
+                "target",
+                0.5,
+            )
+        self.assertEqual(pcs_state, before)
+
+        zero = {
+            "masks": np.zeros((0, 10, 12), dtype=bool),
+            "scores": np.zeros((0,), dtype=np.float32),
+            "boxes": np.zeros((0, 4), dtype=np.float32),
+            "probs": None,
+        }
+        with (
+            mock.patch.object(demo_module, "_workspace", return_value=workspace),
+            mock.patch.object(demo_module, "_fresh_state", return_value={}),
+            mock.patch.object(demo_module, "_predict_pcs", return_value=zero) as predict,
+            mock.patch.object(demo_module, "_view", return_value=(None,) * 8),
+        ):
+            demo_module._run_pcs(
+                {"image_id": "unused"},
+                pcs_state,
+                demo_module._new_pvs_state(),
+                demo_module.MODE_PCS,
+                "target",
+                0.5,
+            )
+        predict.assert_called_once()
+        self.assertEqual(pcs_state["instances"], {})
+
 
     def test_workspace_cache_has_lru_and_ttl_bounds(self):
         now = demo_module.time.monotonic()

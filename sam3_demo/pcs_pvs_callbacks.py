@@ -354,10 +354,10 @@ def _run_pcs_impl(_deps, image_state, pcs_state, pvs_state, mode, text_prompt, t
     _fresh_state = _deps['_fresh_state']
     _make_inst = _deps['_make_inst']
     _norm_box = _deps['_norm_box']
+    _predict_pcs = _deps['_predict_pcs']
     _view = _deps['_view']
     _workspace = _deps['_workspace']
     _xyxy_to_cxcywh_norm = _deps['_xyxy_to_cxcywh_norm']
-    image_predictor = _deps['image_predictor']
     try:
         ws = _workspace(image_state)
         w, h = ws["image"].size
@@ -368,27 +368,27 @@ def _run_pcs_impl(_deps, image_state, pcs_state, pvs_state, mode, text_prompt, t
             raise ValueError("PCS needs a text prompt or bbox exemplar")
         if has_negative and not text_prompt and not has_positive:
             raise ValueError("PCS \u4e0d\u652f\u6301\u53ea\u4f7f\u7528\u8d1f\u6837\u672c bbox\uff0c\u8bf7\u5148\u6dfb\u52a0\u6587\u672c\u63d0\u793a\u6216\u6b63\u6837\u672c bbox")
-        state = _fresh_state(image_state)
-        if text_prompt:
-            state = image_predictor.set_text_prompt(text_prompt, state)
-        for box in pcs_state.get("positive_boxes", []):
-            state = image_predictor.add_geometric_prompt(_xyxy_to_cxcywh_norm(box, w, h), True, state)
-        for box in pcs_state.get("negative_boxes", []):
-            state = image_predictor.add_geometric_prompt(_xyxy_to_cxcywh_norm(box, w, h), False, state)
-        state = image_predictor.set_confidence_threshold(float(threshold), state)
-        masks = state.get("masks")
-        if masks is None or len(masks) == 0:
+        prediction = _predict_pcs(
+            _fresh_state(image_state),
+            text=text_prompt,
+            positive_boxes_cxcywh=[
+                _xyxy_to_cxcywh_norm(box, w, h)
+                for box in pcs_state.get("positive_boxes", [])
+            ],
+            negative_boxes_cxcywh=[
+                _xyxy_to_cxcywh_norm(box, w, h)
+                for box in pcs_state.get("negative_boxes", [])
+            ],
+            threshold=float(threshold),
+        )
+        masks_np = np.asarray(prediction.get("masks"), dtype=bool)
+        if masks_np.ndim != 3 or masks_np.shape[0] == 0:
             pcs_state["instances"] = {}
             return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, "PCS found no instances")
-        masks_np = masks.detach().cpu().numpy().astype(bool)
-        if masks_np.ndim == 4:
-            masks_np = masks_np[:, 0]
-        probs = state.get("masks_logits")
-        probs_np = None if probs is None else probs.detach().cpu().numpy().astype(np.float32)
-        if probs_np is not None and probs_np.ndim == 4:
-            probs_np = probs_np[:, 0]
-        boxes_np = state["boxes"].detach().cpu().numpy()
-        scores_np = state["scores"].detach().cpu().numpy()
+        probs_value = prediction.get("probs")
+        probs_np = None if probs_value is None else np.asarray(probs_value, dtype=np.float32)
+        boxes_np = np.asarray(prediction.get("boxes"), dtype=np.float32)
+        scores_np = np.asarray(prediction.get("scores"), dtype=np.float32).reshape(-1)
         instances = {}
         for idx, mask in enumerate(masks_np):
             inst_id = idx + 1

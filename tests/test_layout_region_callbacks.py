@@ -764,7 +764,6 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         current = (ROOT / "sam3_demo" / "app.py").read_text(encoding="utf-8")
         protected = [
             "_finish_native_polygon",
-            "_run_pcs",
             "_clear_current_layout_mask",
             "_commit_layout_transform",
             "_create_pvs_from_layout_mask",
@@ -773,10 +772,6 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             "_finish_native_polygon": (
                 ROOT / "sam3_demo" / "pcs_pvs_callbacks.py",
                 "_finish_native_polygon_impl",
-            ),
-            "_run_pcs": (
-                ROOT / "sam3_demo" / "pcs_pvs_callbacks.py",
-                "_run_pcs_impl",
             ),
             "_clear_current_layout_mask": (
                 ROOT / "sam3_demo" / "layout" / "mask_callbacks.py",

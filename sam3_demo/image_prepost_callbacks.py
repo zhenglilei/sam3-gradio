@@ -9,7 +9,6 @@ import uuid
 
 import gradio as gr
 import numpy as np
-import torch
 from PIL import Image
 
 import image_crop_utils as _image_crop
@@ -21,6 +20,7 @@ def _init_workspace_impl(_deps, input_image, mode, session_state):
     _WORKSPACE_CACHE = _deps['_WORKSPACE_CACHE']
     _WORKSPACE_CACHE_LOCK = _deps['_WORKSPACE_CACHE_LOCK']
     _clear_workspace_cache = _deps['_clear_workspace_cache']
+    _evict_workspace_images = _deps['_evict_workspace_images']
     _new_pcs_state = _deps['_new_pcs_state']
     _new_prompt_state = _deps['_new_prompt_state']
     _new_pvs_state = _deps['_new_pvs_state']
@@ -31,7 +31,6 @@ def _init_workspace_impl(_deps, input_image, mode, session_state):
     _release_workspace_memory = _deps['_release_workspace_memory']
     _session_id_from_state = _deps['_session_id_from_state']
     _view = _deps['_view']
-    image_predictor = _deps['image_predictor']
     pcs_state, pvs_state = _new_pcs_state(), _new_pvs_state()
     prompt_state = _new_prompt_state()
     session_id = _session_id_from_state(session_state)
@@ -39,22 +38,14 @@ def _init_workspace_impl(_deps, input_image, mode, session_state):
     if input_image is None:
         _clear_workspace_cache(session_id)
         return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "Upload an image first", prompt_state), None
-    if image_predictor is None:
-        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, "SAM3 image predictor is not initialized", prompt_state), None
     image = _pil_image(input_image)
     image_id = uuid.uuid4().hex
     target_hash = _layout_tx.image_pixel_sha256(image)
-    try:
-        base_state = image_predictor.set_image(image)
-    except torch.OutOfMemoryError:
-        info = "\u56fe\u50cf\u52a0\u8f7d\u5931\u8d25\uff1aGPU \u663e\u5b58\u4e0d\u8db3\u3002\u5f53\u524d\u5de5\u4f5c\u533a\u4fdd\u6301\u4e0d\u53d8\uff0c\u8bf7\u5173\u95ed\u5176\u4ed6 GPU \u4efb\u52a1\u6216\u91cd\u542f demo \u540e\u91cd\u8bd5\u3002"
-        return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, info, prompt_state), None
     _clear_workspace_cache(session_id)
     now = time.monotonic()
     with _WORKSPACE_CACHE_LOCK:
         _WORKSPACE_CACHE[image_id] = {
             "image": image,
-            "base_state": base_state,
             "session_id": session_id,
             "target_image_sha256": target_hash,
             "created_at": now,
@@ -63,6 +54,7 @@ def _init_workspace_impl(_deps, input_image, mode, session_state):
         removed = _prune_workspace_cache(now, protected_image_id=image_id)
     if removed:
         _release_workspace_memory()
+        _evict_workspace_images(removed)
     image_state = {"image_id": image_id, "width": image.width, "height": image.height, "session_id": session_id, "target_image_sha256": target_hash, "interaction_revision": 1}
     return image_state, pcs_state, pvs_state, prompt_state, _pcs_bbox_choices(pcs_state), _pvs_pending_bbox_choices(pvs_state), *_view(image_state, pcs_state, pvs_state, mode, f"Image loaded: {image.width}x{image.height}", prompt_state), None
 
