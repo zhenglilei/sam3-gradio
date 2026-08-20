@@ -133,7 +133,9 @@ def build_image_tab(
                         text_prompt = gr.Textbox(label="\u6587\u672c\u63d0\u793a (Text Prompt)", placeholder="\u8f93\u5165\u7269\u4f53\u63cf\u8ff0\uff0c\u4f8b\u5982\uff1a'a red car' \u6216 '\u4e00\u53ea\u732b'", lines=1)
                         confidence_threshold = gr.Slider(minimum=0.0, maximum=1.0, value=0.4, step=0.05, label="\u7f6e\u4fe1\u5ea6\u9608\u503c (Confidence)")
                         run_pcs_btn = gr.Button("\u5f00\u59cb PCS \u5206\u5272", variant="primary")
-                        export_pcs_btn = gr.Button("\u5bfc\u51fa PCS")
+                        with gr.Row():
+                            clear_pcs_instances_btn = gr.Button("\u6e05\u7a7a PCS \u5b9e\u4f8b", variant="secondary")
+                            export_pcs_btn = gr.Button("\u5bfc\u51fa PCS")
                         pcs_summary = gr.Textbox(label="PCS \u5b9e\u4f8b", lines=6, interactive=False)
 
                     with gr.Group(visible=True) as pvs_panel:
@@ -280,6 +282,7 @@ def build_image_tab(
         text_prompt=text_prompt,
         confidence_threshold=confidence_threshold,
         run_pcs_btn=run_pcs_btn,
+        clear_pcs_instances_btn=clear_pcs_instances_btn,
         export_pcs_btn=export_pcs_btn,
         pcs_summary=pcs_summary,
         pvs_panel=pvs_panel,

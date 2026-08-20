@@ -369,6 +369,7 @@ from sam3_demo.pcs_pvs_callbacks import (
     _finish_native_polygon_impl,
     _clear_prompt_selection_impl,
     _delete_selected_pcs_bbox_impl,
+    _clear_pcs_instances_impl,
     _run_pcs_impl,
     _create_pvs_from_pending_boxes_impl,
     _delete_selected_pending_pvs_bbox_impl,
@@ -1394,6 +1395,20 @@ def _delete_selected_pcs_bbox(image_state, pcs_state, pvs_state, mode, selected_
         pvs_state,
         mode,
         selected_bbox_id,
+    )
+
+
+def _clear_pcs_instances(image_state, pcs_state, pvs_state, mode):
+    return _clear_pcs_instances_impl(
+        {
+            '_is_pcs_mode': _is_pcs_mode,
+            '_reset_pcs_predictions': _reset_pcs_predictions,
+            '_view': _view,
+        },
+        image_state,
+        pcs_state,
+        pvs_state,
+        mode,
     )
 
 

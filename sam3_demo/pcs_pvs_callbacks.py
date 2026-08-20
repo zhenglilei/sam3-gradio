@@ -335,6 +335,21 @@ def _delete_selected_pcs_bbox_impl(_deps, image_state, pcs_state, pvs_state, mod
     return pcs_state, _pcs_bbox_choices(pcs_state), *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
+def _clear_pcs_instances_impl(_deps, image_state, pcs_state, pvs_state, mode):
+    _is_pcs_mode = _deps['_is_pcs_mode']
+    _reset_pcs_predictions = _deps['_reset_pcs_predictions']
+    _view = _deps['_view']
+    try:
+        if not _is_pcs_mode(mode):
+            raise ValueError("\u4ec5 PCS Auto \u6a21\u5f0f\u53ef\u4ee5\u6e05\u7a7a PCS \u5b9e\u4f8b")
+        cleared = len(pcs_state.get("instances") or {})
+        _reset_pcs_predictions(pcs_state)
+        info = f"\u5df2\u6e05\u7a7a {cleared} \u4e2a PCS \u5b9e\u4f8b\uff1b\u6587\u672c\u63d0\u793a\u548c bbox \u63d0\u793a\u5df2\u4fdd\u7559"
+    except Exception as exc:
+        info = f"\u6e05\u7a7a PCS \u5b9e\u4f8b\u5931\u8d25: {exc}"
+    return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
+
+
 def _run_pcs_impl(_deps, image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
     _fresh_state = _deps['_fresh_state']
     _make_inst = _deps['_make_inst']

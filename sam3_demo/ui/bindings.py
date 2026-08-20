@@ -46,6 +46,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     text_prompt = image_refs.text_prompt
     confidence_threshold = image_refs.confidence_threshold
     run_pcs_btn = image_refs.run_pcs_btn
+    clear_pcs_instances_btn = image_refs.clear_pcs_instances_btn
     export_pcs_btn = image_refs.export_pcs_btn
     pcs_summary = image_refs.pcs_summary
     pvs_panel = image_refs.pvs_panel
@@ -179,6 +180,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     _switch_mode_with_layout_editor = callbacks["_switch_mode_with_layout_editor"]
     _switch_click_tool = callbacks["_switch_click_tool"]
     _delete_selected_pcs_bbox = callbacks["_delete_selected_pcs_bbox"]
+    _clear_pcs_instances = callbacks["_clear_pcs_instances"]
     _run_pcs = callbacks["_run_pcs"]
     _create_pvs_from_pending_boxes = callbacks["_create_pvs_from_pending_boxes"]
     _delete_selected_pending_pvs_bbox = callbacks["_delete_selected_pending_pvs_bbox"]
@@ -583,6 +585,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     click_tool_event = click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
     click_tool_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=1, concurrency_id="image-prepost-state")
     delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+    clear_pcs_instances_btn.click(fn=_clear_pcs_instances, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
     run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
     create_pvs_batch_event = create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
     delete_selected_pending_bbox_btn.click(fn=_delete_selected_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pvs_pending_bbox_selector], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
