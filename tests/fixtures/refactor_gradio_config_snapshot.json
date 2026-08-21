@@ -31,7 +31,7 @@
         "elem_id": "sam3_model_status",
         "label": "模型状态",
         "show_label": false,
-        "value": "<div class=\"sam3-model-status-card\" style=\"display:flex;align-items:center;gap:8px;min-height:38px;padding:6px 10px;border:1px solid #d9e2f3;border-radius:8px;background:#fff;white-space:nowrap;\" aria-label=\"模型未加载\"><span aria-hidden=\"true\" style=\"display:inline-block;width:12px;height:12px;border-radius:50%;background:#dc2626;flex:0 0 auto;\"></span><span>模型未加载</span></div>",
+        "value": "<div class=\"sam3-model-status sam3-model-status--red\" style=\"--sam3-status-colour:#dc2626;\" aria-label=\"模型未加载\"><span class=\"sam3-model-status-light\" aria-hidden=\"true\"></span><span class=\"sam3-model-status-text\">模型未加载</span></div>",
         "visible": true
       },
       "type": "html"

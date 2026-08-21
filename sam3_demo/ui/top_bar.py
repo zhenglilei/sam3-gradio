@@ -71,20 +71,18 @@ def _status_presentation(snapshot: Mapping[str, Any] | None) -> tuple[str, str, 
 
 
 def _render_status(snapshot: Mapping[str, Any] | None) -> str:
-    """Render the status card with both a colour indicator and text."""
+    """Render a compact status light with accessible text."""
 
-    _state, label, colour, _enabled = _status_presentation(snapshot)
+    state, label, colour, _enabled = _status_presentation(snapshot)
     safe_label = escape(label, quote=True)
     safe_colour = escape(colour, quote=True)
+    tone = "green" if state in _GREEN_STATES else "yellow" if state in _YELLOW_STATES else "red"
     return (
-        '<div class="sam3-model-status-card" '
-        'style="display:flex;align-items:center;gap:8px;min-height:38px;'
-        'padding:6px 10px;border:1px solid #d9e2f3;border-radius:8px;'
-        'background:#fff;white-space:nowrap;" '
+        f'<div class="sam3-model-status sam3-model-status--{tone}" '
+        f'style="--sam3-status-colour:{safe_colour};" '
         f'aria-label="{safe_label}">'
-        f'<span aria-hidden="true" style="display:inline-block;width:12px;height:12px;'
-        f'border-radius:50%;background:{safe_colour};flex:0 0 auto;"></span>'
-        f'<span>{safe_label}</span>'
+        '<span class="sam3-model-status-light" aria-hidden="true"></span>'
+        f'<span class="sam3-model-status-text">{safe_label}</span>'
         "</div>"
     )
 
@@ -130,8 +128,8 @@ def build_top_bar(
     """
 
     with gr.Row(equal_height=True, elem_id="sam3_model_top_bar"):
-        with gr.Column(scale=1, min_width=230):
-            with gr.Row(equal_height=True):
+        with gr.Column(scale=1, min_width=280, elem_classes="sam3-model-controls"):
+            with gr.Row(equal_height=True, elem_classes="sam3-model-controls-row"):
                 model_status = gr.HTML(
                     value=_render_status({"state": "UNLOADED"}),
                     label="模型状态",
@@ -144,10 +142,10 @@ def build_top_bar(
                     interactive=True,
                     elem_id="sam3_model_start",
                 )
-        with gr.Column(scale=2, min_width=480):
+        with gr.Column(scale=2, min_width=480, elem_classes="sam3-model-heading"):
             gr.Markdown(f"# {title}")
             gr.Markdown(subtitle, elem_classes="description")
-        with gr.Column(scale=1, min_width=230):
+        with gr.Column(scale=1, min_width=280, elem_classes="sam3-model-spacer"):
             gr.Markdown("")
 
     # Timer is an invisible browser-side source, but it must be rendered into
