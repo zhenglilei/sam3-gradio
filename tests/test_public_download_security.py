@@ -24,24 +24,24 @@ class PublicDownloadSecurityTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name) / "public_downloads"
         self.internal = Path(self.temp_dir.name) / "internal"
+        self.session_id = "a" * 32
         self.internal.mkdir()
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
     def assert_random_export_dir(self, path, category):
-        self.assertEqual(path.parent, self.root.resolve() / category)
+        self.assertEqual(
+            path.parent,
+            self.root.resolve() / self.session_id / category,
+        )
         self.assertRegex(path.name, re.compile(r"^[0-9a-f]{32}$"))
 
-    def test_ensure_public_download_dirs_creates_only_fixed_categories(self):
+    def test_ensure_public_download_dirs_creates_only_public_root(self):
         public_root = ensure_public_download_dirs(self.root)
 
         self.assertEqual(public_root, self.root.resolve())
-        self.assertEqual(
-            {path.name for path in public_root.iterdir()},
-            set(PUBLIC_DOWNLOAD_CATEGORIES),
-        )
-        self.assertTrue(all(path.is_dir() for path in public_root.iterdir()))
+        self.assertEqual(list(public_root.iterdir()), [])
 
     def test_publish_files_uses_random_export_dir_and_fixed_public_names(self):
         mask = self.internal / "private-mask-name.png"
@@ -53,6 +53,7 @@ class PublicDownloadSecurityTests(unittest.TestCase):
             self.root,
             "layout_mask_exports",
             {"mask.png": mask, "contours.json": contour},
+            session_id=self.session_id,
         )
 
         self.assert_random_export_dir(export_dir, "layout_mask_exports")
@@ -68,30 +69,64 @@ class PublicDownloadSecurityTests(unittest.TestCase):
             self.root,
             "layout_mask_exports",
             [mask, contour],
+            session_id=self.session_id,
         )
         self.assert_random_export_dir(second_export, "layout_mask_exports")
         self.assertNotEqual(export_dir, second_export)
         self.assertEqual((second_export / mask.name).read_bytes(), b"mask-v2")
+
+    def test_session_scoped_exports_are_isolated_and_session_id_is_strict(self):
+        source = self.internal / "result.txt"
+        source.write_text("result", encoding="utf-8")
+        sid_a = "a" * 32
+        sid_b = "b" * 32
+
+        export_a = publish_files(
+            self.root,
+            "pcs_pvs_exports",
+            [source],
+            session_id=sid_a,
+        )
+        export_b = publish_files(
+            self.root,
+            "pcs_pvs_exports",
+            [source],
+            session_id=sid_b,
+        )
+
+        self.assertEqual(export_a.parent, self.root.resolve() / sid_a / "pcs_pvs_exports")
+        self.assertEqual(export_b.parent, self.root.resolve() / sid_b / "pcs_pvs_exports")
+        self.assertNotEqual(export_a, export_b)
+        for invalid in ("", "A" * 32, "../" + sid_a, "session-a", None):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(PublicDownloadError):
+                    publish_files(
+                        self.root,
+                        "pcs_pvs_exports",
+                        [source],
+                        session_id=invalid,
+                    )
 
     def test_publish_files_rejects_unknown_category_names_and_symlinks(self):
         source = self.internal / "source.txt"
         source.write_text("private", encoding="utf-8")
 
         with self.assertRaises(PublicDownloadError):
-            publish_files(self.root, "../layout_mask_exports", [source])
+            publish_files(self.root, "../layout_mask_exports", [source], session_id=self.session_id)
         with self.assertRaises(PublicDownloadError):
             publish_files(
                 self.root,
                 "layout_mask_exports",
                 {"../source.txt": source},
+                session_id=self.session_id,
             )
 
         symlink = self.internal / "source-link.txt"
         symlink.symlink_to(source)
         with self.assertRaises(PublicDownloadError):
-            publish_files(self.root, "layout_mask_exports", [symlink])
+            publish_files(self.root, "layout_mask_exports", [symlink], session_id=self.session_id)
 
-        category_dir = self.root / "layout_mask_exports"
+        category_dir = self.root / self.session_id / "layout_mask_exports"
         self.assertEqual(list(category_dir.iterdir()), [])
 
     def test_publish_zip_copies_nested_regular_files_only(self):
@@ -115,6 +150,7 @@ class PublicDownloadSecurityTests(unittest.TestCase):
             "region_annotation_exports",
             staging,
             "region_annotations.zip",
+            session_id=self.session_id,
         )
 
         self.assert_random_export_dir(
@@ -145,6 +181,7 @@ class PublicDownloadSecurityTests(unittest.TestCase):
             "pcs_pvs_exports",
             staging,
             "legacy.zip",
+            session_id=self.session_id,
         )
 
         with zipfile.ZipFile(archive_path) as archive:
@@ -162,15 +199,15 @@ class PublicDownloadSecurityTests(unittest.TestCase):
         (staging / "escape.txt").symlink_to(outside)
 
         with self.assertRaises(PublicDownloadError):
-            publish_zip(self.root, "pcs_pvs_exports", staging)
-        category_dir = self.root / "pcs_pvs_exports"
+            publish_zip(self.root, "pcs_pvs_exports", staging, session_id=self.session_id)
+        category_dir = self.root / self.session_id / "pcs_pvs_exports"
         self.assertTrue(not category_dir.exists() or not any(category_dir.iterdir()))
 
         (staging / "escape.txt").unlink()
         unsafe_name = staging / "..\\escape.txt"
         unsafe_name.write_text("unsafe", encoding="utf-8")
         with self.assertRaises(PublicDownloadError):
-            publish_zip(self.root, "pcs_pvs_exports", staging)
+            publish_zip(self.root, "pcs_pvs_exports", staging, session_id=self.session_id)
 
     def test_public_root_and_zip_source_directories_must_not_be_symlinks(self):
         actual_root = Path(self.temp_dir.name) / "actual-public"
@@ -186,13 +223,13 @@ class PublicDownloadSecurityTests(unittest.TestCase):
         staging_link = self.internal / "staging-link"
         staging_link.symlink_to(staging, target_is_directory=True)
         with self.assertRaises(PublicDownloadError):
-            publish_zip(self.root, "pcs_pvs_exports", staging_link)
+            publish_zip(self.root, "pcs_pvs_exports", staging_link, session_id=self.session_id)
 
     def test_prune_removes_only_expired_category_entries(self):
         source = self.internal / "result.txt"
         source.write_text("result", encoding="utf-8")
-        old_export = publish_files(self.root, "pcs_pvs_exports", [source])
-        recent_export = publish_files(self.root, "pcs_pvs_exports", [source])
+        old_export = publish_files(self.root, "pcs_pvs_exports", [source], session_id=self.session_id)
+        recent_export = publish_files(self.root, "pcs_pvs_exports", [source], session_id=self.session_id)
         old_timestamp = 1_000.0
         os.utime(old_export, (old_timestamp, old_timestamp))
         now = old_timestamp + 100.0
@@ -206,7 +243,38 @@ class PublicDownloadSecurityTests(unittest.TestCase):
         self.assertEqual(removed, [old_export])
         self.assertFalse(old_export.exists())
         self.assertTrue(recent_export.exists())
-        self.assertTrue((self.root / "pcs_pvs_exports").is_dir())
+        self.assertTrue((self.root / self.session_id / "pcs_pvs_exports").is_dir())
+
+    def test_prune_removes_expired_session_export_without_touching_other_session(self):
+        source = self.internal / "session-result.txt"
+        source.write_text("result", encoding="utf-8")
+        sid_a = "a" * 32
+        sid_b = "b" * 32
+        old_export = publish_files(
+            self.root,
+            "pcs_pvs_exports",
+            [source],
+            session_id=sid_a,
+        )
+        recent_export = publish_files(
+            self.root,
+            "pcs_pvs_exports",
+            [source],
+            session_id=sid_b,
+        )
+        old_timestamp = 1_000.0
+        os.utime(old_export, (old_timestamp, old_timestamp))
+
+        removed = prune_public_downloads(
+            self.root,
+            max_age_seconds=50,
+            now=old_timestamp + 100.0,
+        )
+
+        self.assertEqual(removed, [old_export])
+        self.assertFalse(old_export.exists())
+        self.assertTrue(recent_export.exists())
+        self.assertTrue((self.root / sid_b).is_dir())
 
     def test_prune_rejects_non_positive_ttl(self):
         for invalid_ttl in (0, -1, False):

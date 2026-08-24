@@ -13,6 +13,7 @@ import uuid
 import copy
 import functools
 import hashlib
+import atexit
 
 from sam3_demo.config import (
     MODE_LAYOUT,
@@ -33,6 +34,10 @@ from sam3_demo.config import (
     _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
     _MAX_PROMPT_HISTORY_ENTRIES,
     _PUBLIC_DOWNLOAD_TTL_SECONDS,
+    _SESSION_IDLE_SECONDS,
+    _SESSION_MAX_ENTRIES,
+    _SESSION_SWEEP_INTERVAL_SECONDS,
+    _SESSION_TRUSTED_PROXY_CIDRS,
     _SOURCE_IMAGE_CACHE_MAX_ENTRIES,
     _SOURCE_IMAGE_CACHE_TTL_SECONDS,
     _WORKSPACE_CACHE_MAX_ENTRIES,
@@ -76,6 +81,10 @@ from sam3_demo.ui.layout_mask_tab import build_layout_mask_tab
 from sam3_demo.ui.styles import CUSTOM_CSS, build_theme
 from sam3_demo.ui.top_bar import build_top_bar
 from sam3_demo.model_supervisor import SUPERVISOR
+
+from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
+from sam3_demo.session_guard import guard_callback, request_identity
+from sam3_demo.session_runtime import SessionError, SessionRecord, SessionRegistry
 
 def _model_lease_wrapper(reason):
     """Preserve callback signatures while holding a reentrant model lease."""
@@ -156,7 +165,7 @@ def _prune_public_downloads():
         return []
 
 
-def _publish_layout_downloads(mask_path, contour_path):
+def _publish_layout_downloads(mask_path, contour_path, session_id):
     _prune_public_downloads()
     export_dir = _public_downloads.publish_files(
         public_download_dir,
@@ -165,17 +174,19 @@ def _publish_layout_downloads(mask_path, contour_path):
             "source_mask.png": mask_path,
             "contours.json": contour_path,
         },
+        session_id=session_id,
     )
     return str(export_dir / "source_mask.png"), str(export_dir / "contours.json")
 
 
-def _publish_segmentation_zip(export_dir, zip_name):
+def _publish_segmentation_zip(export_dir, zip_name, session_id):
     _prune_public_downloads()
     return _public_downloads.publish_zip(
         public_download_dir,
         "pcs_pvs_exports",
         export_dir,
         zip_name,
+        session_id=session_id,
     )
 
 
@@ -239,6 +250,9 @@ def create_segmentation_export(
     coco_eval_scope,
     annotation_json_file=None,
 ):
+    session_id = validate_server_session_id(
+        state.get("session_id") if isinstance(state, dict) else None
+    )
     return _create_segmentation_export_impl(
         result_image,
         source_image,
@@ -249,9 +263,13 @@ def create_segmentation_export(
         coco_split,
         coco_eval_scope,
         annotation_json_file,
-        export_root=runtime_export_dir,
+        export_root=runtime_export_dir / session_id,
         compare_fn=compare_with_coco,
-        publish_zip_fn=_publish_segmentation_zip,
+        publish_zip_fn=lambda export_dir, zip_name: _publish_segmentation_zip(
+            export_dir,
+            zip_name,
+            session_id,
+        ),
     )
 
 
@@ -1346,12 +1364,21 @@ def _use_full_source_image(source_state, mode, session_state=None, layout_state=
     )
 
 
-def _clear_template_match_outputs(status="请先完成智能分割并选择当前 PVS 实例"):
+def _clear_template_match_outputs(
+    template_match_state,
+    status="请先完成智能分割并选择当前 PVS 实例",
+):
+    session_id = (
+        template_match_state.get("session_id")
+        if isinstance(template_match_state, dict)
+        else None
+    )
     return _clear_template_match_outputs_impl(
         {
             '_new_template_match_state': _new_template_match_state,
         },
         status,
+        session_id,
     )
 
 
@@ -2798,6 +2825,7 @@ def _run_layout_mask_page_with_downloads(
             '_advance_layout_prompt_epoch': _advance_layout_prompt_epoch,
             '_publish_layout_downloads': _publish_layout_downloads,
             '_run_layout_mask_page': _run_layout_mask_page,
+            '_session_id_from_state': _session_id_from_state,
         },
         session_state,
         image_state,
@@ -3851,6 +3879,159 @@ def _reset_layout_controls_with_prompt_epoch(image_state, layout_state):
     )
 
 
+_SESSION_GUARDED_CALLBACKS = frozenset(
+    {
+        "_run_layout_mask_page_with_downloads",
+        "_layout_mask_agent_reset_callback",
+        "_layout_mask_agent_prepare_upload_callback",
+        "_layout_mask_agent_run_callback",
+        "_layout_mask_agent_chat_callback",
+        "_layout_mask_agent_applied_preview_callback",
+        "_layout_mask_agent_mark_saved_callback",
+        "_load_layout_region_context",
+        "_reset_layout_prompt_selection",
+        "_save_current_layout_mask",
+        "_clear_current_layout_mask_with_prompt_epoch",
+        "_clear_layout_region_context",
+        "_preview_layout_region",
+        "_save_layout_region",
+        "_select_layout_region",
+        "_delete_layout_region",
+        "_export_layout_regions",
+        "_use_current_layout_mask",
+        "_load_layout_prompt_choices",
+        "_load_layout_binary_mask_png",
+        "_select_layout_prompt_mask",
+        "_update_layout_preview_with_groups",
+        "_sync_layout_controls_from_editor_with_prompt_epoch",
+        "_reset_layout_controls_with_prompt_epoch",
+        "_create_pvs_from_layout_selection",
+        "_source_upload_workspace",
+        "_record_source_crop_gesture",
+        "_apply_source_crop",
+        "_use_full_source_image",
+        "_workspace_gesture_payload",
+        "_workspace_gesture_input",
+        "_run_template_matching",
+        "_clear_template_match_outputs",
+        "_finish_native_polygon",
+        "_clear_prompt_selection",
+        "_switch_mode_with_layout_editor",
+        "_delete_selected_pcs_bbox",
+        "_clear_pcs_instances",
+        "_run_pcs",
+        "_create_pvs_from_pending_boxes",
+        "_delete_selected_pending_pvs_bbox",
+        "_clear_pending_pvs_boxes",
+        "_pvs_point_prompt",
+        "_layout_point_refine",
+        "_set_active_pvs",
+        "_undo_pvs",
+        "_delete_pvs",
+        "_accept_pvs",
+        "_export_pcs",
+        "_export_pvs",
+        "_submit_feedback",
+    }
+)
+
+
+def _cleanup_session_record(record: SessionRecord):
+    report = cleanup_session_resources(
+        record.session_id,
+        clear_workspace_cache=_clear_workspace_cache,
+        clear_source_image_cache=_clear_source_image_cache,
+        layout_cache=_LAYOUT_CACHE,
+        layout_cache_lock=_LAYOUT_CACHE_LOCK,
+        prompt_epochs=_LAYOUT_PROMPT_EPOCHS,
+        prompt_epoch_lock=_LAYOUT_PROMPT_EPOCH_LOCK,
+        persistent_roots=(
+            runtime_layout_dir,
+            runtime_layout_region_dir,
+            runtime_export_dir,
+            runtime_feedback_dir,
+            public_download_dir,
+        ),
+    )
+    if report["errors"]:
+        logger.warning(
+            "Session cleanup for %s completed with errors: %s",
+            record.session_id,
+            report["errors"],
+        )
+
+
+_SESSION_REGISTRY = SessionRegistry(
+    idle_seconds=_SESSION_IDLE_SECONDS,
+    max_sessions=_SESSION_MAX_ENTRIES,
+    cleanup_callback=_cleanup_session_record,
+    start_sweeper=True,
+    sweep_interval=_SESSION_SWEEP_INTERVAL_SECONDS,
+)
+atexit.register(_SESSION_REGISTRY.shutdown)
+
+
+def _session_state_bundle(server_state):
+    session_id = str(server_state["session_id"])
+    owner_token = str(server_state["owner_token"])
+
+    def owned(state):
+        state["owner_token"] = owner_token
+        return state
+
+    image = owned({
+        "session_id": session_id,
+        "image_id": None,
+        "width": 0,
+        "height": 0,
+        "target_image_sha256": None,
+        "interaction_revision": 0,
+    })
+    region = _new_layout_region_state()
+    region["session_id"] = session_id
+    return (
+        server_state,
+        image,
+        owned(_new_source_image_state(session_id)),
+        owned(_new_pcs_state(session_id)),
+        owned(_new_pvs_state(session_id)),
+        owned(_new_template_match_state(session_id)),
+        owned(_new_prompt_state(session_id)),
+        owned(_new_layout_state(session_id)),
+        owned(region),
+        owned(_new_layout_mask_agent_state(session_id)),
+    )
+
+
+def _bootstrap_session(request: gr.Request):
+    session_hash, client_ip = request_identity(request, _SESSION_TRUSTED_PROXY_CIDRS)
+    return _session_state_bundle(_SESSION_REGISTRY.bind(session_hash, client_ip))
+
+
+def _close_request_session(request: gr.Request):
+    # An unload request carries only browser hash/IP, not the owner token. Closing
+    # by that incomplete identity can race with a newly rebound page. Exact
+    # cleanup is handled by gr.State.delete_callback and the TTL sweeper.
+    try:
+        request_identity(request, _SESSION_TRUSTED_PROXY_CIDRS)
+    except SessionError as exc:
+        logger.info("Ignoring invalid session unload request: %s", exc)
+
+
+def _session_callback_registry():
+    callbacks = dict(globals())
+    missing = sorted(_SESSION_GUARDED_CALLBACKS.difference(callbacks))
+    if missing:
+        raise RuntimeError(f"Missing session-guarded callbacks: {missing}")
+    for name in _SESSION_GUARDED_CALLBACKS:
+        callbacks[name] = guard_callback(
+            callbacks[name],
+            registry=_SESSION_REGISTRY,
+            trusted_proxy_cidrs=_SESSION_TRUSTED_PROXY_CIDRS,
+        )
+    return callbacks
+
+
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
     theme = build_theme()
@@ -3867,17 +4048,20 @@ def create_demo():
                 title="SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0",
                 subtitle="\u57fa\u4e8e SAM3 \u7684 PCS \u81ea\u52a8\u6982\u5ff5\u5206\u5272\u4e0e PVS \u624b\u52a8\u5b9e\u4f8b\u5206\u5272\u5de5\u4f5c\u53f0",
             )
-            session_state = gr.State(_new_session_state())
-            image_state = gr.State({"image_id": None, "width": 0, "height": 0})
-            source_image_state = gr.State(_new_source_image_state())
-            pcs_state = gr.State(_new_pcs_state())
-            pvs_state = gr.State(_new_pvs_state())
-            template_match_state = gr.State(_new_template_match_state())
-            prompt_state = gr.State(_new_prompt_state())
-            layout_state = gr.State(_new_layout_state())
-            layout_region_state = gr.State(_new_layout_region_state())
+            session_state = gr.State(
+                value=None,
+                delete_callback=_SESSION_REGISTRY.close_state,
+            )
+            image_state = gr.State(None)
+            source_image_state = gr.State(None)
+            pcs_state = gr.State(None)
+            pvs_state = gr.State(None)
+            template_match_state = gr.State(None)
+            prompt_state = gr.State(None)
+            layout_state = gr.State(None)
+            layout_region_state = gr.State(None)
             bbox_payload = gr.Textbox(label="bbox payload", elem_id="bbox_payload", elem_classes="hidden-payload")
-            layout_mask_agent_state = gr.State(_new_layout_mask_agent_state())
+            layout_mask_agent_state = gr.State(None)
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
 
@@ -3923,8 +4107,28 @@ def create_demo():
                 state_refs=state_refs,
                 image_refs=image_ui,
                 layout_refs=layout_ui,
-                callbacks=globals(),
+                callbacks=_session_callback_registry(),
             )
+            demo.load(
+                fn=_bootstrap_session,
+                inputs=None,
+                outputs=[
+                    session_state,
+                    image_state,
+                    source_image_state,
+                    pcs_state,
+                    pvs_state,
+                    template_match_state,
+                    prompt_state,
+                    layout_state,
+                    layout_region_state,
+                    layout_mask_agent_state,
+                ],
+                queue=False,
+                show_progress="hidden",
+                api_visibility="private",
+            )
+            demo.unload(_close_request_session)
         gr.Markdown("---\n<div style='text-align:center;color:#718096;font-size:0.9em;'>Powered by SAM3</div>")
     return demo
 # --- end PCS/PVS single-workspace override ---

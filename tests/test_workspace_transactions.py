@@ -258,8 +258,12 @@ class WorkspaceTransactionsTest(unittest.TestCase):
             demo_module._WORKSPACE_CACHE_MAX_ENTRIES,
         )
         self.assertIn("image-0", cache_ids)
-        self.assertNotIn("image-4", cache_ids)
-        self.assertNotIn("image-5", cache_ids)
+        self.assertNotIn(
+            f"image-{demo_module._WORKSPACE_CACHE_MAX_ENTRIES}", cache_ids
+        )
+        self.assertNotIn(
+            f"image-{demo_module._WORKSPACE_CACHE_MAX_ENTRIES + 1}", cache_ids
+        )
 
         expired_state, expired_workspace = self._workspace_entry(
             "expired",

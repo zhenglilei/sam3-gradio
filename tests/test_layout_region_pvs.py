@@ -42,7 +42,7 @@ class LayoutRegionPvsTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.layout_masks = self.root / "layout_masks"
         self.layout_regions = self.root / "layout_regions"
-        self.session_id = "session1"
+        self.session_id = "a" * 32
         self.layout_id = "layout1"
         self.source_mask = np.zeros((36, 48), dtype=np.uint8)
         self.source_mask[5:31, 8:40] = 1

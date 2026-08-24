@@ -30,8 +30,9 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
         demo.public_download_dir = self.root / "public_downloads"
         demo._clear_workspace_cache()
         demo._clear_source_image_cache()
-        self.session_state = {"session_id": "image-prepost-session"}
-        self.layout_state = demo._new_layout_state("image-prepost-session")
+        self.session_id = "a" * 32
+        self.session_state = {"session_id": self.session_id}
+        self.layout_state = demo._new_layout_state(self.session_id)
 
     def tearDown(self):
         demo._clear_workspace_cache()
@@ -180,9 +181,9 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
 
     def test_workspace_drag_adds_one_bbox_and_rejects_small_drag(self):
         image_state = self._upload()[3]
-        pcs_state = demo._new_pcs_state()
-        pvs_state = demo._new_pvs_state()
-        prompt_state = demo._new_prompt_state()
+        pcs_state = demo._new_pcs_state(self.session_id)
+        pvs_state = demo._new_pvs_state(self.session_id)
+        prompt_state = demo._new_prompt_state(self.session_id)
 
         drag = self._gesture(image_state, "drag", [2, 2], [11, 9])
         output = demo._workspace_gesture_input(
@@ -202,12 +203,12 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
         small = self._gesture(image_state, "drag", [2, 2], [4, 4])
         rejected = demo._workspace_gesture_input(
             image_state,
-            demo._new_pcs_state(),
-            demo._new_pvs_state(),
+            demo._new_pcs_state(self.session_id),
+            demo._new_pvs_state(self.session_id),
             demo.MODE_PVS,
             "bbox",
             "Positive exemplar",
-            demo._new_prompt_state(),
+            demo._new_prompt_state(self.session_id),
             small,
         )
         self.assertEqual(rejected[5]["pending_boxes"], [])
@@ -219,7 +220,7 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
         image_state = uploaded[3]
         seed = np.zeros((12, 20), dtype=bool)
         seed[3:8, 4:10] = True
-        pvs_state = demo._new_pvs_state()
+        pvs_state = demo._new_pvs_state(self.session_id)
         pvs_state["instances"][1] = demo._make_inst(
             1,
             "manual_pvs",

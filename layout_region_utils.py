@@ -21,6 +21,8 @@ import numpy as np
 from PIL import Image
 from pycocotools import mask as coco_mask
 
+from sam3_demo.session_cleanup import validate_server_session_id
+
 
 REGIONS_SCHEMA_VERSION = 1
 CATEGORIES_SCHEMA_VERSION = 1
@@ -46,6 +48,13 @@ def safe_path_component(value: Any, field: str) -> str:
     if not _SAFE_COMPONENT_RE.fullmatch(text):
         raise RegionValidationError(f"invalid {field}")
     return text
+
+
+def server_session_id(value: Any) -> str:
+    try:
+        return validate_server_session_id(value)
+    except ValueError as exc:
+        raise RegionValidationError("invalid session_id") from exc
 
 
 def mask_pixel_sha256(mask: Any) -> str:
@@ -281,7 +290,7 @@ def region_record_from_mask(
 def new_regions_document(session_id: str, layout_id: str, source_mask_hash: str) -> dict[str, Any]:
     return {
         "schema_version": REGIONS_SCHEMA_VERSION,
-        "session_id": safe_path_component(session_id, "session_id"),
+        "session_id": server_session_id(session_id),
         "layout_id": safe_path_component(layout_id, "layout_id"),
         "source_mask_hash": str(source_mask_hash),
         "regions_revision": 0,
@@ -304,7 +313,7 @@ def validate_regions_document(
 ) -> dict[str, Any]:
     if not isinstance(payload, dict) or payload.get("schema_version") != REGIONS_SCHEMA_VERSION:
         raise RegionValidationError("unsupported regions schema")
-    expected_session = safe_path_component(session_id, "session_id")
+    expected_session = server_session_id(session_id)
     expected_layout = safe_path_component(layout_id, "layout_id")
     if payload.get("session_id") != expected_session or payload.get("layout_id") != expected_layout:
         raise RegionValidationError("regions identity does not match current layout")
@@ -686,7 +695,7 @@ class LayoutRegionStore:
         self._lock = threading.RLock()
 
     def _identity(self, session_id: Any, layout_id: Any) -> tuple[str, str]:
-        return safe_path_component(session_id, "session_id"), safe_path_component(layout_id, "layout_id")
+        return server_session_id(session_id), safe_path_component(layout_id, "layout_id")
 
     def regions_path(self, session_id: Any, layout_id: Any) -> Path:
         sid, lid = self._identity(session_id, layout_id)

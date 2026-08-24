@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from sam3_demo.session_cleanup import validate_server_session_id
+
 
 def _layout_cache_key_impl(_deps, session_id, layout_id):
     _layout_tx = _deps['_layout_tx']
     if not layout_id:
         raise ValueError("请先在‘版图截图转掩码’Tab 中生成并保存当前版图 mask")
-    sid = _layout_tx.safe_id(session_id, "default")
+    sid = validate_server_session_id(session_id)
     lid = _layout_tx.safe_id(layout_id, "layout")
     return f"{sid}:{lid}"
 
@@ -15,7 +17,7 @@ def _layout_cache_key_impl(_deps, session_id, layout_id):
 def _layout_disk_dir_impl(_deps, session_id, layout_id):
     _layout_tx = _deps['_layout_tx']
     runtime_layout_dir = _deps['runtime_layout_dir']
-    return runtime_layout_dir / _layout_tx.safe_id(session_id, "default") / _layout_tx.safe_id(layout_id, "layout")
+    return runtime_layout_dir / validate_server_session_id(session_id) / _layout_tx.safe_id(layout_id, "layout")
 
 
 def _layout_cache_get_impl(_deps, layout_state_or_id, session_id):
@@ -30,7 +32,7 @@ def _layout_cache_get_impl(_deps, layout_state_or_id, session_id):
         layout_id = layout_state_or_id
     if not layout_id:
         raise ValueError("请先在‘版图截图转掩码’Tab 中生成并保存当前版图 mask")
-    session_id = session_id or "default"
+    session_id = validate_server_session_id(session_id)
     key = _layout_cache_key(session_id, layout_id)
     with _LAYOUT_CACHE_LOCK:
         cached = _LAYOUT_CACHE.get(key)
@@ -58,6 +60,13 @@ def _restore_layout_cache_from_disk_impl(_deps, session_id, layout_id):
         return None
     with meta_path.open("r", encoding="utf-8") as f:
         meta = json.load(f)
+    expected_session_id = validate_server_session_id(session_id)
+    expected_layout_id = _layout_tx.safe_id(layout_id, "layout")
+    if (
+        meta.get("session_id") != expected_session_id
+        or meta.get("layout_id") != expected_layout_id
+    ):
+        raise ValueError("layout metadata identity mismatch")
     file_hash = _layout_tx.file_sha256(mask_path)
     if meta.get("source_mask_file_sha256") and meta.get("source_mask_file_sha256") != file_hash:
         raise ValueError("版图 source_mask.png 文件 hash 不匹配，拒绝恢复缓存")
@@ -171,11 +180,12 @@ def _clear_layout_cache_impl(_deps, layout_state):
     _LAYOUT_CACHE = _deps['_LAYOUT_CACHE']
     _LAYOUT_CACHE_LOCK = _deps['_LAYOUT_CACHE_LOCK']
     _layout_cache_key = _deps['_layout_cache_key']
+    if not isinstance(layout_state, dict) or not layout_state.get("session_id"):
+        raise ValueError("Layout state session is missing; reload the page")
     with _LAYOUT_CACHE_LOCK:
-        if layout_state and isinstance(layout_state, dict) and layout_state.get("layout_id"):
-            _LAYOUT_CACHE.pop(_layout_cache_key(layout_state.get("session_id") or "default", layout_state.get("layout_id")), None)
-        else:
-            _LAYOUT_CACHE.clear()
+        if layout_state.get("layout_id"):
+            _LAYOUT_CACHE.pop(_layout_cache_key(layout_state["session_id"], layout_state["layout_id"]), None)
+
 
 
 def _normalize_layout_morph_pixels_impl(_deps, value):
@@ -516,7 +526,7 @@ def _layout_editor_payload_impl(_deps, image_state, layout_state, status):
             center_y = float(target_height) / 2.0 + float(state.get("ty") or 0.0)
             pivot_xy = pivot
         transform = _layout_tx.make_layout_transform_v2(
-            session_id=str(state.get("session_id") or cached.get("session_id") or "default"),
+            session_id=validate_server_session_id(state.get("session_id") or cached.get("session_id")),
             layout_id=str(state.get("layout_id")),
             image_id=str(image_id or ""),
             target_size=(target_width, target_height),
@@ -993,6 +1003,7 @@ def _run_layout_mask_page_with_downloads_impl(_deps, session_state, image_state,
     _advance_layout_prompt_epoch = _deps['_advance_layout_prompt_epoch']
     _publish_layout_downloads = _deps['_publish_layout_downloads']
     _run_layout_mask_page = _deps['_run_layout_mask_page']
+    _session_id_from_state = _deps['_session_id_from_state']
     _advance_layout_prompt_epoch(
         image_state=image_state,
         session_state=session_state,
@@ -1018,6 +1029,7 @@ def _run_layout_mask_page_with_downloads_impl(_deps, session_state, image_state,
         public_mask_path, public_contour_path = _publish_layout_downloads(
             internal_mask_path,
             internal_contour_path,
+            _session_id_from_state(session_state),
         )
     except Exception as exc:
         result[5] = None
@@ -1040,7 +1052,11 @@ def _save_current_layout_mask_impl(_deps, layout_state):
     _publish_layout_downloads = _deps['_publish_layout_downloads']
     try:
         cached = _layout_cache_get(layout_state)
-        mask_path, contour_path = _publish_layout_downloads(cached.get("mask_path"), cached.get("contour_json_path"))
+        mask_path, contour_path = _publish_layout_downloads(
+            cached.get("mask_path"),
+            cached.get("contour_json_path"),
+            layout_state.get("session_id") if isinstance(layout_state, dict) else None,
+        )
         return (
             mask_path,
             contour_path,
@@ -1054,8 +1070,14 @@ def _clear_current_layout_mask_impl(_deps, image_state, layout_state):
     _clear_layout_cache = _deps['_clear_layout_cache']
     _layout_editor_empty = _deps['_layout_editor_empty']
     _new_layout_state = _deps['_new_layout_state']
-    session_id = layout_state.get("session_id") if isinstance(layout_state, dict) else None
-    _clear_layout_cache(layout_state)
+    session_id = (
+        layout_state.get("session_id")
+        if isinstance(layout_state, dict)
+        else image_state.get("session_id") if isinstance(image_state, dict) else None
+    )
+    if not session_id:
+        raise ValueError("Layout state session is missing; reload the page")
+    _clear_layout_cache(layout_state or {"session_id": session_id})
     state = _new_layout_state(session_id)
     return state, _layout_editor_empty(image_state, "当前版图 mask 已清除"), None, None, None, None, None, "当前版图 mask 已清除"
 
@@ -1170,7 +1192,7 @@ def _commit_layout_transform_impl(_deps, image_state, layout_state, enabled, tx,
         alpha_value = float(np.clip(float(alpha_source if alpha_source is not None else 0.35), 0.0, 1.0))
         revision = max(payload_revision, committed) + 1
         transform = _layout_tx.make_layout_transform_v2(
-            session_id=str(state.get("session_id") or cached.get("session_id") or image_state.get("session_id") or "default"),
+            session_id=validate_server_session_id(state.get("session_id") or cached.get("session_id") or image_state.get("session_id")),
             layout_id=str(state.get("layout_id")),
             image_id=str(image_state.get("image_id")),
             target_size=target_size,
@@ -1346,7 +1368,7 @@ def _reset_layout_controls_impl(_deps, image_state, layout_state):
     _layout_editor_payload = _deps['_layout_editor_payload']
     _layout_state_summary = _deps['_layout_state_summary']
     _new_layout_state = _deps['_new_layout_state']
-    state = dict(layout_state or _new_layout_state())
+    state = dict(layout_state or _new_layout_state(image_state.get("session_id") if isinstance(image_state, dict) else None))
     state.update({"enabled": bool(state.get("layout_id")), "tx": 0.0, "ty": 0.0, "scale": 1.0, "rotation_deg": 0.0, "preview_alpha": 0.35})
     if isinstance(image_state, dict) and image_state.get("width") and image_state.get("height"):
         state["center_x"] = float(image_state.get("width")) / 2.0

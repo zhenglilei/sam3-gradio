@@ -54,7 +54,7 @@ class LayoutRegionUtilsTest(unittest.TestCase):
         self.layout_masks = self.root / "layout_masks"
         self.layout_regions = self.root / "layout_regions"
         self.categories_path = self.root / "layout_categories.json"
-        self.session_id = "session1"
+        self.session_id = "a" * 32
         self.layout_id = "layout1"
         self.source_mask = np.zeros((32, 40), dtype=np.uint8)
         self.source_mask[3:15, 4:18] = 1
@@ -95,6 +95,18 @@ class LayoutRegionUtilsTest(unittest.TestCase):
             class_label=category,
             name=name,
         )
+
+    def test_store_rejects_non_server_session_ids(self):
+        for session_id in (None, "", "session1", "A" * 32, "../escape"):
+            with self.subTest(session_id=session_id):
+                with self.assertRaises(regions.RegionValidationError):
+                    self.store.regions_path(session_id, self.layout_id)
+                with self.assertRaises(regions.RegionValidationError):
+                    regions.new_regions_document(
+                        session_id,
+                        self.layout_id,
+                        self.source_hash,
+                    )
 
     def test_duplicate_cleanup_and_invalid_lasso(self):
         points = [[1, 1], [1, 1], [10, 1], [10, 10], [1, 1]]

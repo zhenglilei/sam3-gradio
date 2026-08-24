@@ -24,6 +24,16 @@ def _new_layout_region_state_impl(_deps):
     }
 
 
+def _new_layout_region_state_for_layout_impl(_deps, layout_state):
+    """Create a fallback Region state retaining the current session owner."""
+    state = _deps['_new_layout_region_state']()
+    if isinstance(state, dict) and isinstance(layout_state, dict):
+        session_id = layout_state.get("session_id")
+        if isinstance(session_id, str):
+            state["session_id"] = session_id
+    return state
+
+
 def _layout_region_state_from_document_impl(_deps, document, selected_region_id):
     _layout_regions = _deps['_layout_regions']
     active_ids = {int(region["region_id"]) for region in _layout_regions.active_regions(document)}
@@ -70,7 +80,7 @@ def _layout_region_identity_impl(_deps, layout_state):
     _layout_regions = _deps['_layout_regions']
     if not isinstance(layout_state, dict):
         raise _layout_regions.RegionValidationError("layout state is missing")
-    session_id = _layout_regions.safe_path_component(layout_state.get("session_id"), "session_id")
+    session_id = _layout_regions.server_session_id(layout_state.get("session_id"))
     layout_id = _layout_regions.safe_path_component(layout_state.get("layout_id"), "layout_id")
     source_mask_hash = str(layout_state.get("source_mask_pixel_sha256") or "")
     if not source_mask_hash:
@@ -290,7 +300,10 @@ def _load_layout_region_context_impl(_deps, layout_state):
         except Exception:
             label_update = gr.update(value="")
         return (
-            _new_layout_region_state(),
+            _new_layout_region_state_for_layout_impl(
+                {"_new_layout_region_state": _deps['_new_layout_region_state']},
+                layout_state,
+            ),
             _layout_region_editor_empty(status),
             label_update,
             gr.update(choices=[], value=None),
@@ -311,7 +324,10 @@ def _clear_layout_region_context_impl(_deps, _layout_state):
     except Exception:
         label_update = gr.update(value="")
     return (
-        _new_layout_region_state(),
+        _new_layout_region_state_for_layout_impl(
+            {"_new_layout_region_state": _deps['_new_layout_region_state']},
+            _layout_state,
+        ),
         _layout_region_editor_empty(status),
         label_update,
         gr.update(choices=[], value=None),
@@ -377,7 +393,10 @@ def _preview_layout_region_impl(_deps, layout_state, region_state, editor_payloa
                 selected_region_id=state.get("selected_region_id"),
             )
         except Exception:
-            state = _new_layout_region_state()
+            state = _new_layout_region_state_for_layout_impl(
+                {"_new_layout_region_state": _deps['_new_layout_region_state']},
+                layout_state,
+            )
             editor = _layout_region_editor_empty(status)
         return state, editor, gr.update(interactive=False), status
 
@@ -424,7 +443,10 @@ def _select_layout_region_impl(_deps, layout_state, region_state, selected_regio
     except Exception as exc:
         status = f"选择 Label 失败：{exc}"
         return (
-            region_state or _new_layout_region_state(),
+            _new_layout_region_state_for_layout_impl(
+                {"_new_layout_region_state": _deps['_new_layout_region_state']},
+                layout_state,
+            ),
             _layout_region_editor_empty(status),
             gr.update(interactive=False),
             gr.update(interactive=False),
@@ -539,7 +561,10 @@ def _save_layout_region_impl(_deps, layout_state, region_state, editor_payload, 
                 region_state=region_state,
             )
         except Exception:
-            state = _new_layout_region_state()
+            state = _new_layout_region_state_for_layout_impl(
+                {"_new_layout_region_state": _deps['_new_layout_region_state']},
+                layout_state,
+            )
             editor = _layout_region_editor_empty(status)
             choices = gr.update(choices=[], value=None)
             save_update = gr.update(interactive=False)
@@ -612,7 +637,10 @@ def _delete_layout_region_impl(_deps, layout_state, region_state, editor_payload
                 layout_state, previous_selected, status
             )
         except Exception:
-            state = _new_layout_region_state()
+            state = _new_layout_region_state_for_layout_impl(
+                {"_new_layout_region_state": _deps['_new_layout_region_state']},
+                layout_state,
+            )
             editor = _layout_region_editor_empty(status)
             choices = gr.update(choices=[], value=None)
             save_update = gr.update(interactive=False)
@@ -724,9 +752,11 @@ def _export_layout_regions_impl(_deps, layout_state, region_state):
             ),
         }
 
+        session_export_dir = Path(runtime_export_dir) / session_id
+        session_export_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
             prefix="layout_region_export_",
-            dir=runtime_export_dir,
+            dir=str(session_export_dir),
         ) as temporary:
             staging_dir = Path(temporary)
             with (staging_dir / "regions.json").open("w", encoding="utf-8") as handle:
@@ -759,6 +789,7 @@ def _export_layout_regions_impl(_deps, layout_state, region_state):
                 "region_annotation_exports",
                 staging_dir,
                 f"layout_regions_{layout_id}_r{revision}.zip",
+                session_id=session_id,
             )
 
         status = (

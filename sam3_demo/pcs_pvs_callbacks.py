@@ -43,7 +43,7 @@ def _workspace_select_impl(_deps, image_state, pcs_state, pvs_state, mode, click
     _pcs_bbox_choices = _deps['_pcs_bbox_choices']
     _pvs_pending_bbox_choices = _deps['_pvs_pending_bbox_choices']
     _view = _deps['_view']
-    prompt_state = prompt_state or _new_prompt_state()
+    prompt_state = prompt_state or _new_prompt_state(image_state.get("session_id"))
     bbox_payload = gr.update()
     point_payload = gr.update()
     polygon_payload = gr.update()
@@ -111,7 +111,7 @@ def _workspace_gesture_input_impl(_deps, image_state, pcs_state, pvs_state, mode
     _view = _deps['_view']
     _workspace_gesture_payload = _deps['_workspace_gesture_payload']
     _workspace_select = _deps['_workspace_select']
-    prompt_state = prompt_state or _new_prompt_state()
+    prompt_state = prompt_state or _new_prompt_state(image_state.get("session_id"))
     try:
         gesture, start, end = _validate_gesture_intent(
             gesture_payload,
@@ -258,7 +258,7 @@ def _finish_native_polygon_impl(_deps, image_state, prompt_state, pcs_state, pvs
     _payload_json = _deps['_payload_json']
     _pvs_progress = _deps['_pvs_progress']
     _view = _deps['_view']
-    prompt_state = prompt_state or _new_prompt_state()
+    prompt_state = prompt_state or _new_prompt_state(image_state.get("session_id"))
     points = prompt_state.get("polygon_points") or []
     polygon_payload = gr.update()
     _pvs_progress(progress, 0.03, "准备 PVS 多边形操作")
@@ -290,7 +290,7 @@ def _clear_prompt_selection_impl(_deps, image_state, pcs_state, pvs_state, mode)
     _pcs_bbox_choices = _deps['_pcs_bbox_choices']
     _pvs_pending_bbox_choices = _deps['_pvs_pending_bbox_choices']
     _view = _deps['_view']
-    prompt_state = _new_prompt_state()
+    prompt_state = _new_prompt_state(image_state.get("session_id"))
     if _is_pcs_mode(mode):
         pcs_state["text_prompt"] = ""
         pcs_state["positive_boxes"] = []

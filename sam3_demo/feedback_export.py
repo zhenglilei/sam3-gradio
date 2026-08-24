@@ -3,14 +3,33 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 import uuid
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 import layout_region_utils as _layout_regions
 import layout_transform_utils as _layout_tx
+from sam3_demo.session_cleanup import validate_server_session_id
+
+
+def _validated_image_session_id(image_state, workspace):
+    # Validate the browser state and cached workspace before building a path.
+    if not isinstance(image_state, dict):
+        raise ValueError("invalid image state: server session is missing")
+    try:
+        session_id = validate_server_session_id(image_state.get("session_id"))
+        workspace_session_id = validate_server_session_id(
+            workspace.get("session_id") if isinstance(workspace, dict) else None
+        )
+    except ValueError as exc:
+        raise ValueError("image state has no valid server session") from exc
+    if workspace_session_id != session_id:
+        raise ValueError("image state does not belong to this server session")
+    return session_id
 
 
 def _history_json_impl(_deps, history):
@@ -186,6 +205,8 @@ def _submit_feedback_impl(_deps, image_state, pcs_state, pvs_state, mode, rating
     _workspace = _deps['_workspace']
     _write_feedback_layout_artifacts = _deps['_write_feedback_layout_artifacts']
     runtime_feedback_dir = _deps['runtime_feedback_dir']
+    sample_dir = None
+    session_feedback_dir = None
     try:
         if _is_pvs_pool_mode(mode):
             active_id = pvs_state.get("active_instance_id")
@@ -206,9 +227,17 @@ def _submit_feedback_impl(_deps, image_state, pcs_state, pvs_state, mode, rating
             raise ValueError(f"不支持的 feedback 模式: {mode}")
 
         ws = _workspace(image_state)
+        session_id = _validated_image_session_id(image_state, ws)
         image = ws["image"]
+        layout_prompt = _latest_layout_prompt_from_instances(feedback_instances)
+        if layout_prompt:
+            prompt_session_id = validate_server_session_id(layout_prompt.get("session_id"))
+            if prompt_session_id != session_id:
+                raise ValueError("layout prompt belongs to another server session")
+
         feedback_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        sample_dir = runtime_feedback_dir / "samples" / feedback_id
+        session_feedback_dir = Path(runtime_feedback_dir) / session_id
+        sample_dir = session_feedback_dir / "samples" / feedback_id
         sample_dir.mkdir(parents=True, exist_ok=False)
 
         image_path = sample_dir / "image.png"
@@ -245,10 +274,11 @@ def _submit_feedback_impl(_deps, image_state, pcs_state, pvs_state, mode, rating
             }
             for item in feedback_instances
         ]
-        layout_artifacts = _write_feedback_layout_artifacts(sample_dir, _latest_layout_prompt_from_instances(feedback_instances))
+        layout_artifacts = _write_feedback_layout_artifacts(sample_dir, layout_prompt)
 
         payload = {
             "feedback_id": feedback_id,
+            "session_id": session_id,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "mode": mode,
             "target": feedback_target,
@@ -277,10 +307,19 @@ def _submit_feedback_impl(_deps, image_state, pcs_state, pvs_state, mode, rating
         with feedback_path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         with _FEEDBACK_WRITE_LOCK:
-            with (runtime_feedback_dir / "feedback.jsonl").open("a", encoding="utf-8") as f:
+            with (session_feedback_dir / "feedback.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps(payload, ensure_ascii=False) + "\n")
         info = f"反馈已保存: {feedback_id}"
     except Exception as exc:
+        if sample_dir is not None:
+            shutil.rmtree(sample_dir, ignore_errors=True)
+            for parent in (sample_dir.parent, session_feedback_dir):
+                if parent is None:
+                    continue
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
         info = f"反馈保存失败: {exc}"
     return _view(image_state, pcs_state, pvs_state, mode, info)
 
@@ -297,13 +336,14 @@ def _export_pool_impl(_deps, image_state, pcs_state, pvs_state, mode, pool_name,
     runtime_export_dir = _deps['runtime_export_dir']
     try:
         ws = _workspace(image_state)
+        session_id = _validated_image_session_id(image_state, ws)
         image = ws["image"]
         pool = pcs_state if pool_name == "pcs" else pvs_state
         instances = _active_instances(pool)
         if not instances:
             raise ValueError(f"No active {pool_name.upper()} instance")
         export_id = f"{pool_name}_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        export_dir = runtime_export_dir / export_id
+        export_dir = Path(runtime_export_dir) / session_id / export_id
         mask_dir = export_dir / "masks"
         export_dir.mkdir(parents=True, exist_ok=True)
         mask_dir.mkdir(exist_ok=True)
@@ -322,7 +362,7 @@ def _export_pool_impl(_deps, image_state, pcs_state, pvs_state, mode, pool_name,
             coco_annotation_extras.append({"instance_id": int(inst["id"]), "source": inst.get("source"), "status": inst.get("status"), "mask_file": mask_file, "bbox_xyxy": bbox_xyxy})
         metrics = compare_with_coco(masks, scores, coco_dataset, coco_image_name.strip() if coco_image_name else "", coco_split, pcs_state.get("text_prompt", "") if pool_name == "pcs" else "", image.width, image.height, coco_eval_scope, annotation_json_file)
         with (export_dir / "prediction.json").open("w", encoding="utf-8") as f:
-            json.dump({"export_id": export_id, "pool": pool_name, "image": {"width": image.width, "height": image.height}, "predictions": predictions, "metrics": metrics}, f, ensure_ascii=False, indent=2)
+            json.dump({"export_id": export_id, "session_id": session_id, "pool": pool_name, "image": {"width": image.width, "height": image.height}, "predictions": predictions, "metrics": metrics}, f, ensure_ascii=False, indent=2)
         with (export_dir / "metrics.json").open("w", encoding="utf-8") as f:
             json.dump(metrics, f, ensure_ascii=False, indent=2)
         coco_payload = create_prediction_coco_json(
@@ -337,7 +377,11 @@ def _export_pool_impl(_deps, image_state, pcs_state, pvs_state, mode, pool_name,
         )
         with (export_dir / "coco_masks.json").open("w", encoding="utf-8") as f:
             json.dump(coco_payload, f, ensure_ascii=False, indent=2)
-        zip_path = _publish_segmentation_zip(export_dir, f"{export_id}.zip")
+        zip_path = _publish_segmentation_zip(
+            export_dir,
+            f"{export_id}.zip",
+            session_id,
+        )
         info = f"Exported {len(instances)} {pool_name.upper()} instances: {zip_path}"
         if metrics.get("summary_lines"):
             info += "\n" + "\n".join(metrics["summary_lines"])

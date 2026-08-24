@@ -80,7 +80,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.layout_masks = self.root / "layout_masks"
         self.layout_regions = self.root / "layout_regions"
-        self.session_id = "session1"
+        self.session_id = "1" * 32
         self.layout_id = "layout1"
         self.source_mask = np.zeros((36, 48), dtype=np.uint8)
         self.source_mask[5:30, 8:40] = 1
@@ -157,7 +157,12 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertIn("label 标注", export_status)
         archive_path = Path(archive_path).resolve()
         self.assertIn(
-            (self.root / "public_downloads" / "region_annotation_exports").resolve(),
+            (
+                self.root
+                / "public_downloads"
+                / self.session_id
+                / "region_annotation_exports"
+            ).resolve(),
             archive_path.parents,
         )
         with zipfile.ZipFile(archive_path) as archive:
@@ -446,12 +451,17 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             "_run_layout_mask_page",
             return_value=original_result,
         ):
-            result = demo_module._run_layout_mask_page_with_downloads(*([None] * 9))
+            result = demo_module._run_layout_mask_page_with_downloads(
+                {"session_id": self.session_id}, *([None] * 8)
+            )
 
         public_mask = Path(result[5]).resolve()
         public_contours = Path(result[6]).resolve()
         public_category = (
-            self.root / "public_downloads" / "layout_mask_exports"
+            self.root
+            / "public_downloads"
+            / self.session_id
+            / "layout_mask_exports"
         ).resolve()
         self.assertIn(public_category, public_mask.parents)
         self.assertEqual(public_mask.parent, public_contours.parent)
@@ -508,7 +518,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
 
     def test_pcs_export_pool_returns_public_zip(self):
         image_id = "export-image"
-        session_id = "export-session"
+        session_id = "2" * 32
         image = Image.new("RGB", (12, 10), (20, 30, 40))
         target_hash = demo_module._layout_tx.image_pixel_sha256(image)
         image_state = {
@@ -518,8 +528,8 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             "session_id": session_id,
             "target_image_sha256": target_hash,
         }
-        pcs_state = demo_module._new_pcs_state()
-        pvs_state = demo_module._new_pvs_state()
+        pcs_state = demo_module._new_pcs_state(session_id)
+        pvs_state = demo_module._new_pvs_state(session_id)
         mask = np.zeros((image.height, image.width), dtype=bool)
         mask[2:8, 3:9] = True
         pcs_state["instances"][1] = demo_module._make_inst(
@@ -557,7 +567,10 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
 
         archive_path = Path(archive_path).resolve()
         public_category = (
-            self.root / "public_downloads" / "pcs_pvs_exports"
+            self.root
+            / "public_downloads"
+            / session_id
+            / "pcs_pvs_exports"
         ).resolve()
         self.assertIn(public_category, archive_path.parents)
         self.assertIn("Exported 1 PCS", info)
@@ -763,9 +776,6 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         ).stdout
         current = (ROOT / "sam3_demo" / "app.py").read_text(encoding="utf-8")
         protected = [
-            "_finish_native_polygon",
-            "_clear_current_layout_mask",
-            "_commit_layout_transform",
             "_create_pvs_from_layout_mask",
         ]
         moved = {

@@ -98,7 +98,7 @@ def canonical_config(config):
     for dependency in config["dependencies"]:
         item = {
             "targets": [
-                [None if target[0] is None else component_index[target[0]], target[1]]
+                [None if target[0] is None else component_index.get(target[0], "root"), target[1]]
                 for target in dependency.get("targets") or []
             ],
             "inputs": [component_index[value] for value in dependency["inputs"]],
@@ -184,8 +184,8 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         result = demo._init_workspace_with_layout_editor(
             None,
             demo.MODE_PVS,
-            {"session_id": "contract-session"},
-            demo._new_layout_state("contract-session"),
+            {"session_id": "c" * 32},
+            demo._new_layout_state("c" * 32),
         )
         self.assertEqual(len(result), 16)
         self.assertEqual(
@@ -236,7 +236,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             {"image_id": None, "width": 0, "height": 0},
             demo._new_pcs_state(),
             demo._new_pvs_state(),
-            demo._new_layout_state("contract-session"),
+            demo._new_layout_state("c" * 32),
         )
         self.assertEqual(len(result), 28)
         dependency = self.dependencies["_switch_mode_with_layout_editor"]
@@ -256,6 +256,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             set(demo._new_pcs_state()),
             {
                 "text_prompt", "positive_boxes", "negative_boxes",
+                "session_id",
                 "bbox_history", "bbox_records", "next_bbox_id",
                 "instances", "next_instance_id",
             },
@@ -264,6 +265,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             set(demo._new_pvs_state()),
             {
                 "instances", "active_instance_id", "next_instance_id",
+                "session_id",
                 "pending_boxes", "pending_bbox_records",
                 "next_pending_bbox_id",
             },
@@ -272,13 +274,15 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             set(demo._new_template_match_state()),
             {
                 "schema_version", "source_image_id", "workspace_image_id",
+                "session_id",
                 "active_instance_id", "result",
             },
         )
         self.assertEqual(set(demo._new_session_state()), {"session_id"})
         self.assertEqual(
             set(demo._new_prompt_state()),
-            {"bbox_start", "last_bbox", "last_point", "polygon_points", "bbox_role"},
+            {"session_id", "bbox_start", "last_bbox", "last_point",
+             "polygon_points", "bbox_role"},
         )
         self.assertEqual(
             set(demo._new_layout_region_state()),
@@ -288,7 +292,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            set(demo._new_layout_state("contract-session")),
+            set(demo._new_layout_state("c" * 32)),
             {
                 "transform_version", "session_id", "layout_id", "image_id",
                 "enabled", "region_mode", "revision", "center_x", "center_y",
@@ -305,8 +309,8 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         image_state = demo._init_workspace_with_layout_editor(
             None,
             demo.MODE_PVS,
-            {"session_id": "contract-session"},
-            demo._new_layout_state("contract-session"),
+            {"session_id": "c" * 32},
+            demo._new_layout_state("c" * 32),
         )[0]
         self.assertEqual(
             set(image_state),

@@ -16,6 +16,45 @@ import layout_transform_utils as _layout_tx
 import template_match_workflow as _template_matching
 
 
+def _template_state_session_id(state, label):
+    """Return a required session id from one template callback state."""
+    if not isinstance(state, dict):
+        raise ValueError(f"{label} is missing")
+    session_id = str(state.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError(f"{label} session_id is missing")
+    if len(session_id) != 32 or any(char not in "0123456789abcdef" for char in session_id):
+        raise ValueError(f"{label} has invalid session_id")
+    return session_id
+
+
+def _validated_template_session_id(source_state, image_state, pvs_state):
+    """Require all template inputs to belong to one non-empty session."""
+    session_ids = (
+        _template_state_session_id(source_state, "source_state"),
+        _template_state_session_id(image_state, "image_state"),
+        _template_state_session_id(pvs_state, "pvs_state"),
+    )
+    if len(set(session_ids)) != 1:
+        raise ValueError("source_state, image_state and pvs_state session_id must match")
+    return session_ids[0]
+
+
+def _template_failure_session_id(*states):
+    """Keep a usable owner id when an internal template operation fails."""
+    for state in states:
+        try:
+            return _template_state_session_id(state, "template state")
+        except ValueError:
+            continue
+    return None
+
+
+def _safe_template_session_component(session_id):
+    """Validate the server-issued session id before using it in a path."""
+    return _template_state_session_id({"session_id": session_id}, "template export")
+
+
 def _init_workspace_impl(_deps, input_image, mode, session_state):
     _WORKSPACE_CACHE = _deps['_WORKSPACE_CACHE']
     _WORKSPACE_CACHE_LOCK = _deps['_WORKSPACE_CACHE_LOCK']
@@ -31,9 +70,9 @@ def _init_workspace_impl(_deps, input_image, mode, session_state):
     _release_workspace_memory = _deps['_release_workspace_memory']
     _session_id_from_state = _deps['_session_id_from_state']
     _view = _deps['_view']
-    pcs_state, pvs_state = _new_pcs_state(), _new_pvs_state()
-    prompt_state = _new_prompt_state()
     session_id = _session_id_from_state(session_state)
+    pcs_state, pvs_state = _new_pcs_state(session_id), _new_pvs_state(session_id)
+    prompt_state = _new_prompt_state(session_id)
     image_state = {"image_id": None, "width": 0, "height": 0, "session_id": session_id, "target_image_sha256": None, "interaction_revision": 0}
     if input_image is None:
         _clear_workspace_cache(session_id)
@@ -236,16 +275,21 @@ def _use_full_source_image_impl(_deps, source_state, mode, session_state, layout
         return _crop_failure_outputs(state, f"恢复整图失败: {exc}")
 
 
-def _clear_template_match_outputs_impl(_deps, status):
+def _clear_template_match_outputs_impl(_deps, status, session_id=None):
     _new_template_match_state = _deps['_new_template_match_state']
-    return _new_template_match_state(), None, None, str(status)
+    return _new_template_match_state(session_id), None, None, str(status)
 
 
 def _publish_template_match_export_impl(_deps, source_image, workflow, source_state, image_state):
     _publish_segmentation_zip = _deps['_publish_segmentation_zip']
     runtime_export_dir = _deps['runtime_export_dir']
+    source_session_id = _template_state_session_id(source_state, "source_state")
+    image_session_id = _template_state_session_id(image_state, "image_state")
+    if source_session_id != image_session_id:
+        raise ValueError("source_state and image_state session_id must match")
+    session_id = _safe_template_session_component(source_session_id)
     export_id = uuid.uuid4().hex
-    export_dir = runtime_export_dir / f"template_match_{export_id}"
+    export_dir = runtime_export_dir / session_id / f"template_match_{export_id}"
     masks_dir = export_dir / "masks"
     masks_dir.mkdir(parents=True, exist_ok=True)
     source_image.convert("RGB").save(export_dir / "original_image.png")
@@ -259,6 +303,7 @@ def _publish_template_match_export_impl(_deps, source_image, workflow, source_st
             masks_dir / f"match_{index:04d}.png"
         )
     manifest = copy.deepcopy(workflow["result"])
+    manifest["session_id"] = session_id
     manifest["source_image"] = {
         "image_id": str(source_state.get("source_image_id") or ""),
         "pixel_sha256": str(source_state.get("source_image_sha256") or ""),
@@ -274,7 +319,14 @@ def _publish_template_match_export_impl(_deps, source_image, workflow, source_st
         match["mask_file"] = f"masks/match_{int(match['match_id']):04d}.png"
     with (export_dir / "matches.json").open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
-    return _publish_segmentation_zip(export_dir, f"template_match_{export_id}.zip"), manifest
+    return (
+        _publish_segmentation_zip(
+            export_dir,
+            f"template_match_{export_id}.zip",
+            session_id,
+        ),
+        manifest,
+    )
 
 
 def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mode, match_threshold, expand_threshold, nms_threshold):
@@ -284,6 +336,7 @@ def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mod
     _source_image_cache_get = _deps['_source_image_cache_get']
     _workspace = _deps['_workspace']
     try:
+        session_id = _validated_template_session_id(source_state, image_state, pvs_state)
         if not _is_pvs_pool_mode(mode):
             raise ValueError("模板匹配需要先在 PVS Manual 或 Layout Mask 模式获得 active PVS 实例")
         _workspace(image_state)
@@ -322,6 +375,7 @@ def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mod
         )
         count = int(manifest.get("match_count") or 0)
         state = {
+            "session_id": session_id,
             "schema_version": 1,
             "source_image_id": source_id,
             "workspace_image_id": str(image_state.get("image_id") or ""),
@@ -336,4 +390,8 @@ def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mod
             status,
         )
     except Exception as exc:
-        return _clear_template_match_outputs(f"模板匹配失败: {exc}")
+        failure_session_id = _template_failure_session_id(source_state, image_state, pvs_state)
+        return _clear_template_match_outputs(
+            {"session_id": failure_session_id} if failure_session_id else None,
+            f"模板匹配失败: {exc}",
+        )

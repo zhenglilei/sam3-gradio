@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sam3_demo.session_cleanup import validate_server_session_id
+
 
 def _layout_point_refine_impl(_deps, image_state, pcs_state, pvs_state, mode, point_payload, point_kind, prompt_state, progress):
     _is_layout_mask_mode = _deps['_is_layout_mask_mode']
@@ -12,7 +14,7 @@ def _layout_point_refine_impl(_deps, image_state, pcs_state, pvs_state, mode, po
     _view = _deps['_view']
     gr = _deps['gr']
     np = _deps['np']
-    prompt_state = prompt_state or _new_prompt_state()
+    prompt_state = prompt_state or _new_prompt_state(image_state.get("session_id"))
     try:
         if not _is_layout_mask_mode(mode):
             raise ValueError("点提示修缮只能在 Layout Mask 模式使用")
@@ -92,7 +94,7 @@ def _switch_mode_impl(_deps, mode, image_state, pcs_state, pvs_state):
     _pvs_pending_bbox_choices = _deps['_pvs_pending_bbox_choices']
     _view = _deps['_view']
     gr = _deps['gr']
-    prompt_state = _new_prompt_state()
+    prompt_state = _new_prompt_state(image_state.get("session_id"))
     is_pcs = _is_pcs_mode(mode)
     is_pvs = _is_pvs_manual_mode(mode)
     is_layout = _is_layout_mask_mode(mode)
@@ -148,10 +150,16 @@ def _switch_mode_with_layout_editor_impl(_deps, mode, image_state, pcs_state, pv
 
 
 def _layout_prompt_epoch_key_impl(_deps, image_state, layout_state, session_state):
-    for state in (layout_state, image_state, session_state):
-        if isinstance(state, dict) and state.get("session_id"):
-            return str(state["session_id"])
-    return "default"
+    session_ids = [
+        validate_server_session_id(state.get("session_id"))
+        for state in (layout_state, image_state, session_state)
+        if isinstance(state, dict) and state.get("session_id")
+    ]
+    if not session_ids:
+        raise ValueError("server session is not initialized")
+    if any(session_id != session_ids[0] for session_id in session_ids[1:]):
+        raise ValueError("layout prompt states belong to different server sessions")
+    return session_ids[0]
 
 
 def _layout_prompt_epoch_snapshot_impl(_deps, image_state, layout_state, session_state):
@@ -882,7 +890,7 @@ def _use_current_layout_mask_impl(_deps, image_state, layout_state):
         info = "Using current saved layout mask.\n" + _layout_state_summary(layout_state)
         return layout_state, _layout_editor_payload(image_state, layout_state, "当前已保存版图 mask 已载入 Canvas。"), info
     except Exception as exc:
-        return layout_state or _new_layout_state(), _layout_editor_empty(image_state, f"当前版图 mask 不可用：{exc}"), f"当前版图 mask 不可用：{exc}"
+        return layout_state or _new_layout_state(image_state.get("session_id") if isinstance(image_state, dict) else None), _layout_editor_empty(image_state, f"当前版图 mask 不可用：{exc}"), f"当前版图 mask 不可用：{exc}"
 
 
 def _pvs_creation_commit_token_impl(_deps, pvs_state):
@@ -1252,7 +1260,7 @@ def _create_pvs_from_layout_selection_impl(_deps, image_state, pcs_state, pvs_st
     copy = _deps['copy']
     gr = _deps['gr']
     np = _deps['np']
-    state = dict(layout_state or _new_layout_state())
+    state = dict(layout_state or _new_layout_state(image_state.get("session_id") if isinstance(image_state, dict) else None))
     try:
         scope, selected_region_ids = _parse_layout_prompt_selection(prompt_selection)
         state_scope = str(

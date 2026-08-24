@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from pathlib import Path
+
+from sam3_demo.session_runtime import validate_trusted_proxy_cidrs
 
 
 current_dir = Path(__file__).resolve().parents[1]
@@ -61,10 +64,38 @@ _LAYOUT_MASK_VLM_API_KEY = os.environ.get("LAYOUT_MASK_VLM_API_KEY", "").strip()
 layout_mask_agent_skill_dir = current_dir / "sam3_demo" / "layout" / "skills" / "layout-mask-preprocess"
 _PUBLIC_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60
 _MAX_PROMPT_HISTORY_ENTRIES = 64
-_WORKSPACE_CACHE_MAX_ENTRIES = 4
+_SESSION_IDLE_SECONDS = float(os.environ.get("SAM3_SESSION_IDLE_SECONDS", "3600"))
+_SESSION_SWEEP_INTERVAL_SECONDS = float(
+    os.environ.get("SAM3_SESSION_SWEEP_INTERVAL_SECONDS", "5")
+)
+_SESSION_MAX_ENTRIES = int(os.environ.get("SAM3_SESSION_MAX_ENTRIES", "128"))
+_SESSION_TRUSTED_PROXY_CIDRS = os.environ.get(
+    "SAM3_TRUSTED_PROXY_CIDRS", ""
+).strip()
+validate_trusted_proxy_cidrs(_SESSION_TRUSTED_PROXY_CIDRS)
+_WORKSPACE_CACHE_MAX_ENTRIES = int(
+    os.environ.get("SAM3_WORKSPACE_CACHE_MAX_ENTRIES", str(_SESSION_MAX_ENTRIES))
+)
 _WORKSPACE_CACHE_TTL_SECONDS = 3600.0
-_SOURCE_IMAGE_CACHE_MAX_ENTRIES = 4
+_SOURCE_IMAGE_CACHE_MAX_ENTRIES = int(
+    os.environ.get("SAM3_SOURCE_IMAGE_CACHE_MAX_ENTRIES", str(_SESSION_MAX_ENTRIES))
+)
 _SOURCE_IMAGE_CACHE_TTL_SECONDS = 3600.0
+for _name, _value in (
+    ("SAM3_SESSION_IDLE_SECONDS", _SESSION_IDLE_SECONDS),
+    ("SAM3_SESSION_SWEEP_INTERVAL_SECONDS", _SESSION_SWEEP_INTERVAL_SECONDS),
+):
+    if not math.isfinite(_value) or _value <= 0:
+        raise ValueError(f"{_name} must be a positive finite number")
+for _name, _value in (
+    ("SAM3_SESSION_MAX_ENTRIES", _SESSION_MAX_ENTRIES),
+    ("SAM3_WORKSPACE_CACHE_MAX_ENTRIES", _WORKSPACE_CACHE_MAX_ENTRIES),
+    ("SAM3_SOURCE_IMAGE_CACHE_MAX_ENTRIES", _SOURCE_IMAGE_CACHE_MAX_ENTRIES),
+):
+    if isinstance(_value, bool) or _value <= 0:
+        raise ValueError(f"{_name} must be a positive integer")
+del _name
+del _value
 
 
 for path in (

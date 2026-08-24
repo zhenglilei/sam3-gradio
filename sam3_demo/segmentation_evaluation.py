@@ -15,6 +15,7 @@ import numpy as np
 import public_download_utils as _public_downloads
 
 
+from sam3_demo.session_cleanup import validate_server_session_id
 from sam3_demo.config import (
     _PUBLIC_DOWNLOAD_TTL_SECONDS,
     coco_dataset_configs,
@@ -25,7 +26,8 @@ from sam3_demo.config import (
 )
 
 
-def _publish_segmentation_zip(export_dir, zip_name):
+def _publish_segmentation_zip(export_dir, zip_name, session_id):
+    session_id = validate_server_session_id(session_id)
     _public_downloads.prune_public_downloads(
         public_download_dir,
         max_age_seconds=_PUBLIC_DOWNLOAD_TTL_SECONDS,
@@ -35,6 +37,7 @@ def _publish_segmentation_zip(export_dir, zip_name):
         "pcs_pvs_exports",
         export_dir,
         zip_name,
+        session_id=session_id,
     )
 
 
@@ -1136,6 +1139,7 @@ def _create_segmentation_export_impl(
     )
     payload = {
         "export_id": export_id,
+        "session_id": state.get("session_id") if isinstance(state, dict) else None,
         "image": {
             "width": width,
             "height": height,
@@ -1182,6 +1186,9 @@ def create_segmentation_export(
     coco_eval_scope,
     annotation_json_file=None,
 ):
+    session_id = validate_server_session_id(
+        state.get("session_id") if isinstance(state, dict) else None
+    )
     return _create_segmentation_export_impl(
         result_image,
         source_image,
@@ -1192,7 +1199,11 @@ def create_segmentation_export(
         coco_split,
         coco_eval_scope,
         annotation_json_file,
-        export_root=runtime_export_dir,
+        export_root=runtime_export_dir / session_id,
         compare_fn=compare_with_coco,
-        publish_zip_fn=_publish_segmentation_zip,
+        publish_zip_fn=lambda export_dir, zip_name: _publish_segmentation_zip(
+            export_dir,
+            zip_name,
+            session_id,
+        ),
     )

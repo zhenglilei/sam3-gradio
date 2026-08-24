@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import time
@@ -26,6 +27,7 @@ _ZIP_MAX_DATE_TIME = (2107, 12, 31, 23, 59, 58)
 
 PathLike: TypeAlias = str | os.PathLike[str]
 PublishSources: TypeAlias = Mapping[str, PathLike] | Sequence[PathLike]
+_SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 class PublicDownloadError(ValueError):
@@ -51,22 +53,31 @@ def _public_root(root: PathLike) -> Path:
     return _require_directory(Path(root).expanduser(), "Public download root")
 
 
-def _category_dir(root: PathLike, category: str) -> Path:
+def _require_session_id(session_id: str) -> str:
+    if not isinstance(session_id, str) or _SESSION_ID_RE.fullmatch(session_id) is None:
+        raise PublicDownloadError("Invalid server session id")
+    return session_id
+
+
+def _category_dir(root: PathLike, category: str, session_id: str) -> Path:
     public_root = _public_root(root)
-    return _require_directory(public_root / _require_category(category), "Category directory")
+    session_id = _require_session_id(session_id)
+    parent = _require_directory(public_root / session_id, "Session download directory")
+    return _require_directory(parent / _require_category(category), "Category directory")
 
 
 def ensure_public_download_dirs(root: PathLike) -> Path:
-    """Create the public root and its fixed category directories."""
+    """Create only the public root; exports always live below a session id."""
 
-    public_root = _public_root(root)
-    for category in PUBLIC_DOWNLOAD_CATEGORIES:
-        _require_directory(public_root / category, "Category directory")
-    return public_root
+    return _public_root(root)
 
 
-def _new_export_dir(root: PathLike, category: str) -> Path:
-    category_dir = _category_dir(root, category)
+def _new_export_dir(
+    root: PathLike,
+    category: str,
+    session_id: str,
+) -> Path:
+    category_dir = _category_dir(root, category, session_id)
     while True:
         export_dir = category_dir / uuid.uuid4().hex
         try:
@@ -140,7 +151,13 @@ def _copy_regular_file(source: Path, destination: Path) -> None:
         raise
 
 
-def publish_files(root: PathLike, category: str, sources: PublishSources) -> Path:
+def publish_files(
+    root: PathLike,
+    category: str,
+    sources: PublishSources,
+    *,
+    session_id: str,
+) -> Path:
     """Copy approved source files into a new unguessable public export directory.
 
     A mapping maps public basenames to source paths. A sequence retains each
@@ -148,7 +165,7 @@ def publish_files(root: PathLike, category: str, sources: PublishSources) -> Pat
     """
 
     entries = _normalized_sources(sources)
-    export_dir = _new_export_dir(root, category)
+    export_dir = _new_export_dir(root, category, session_id)
     try:
         for output_name, source in entries:
             _copy_regular_file(source, export_dir / output_name)
@@ -233,6 +250,8 @@ def publish_zip(
     category: str,
     source_dir: PathLike,
     zip_name: str = "result.zip",
+    *,
+    session_id: str,
 ) -> Path:
     """Create a ZIP from safe regular files in a new public export directory."""
 
@@ -240,7 +259,7 @@ def publish_zip(
     if not output_name.lower().endswith(".zip"):
         raise PublicDownloadError("Public archive name must end with .zip")
     files = _zip_sources(source_dir)
-    export_dir = _new_export_dir(root, category)
+    export_dir = _new_export_dir(root, category, session_id)
     archive_path = export_dir / output_name
     try:
         with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -268,7 +287,7 @@ def prune_public_downloads(
     *,
     now: float | None = None,
 ) -> list[Path]:
-    """Remove expired export entries from the fixed public categories only."""
+    """Remove expired legacy and session-scoped public export entries."""
 
     if isinstance(max_age_seconds, bool) or max_age_seconds <= 0:
         raise PublicDownloadError("max_age_seconds must be positive")
@@ -276,8 +295,9 @@ def prune_public_downloads(
     public_root = ensure_public_download_dirs(root)
     removed: list[Path] = []
 
-    for category in PUBLIC_DOWNLOAD_CATEGORIES:
-        category_dir = public_root / category
+    def prune_category(category_dir: Path) -> None:
+        if not category_dir.exists() or category_dir.is_symlink() or not category_dir.is_dir():
+            return
         for entry in category_dir.iterdir():
             try:
                 modified_at = entry.stat(follow_symlinks=False).st_mtime
@@ -290,4 +310,26 @@ def prune_public_downloads(
             else:
                 shutil.rmtree(entry)
             removed.append(entry)
+
+    for category in PUBLIC_DOWNLOAD_CATEGORIES:
+        prune_category(public_root / category)
+
+    for session_dir in public_root.iterdir():
+        if session_dir.name in PUBLIC_DOWNLOAD_CATEGORIES:
+            continue
+        if _SESSION_ID_RE.fullmatch(session_dir.name) is None:
+            continue
+        if session_dir.is_symlink() or not session_dir.is_dir():
+            continue
+        for category in PUBLIC_DOWNLOAD_CATEGORIES:
+            category_dir = session_dir / category
+            prune_category(category_dir)
+            try:
+                category_dir.rmdir()
+            except (FileNotFoundError, OSError):
+                pass
+        try:
+            session_dir.rmdir()
+        except OSError:
+            pass
     return removed

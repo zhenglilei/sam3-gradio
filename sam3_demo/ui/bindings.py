@@ -480,7 +480,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     )
     create_from_layout_event.then(
         fn=_clear_template_match_outputs,
-        inputs=None,
+        inputs=[template_match_state],
         outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
         concurrency_limit=1,
         concurrency_id="image-prepost-state",
@@ -551,7 +551,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         )
         workspace_event.then(
             fn=_clear_template_match_outputs,
-            inputs=None,
+            inputs=[template_match_state],
             outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
             concurrency_limit=1,
             concurrency_id="image-prepost-state",
@@ -573,7 +573,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     for template_parameter in (match_threshold, expand_threshold, nms_threshold):
         template_parameter.change(
             fn=_clear_template_match_outputs,
-            inputs=None,
+            inputs=[template_match_state],
             outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
             concurrency_limit=1,
             concurrency_id="image-prepost-state",
@@ -609,7 +609,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     ):
         invalidating_event.then(
             fn=_clear_template_match_outputs,
-            inputs=None,
+            inputs=[template_match_state],
             outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
             concurrency_limit=1,
             concurrency_id="image-prepost-state",

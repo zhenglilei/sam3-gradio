@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
 
 import numpy as np
 
@@ -31,17 +30,19 @@ def _new_source_image_state(session_id=None):
         "workspace_hash": None,
     }
 
-def _new_template_match_state():
+def _new_template_match_state(session_id=None):
     return {
         "schema_version": 1,
+        "session_id": str(session_id or ""),
         "source_image_id": None,
         "workspace_image_id": None,
         "active_instance_id": None,
         "result": None,
     }
 
-def _new_pcs_state():
+def _new_pcs_state(session_id=None):
     return {
+        "session_id": str(session_id or ""),
         "text_prompt": "",
         "positive_boxes": [],
         "negative_boxes": [],
@@ -52,8 +53,9 @@ def _new_pcs_state():
         "next_instance_id": 1,
     }
 
-def _new_pvs_state():
+def _new_pvs_state(session_id=None):
     return {
+        "session_id": str(session_id or ""),
         "instances": {},
         "active_instance_id": None,
         "next_instance_id": 1,
@@ -63,17 +65,17 @@ def _new_pvs_state():
     }
 
 def _new_session_state():
-    return {"session_id": uuid.uuid4().hex}
+    return {"session_id": ""}
 
 def _session_id_from_state(session_state=None):
     if isinstance(session_state, dict) and session_state.get("session_id"):
         return str(session_state["session_id"])
-    return uuid.uuid4().hex
+    raise ValueError("Session is not initialized")
 
 def _new_layout_state(session_id=None):
     return {
         "transform_version": 2,
-        "session_id": str(session_id or uuid.uuid4().hex),
+        "session_id": str(session_id or ""),
         "layout_id": None,
         "image_id": None,
         "enabled": False,
@@ -302,5 +304,12 @@ def _is_layout_mask_mode(mode):
 def _is_pvs_pool_mode(mode):
     return _is_pvs_manual_mode(mode) or _is_layout_mask_mode(mode)
 
-def _new_prompt_state():
-    return {"bbox_start": None, "last_bbox": None, "last_point": None, "polygon_points": [], "bbox_role": "positive"}
+def _new_prompt_state(session_id=None):
+    return {
+        "session_id": str(session_id or ""),
+        "bbox_start": None,
+        "last_bbox": None,
+        "last_point": None,
+        "polygon_points": [],
+        "bbox_role": "positive",
+    }
