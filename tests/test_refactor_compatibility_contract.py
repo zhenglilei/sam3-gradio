@@ -365,7 +365,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         ]
         self.assertTrue(stateful)
         self.assertTrue(
-            all(block_fn.concurrency_limit in (1, "1") for block_fn in stateful)
+            all(block_fn.concurrency_limit in (8, "8") for block_fn in stateful)
         )
 
 

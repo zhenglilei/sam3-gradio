@@ -1,6 +1,9 @@
 """Gradio event wiring kept separate from component construction."""
 
 
+_MULTI_USER_CONCURRENCY_LIMIT = 8
+
+
 def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     """Bind the existing demo events without changing callback contracts."""
     session_state = state_refs.session_state
@@ -307,7 +310,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         fn=_run_layout_mask_page_with_downloads,
         inputs=[session_state, image_state, layout_input, layout_threshold, layout_invert, layout_open_kernel, layout_close_kernel, layout_min_area, layout_region_mode, layout_morph_pixels],
         outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
         api_name="_run_layout_mask_page",
     )
@@ -337,7 +340,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         fn=_reset_layout_prompt_selection,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     save_layout_mask_btn.click(
@@ -350,7 +353,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         fn=_clear_current_layout_mask_with_prompt_epoch,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_editor, layout_source_preview, layout_mask_preview, layout_overlay_preview, layout_mask_file, layout_contour_file, layout_info],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
         api_name="_clear_current_layout_mask",
     )
@@ -364,7 +367,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         fn=_reset_layout_prompt_selection,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     layout_region_annotator.input(
@@ -383,7 +386,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         fn=_reset_layout_prompt_selection,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     layout_region_selector.input(
@@ -402,7 +405,7 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         fn=_reset_layout_prompt_selection,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
 
@@ -418,56 +421,56 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         fn=_use_current_layout_mask,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_editor, layout_pvs_info],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     use_current_layout_event.then(
         fn=_load_layout_prompt_choices,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     load_layout_binary_event = load_layout_binary_btn.click(
         fn=_load_layout_binary_mask_png,
         inputs=[session_state, image_state, layout_binary_upload, layout_region_mode],
         outputs=[layout_state, layout_editor, layout_pvs_info],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     load_layout_binary_event.then(
         fn=_reset_layout_prompt_selection,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     layout_prompt_mask_selector.input(
         fn=_select_layout_prompt_mask,
         inputs=[image_state, layout_state, layout_prompt_mask_selector],
         outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     update_layout_preview_btn.click(
         fn=_update_layout_preview_with_groups,
         inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor],
         outputs=[layout_state, image_upload, layout_editor, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     layout_editor.change(
         fn=_sync_layout_controls_from_editor_with_prompt_epoch,
         inputs=[layout_state, layout_editor],
         outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     reset_layout_btn.click(
         fn=_reset_layout_controls_with_prompt_epoch,
         inputs=[image_state, layout_state],
         outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_pvs_info],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     create_from_layout_event = create_from_layout_btn.click(
@@ -475,14 +478,14 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_prompt_mask_selector],
         outputs=[pvs_state, layout_state, layout_editor, layout_pvs_info, *common],
         show_progress_on=[result_image],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     create_from_layout_event.then(
         fn=_clear_template_match_outputs,
         inputs=[template_match_state],
         outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
 
@@ -501,73 +504,73 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
         fn=_source_upload_workspace,
         inputs=[source_image_upload, mode, session_state, layout_state],
         outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     source_clear_event = source_image_upload.clear(
         fn=_source_upload_workspace,
         inputs=[source_image_upload, mode, session_state, layout_state],
         outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     source_crop_overlay.input(
         fn=_record_source_crop_gesture,
         inputs=[source_image_state, source_crop_overlay],
         outputs=[source_image_state, source_crop_overlay, source_crop_status],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     apply_crop_event = apply_crop_btn.click(
         fn=_apply_source_crop,
         inputs=[source_image_state, mode, session_state, layout_state],
         outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     use_full_image_event = use_full_image_btn.click(
         fn=_use_full_source_image,
         inputs=[source_image_state, mode, session_state, layout_state],
         outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     for workspace_event in (source_image_event, source_clear_event, apply_crop_event, use_full_image_event):
-        workspace_event.then(fn=_clear_pending_point_payload, inputs=None, outputs=[point_payload], concurrency_limit=1, concurrency_id="image-prepost-state")
-        workspace_event.then(fn=_clear_bbox_polygon_payloads, inputs=None, outputs=[bbox_payload, polygon_payload], concurrency_limit=1, concurrency_id="image-prepost-state")
+        workspace_event.then(fn=_clear_pending_point_payload, inputs=None, outputs=[point_payload], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+        workspace_event.then(fn=_clear_bbox_polygon_payloads, inputs=None, outputs=[bbox_payload, polygon_payload], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
         workspace_event.then(
             fn=_reset_layout_prompt_selection,
             inputs=[image_state, layout_state],
             outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
-            concurrency_limit=1,
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
         workspace_event.then(
             fn=_workspace_gesture_payload,
             inputs=[image_state, mode, click_tool],
             outputs=[workspace_gesture_overlay],
-            concurrency_limit=1,
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
         workspace_event.then(
             fn=_clear_template_match_outputs,
             inputs=[template_match_state],
             outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
-            concurrency_limit=1,
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
     workspace_gesture_overlay.input(
         fn=_workspace_gesture_input,
         inputs=[image_state, pcs_state, pvs_state, mode, click_tool, pcs_bbox_kind, prompt_state, workspace_gesture_overlay],
         outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, *common, workspace_gesture_overlay],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     run_template_match_btn.click(
         fn=_run_template_matching,
         inputs=[source_image_state, image_state, pvs_state, mode, match_threshold, expand_threshold, nms_threshold],
         outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
-        concurrency_limit=1,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     for template_parameter in (match_threshold, expand_threshold, nms_threshold):
@@ -575,27 +578,27 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
             fn=_clear_template_match_outputs,
             inputs=[template_match_state],
             outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
-            concurrency_limit=1,
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
-    finish_polygon_event = finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
-    clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    mode_event = mode.change(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, layout_point_refine_panel, *common, layout_editor], concurrency_limit=1, concurrency_id="image-prepost-state")
-    mode_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=1, concurrency_id="image-prepost-state")
+    finish_polygon_event = finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    mode_event = mode.change(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, layout_point_refine_panel, *common, layout_editor], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    mode_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     click_tool_event = click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
-    click_tool_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=1, concurrency_id="image-prepost-state")
-    delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    clear_pcs_instances_btn.click(fn=_clear_pcs_instances, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    create_pvs_batch_event = create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
-    delete_selected_pending_bbox_btn.click(fn=_delete_selected_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pvs_pending_bbox_selector], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    pvs_point_event = pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
-    layout_point_event = layout_point_btn.click(fn=_layout_point_refine, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, layout_point_kind, prompt_state], outputs=[prompt_state, point_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="image-prepost-state")
-    active_pvs_event = active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    undo_pvs_event = undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    delete_pvs_event = delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    accept_pvs_event = accept_pvs_btn.click(fn=_accept_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
+    click_tool_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    clear_pcs_instances_btn.click(fn=_clear_pcs_instances, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    create_pvs_batch_event = create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    delete_selected_pending_bbox_btn.click(fn=_delete_selected_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pvs_pending_bbox_selector], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    pvs_point_event = pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    layout_point_event = layout_point_btn.click(fn=_layout_point_refine, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, layout_point_kind, prompt_state], outputs=[prompt_state, point_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    active_pvs_event = active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    undo_pvs_event = undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    delete_pvs_event = delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    accept_pvs_event = accept_pvs_btn.click(fn=_accept_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     for invalidating_event in (
         mode_event,
         finish_polygon_event,
@@ -611,9 +614,9 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
             fn=_clear_template_match_outputs,
             inputs=[template_match_state],
             outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
-            concurrency_limit=1,
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
-    export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=1, concurrency_id="image-prepost-state")
-    submit_feedback_btn.click(fn=_submit_feedback, inputs=[image_state, pcs_state, pvs_state, mode, feedback_rating, feedback_tags, feedback_comment], outputs=common, concurrency_limit=1, concurrency_id="image-prepost-state")
+    export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    submit_feedback_btn.click(fn=_submit_feedback, inputs=[image_state, pcs_state, pvs_state, mode, feedback_rating, feedback_tags, feedback_comment], outputs=common, concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")

@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 SCHEMA_VERSION = 1
 _MAX_HASH = 512
@@ -36,6 +36,11 @@ class SessionRecord:
     in_flight: int = 0
     close_requested: bool = False
     closed: bool = False
+    operation_lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        repr=False,
+        compare=False,
+    )
 def _ip(value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("client IP must be a non-empty string")
@@ -352,30 +357,34 @@ class SessionRegistry:
     def _lease_record(self, record: SessionRecord) -> Iterator[SessionRecord]:
         depths = self._depths()
         cleanups: list[SessionRecord] = []
-        with self._lock:
-            if self._records.get(record.session_id) is not record or record.closed or record.close_requested:
-                raise SessionExpired("session is closed")
-            depth = depths.get(record.session_id, 0)
-            if depth == 0:
-                record.in_flight += 1
-            depths[record.session_id] = depth + 1
-            record.last_seen = self._clock()
+        record.operation_lock.acquire()
         try:
-            yield record
-        finally:
             with self._lock:
+                if self._records.get(record.session_id) is not record or record.closed or record.close_requested:
+                    raise SessionExpired("session is closed")
                 depth = depths.get(record.session_id, 0)
-                if depth <= 1:
-                    depths.pop(record.session_id, None)
-                    record.in_flight = max(0, record.in_flight - 1)
-                    record.last_seen = self._clock()
-                    if record.close_requested and record.in_flight == 0:
-                        removed = self._remove(record)
-                        if removed is not None:
-                            cleanups.append(removed)
-                else:
-                    depths[record.session_id] = depth - 1
-            self._callbacks(cleanups)
+                if depth == 0:
+                    record.in_flight += 1
+                depths[record.session_id] = depth + 1
+                record.last_seen = self._clock()
+            try:
+                yield record
+            finally:
+                with self._lock:
+                    depth = depths.get(record.session_id, 0)
+                    if depth <= 1:
+                        depths.pop(record.session_id, None)
+                        record.in_flight = max(0, record.in_flight - 1)
+                        record.last_seen = self._clock()
+                        if record.close_requested and record.in_flight == 0:
+                            removed = self._remove(record)
+                            if removed is not None:
+                                cleanups.append(removed)
+                    else:
+                        depths[record.session_id] = depth - 1
+                self._callbacks(cleanups)
+        finally:
+            record.operation_lock.release()
     @contextmanager
     def lease(self, state: Mapping[str, Any], session_hash: str, client_ip: str) -> Iterator[SessionRecord]:
         with self._lease_record(self.validate(state, session_hash, client_ip)) as record:

@@ -165,6 +165,63 @@ class SessionRegistryTests(unittest.TestCase):
         with self.assertRaises(SessionExpired):
             self.registry.validate(state, "browser-a", "203.0.113.1")
 
+    def test_same_session_leases_serialize_across_threads(self):
+        state = self.registry.bind("browser-a", "203.0.113.1")
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_attempting = threading.Event()
+        second_entered = threading.Event()
+
+        def first():
+            with self.registry.lease(state, "browser-a", "203.0.113.1"):
+                first_entered.set()
+                release_first.wait(2)
+
+        def second():
+            first_entered.wait(2)
+            second_attempting.set()
+            with self.registry.lease(state, "browser-a", "203.0.113.1"):
+                second_entered.set()
+
+        first_thread = threading.Thread(target=first)
+        second_thread = threading.Thread(target=second)
+        first_thread.start()
+        second_thread.start()
+        self.assertTrue(first_entered.wait(1))
+        self.assertTrue(second_attempting.wait(1))
+        self.assertFalse(second_entered.wait(0.1))
+        release_first.set()
+        first_thread.join(2)
+        second_thread.join(2)
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertTrue(second_entered.is_set())
+
+    def test_different_session_leases_run_in_parallel(self):
+        first = self.registry.bind("browser-a", "203.0.113.1")
+        second = self.registry.bind("browser-b", "203.0.113.1")
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+        release = threading.Event()
+
+        def worker(state, browser_hash, entered):
+            with self.registry.lease(state, browser_hash, "203.0.113.1"):
+                entered.set()
+                release.wait(2)
+
+        threads = [
+            threading.Thread(target=worker, args=(first, "browser-a", first_entered)),
+            threading.Thread(target=worker, args=(second, "browser-b", second_entered)),
+        ]
+        for thread in threads:
+            thread.start()
+        self.assertTrue(first_entered.wait(1))
+        self.assertTrue(second_entered.wait(1))
+        release.set()
+        for thread in threads:
+            thread.join(2)
+            self.assertFalse(thread.is_alive())
+
     def test_ttl_boundary_and_validation_touch(self):
         state = self.registry.bind("browser-a", "203.0.113.1")
         self.clock.advance(9.9)
