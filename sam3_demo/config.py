@@ -131,6 +131,7 @@ for component_backend_dir in (
     current_dir / "layout_transform_editor" / "backend",
     current_dir / "layout_region_annotator" / "backend",
     current_dir / "image_gesture_overlay" / "backend",
+    current_dir / "stitch_preview_canvas" / "backend",
 ):
     if component_backend_dir.exists():
         sys.path.insert(0, str(component_backend_dir))

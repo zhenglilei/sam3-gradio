@@ -26,6 +26,16 @@
 	const props = $props();
 	const MAX_CANVAS_SIDE = 2048;
 	const WHEEL_ZOOM_SPEED = 0.00035;
+	const DRAG_DEADZONE_PX = 4;
+	const DRAG_GAIN_DEFAULT = 0.25;
+	const DRAG_GAIN_SHIFT = 1.0;
+	const DRAG_ALPHA_CAP = 0.18;
+	const UNDO_RING_SIZE = 30;
+	const LOUPE_SIZE_PX = 140;
+	const LOUPE_ZOOM = 3;
+	const NUDGE_PX = 1;
+	const NUDGE_SHIFT_PX = 10;
+	const KEY_ROTATE_STEP_DEG = 0.5;
 	const GROUP_COLORS: [number, number, number][] = [
 		[0, 255, 120],
 		[0, 188, 255],
@@ -37,6 +47,8 @@
 	const gradio = new Gradio<LayoutTransformEditorEvents, LayoutTransformEditorProps>(props);
 
 	let canvasEl: HTMLCanvasElement;
+	let canvasWrapEl: HTMLDivElement;
+	let loupeCanvasEl: HTMLCanvasElement;
 	let baseImg: HTMLImageElement | null = null;
 	let maskImg: HTMLImageElement | null = null;
 	let maskCanvas: HTMLCanvasElement | null = null;
@@ -50,12 +62,25 @@
 	let transform = $state<LayoutTransform>(defaultTransform());
 	let activeGroupKey = $state("");
 	let dragging = $state(false);
+	let dragPending = $state(false);
 	let rotating = $state(false);
+	let panning = $state(false);
+	let canvasFocused = $state(false);
+	let differenceBlend = $state(false);
+	let loupeActive = $state(false);
+	let currentDragGain = $state(DRAG_GAIN_DEFAULT);
 	let cursorStyle = $state("crosshair");
 	let lastSignature = "";
 	let imageLoadGeneration = 0;
-	let dragStart = { x: 0, y: 0, center_x: 0, center_y: 0 };
+	let dragStart = { x: 0, y: 0, clientX: 0, clientY: 0, center_x: 0, center_y: 0 };
 	let rotateStart = { angle: 0, rotation: 0 };
+	let panStart = { x: 0, y: 0, scrollLeft: 0, scrollTop: 0 };
+	let loupePointer = { x: 0, y: 0 };
+	let loupeScreen = { x: 0, y: 0 };
+	let ghostTransform: LayoutTransform | null = null;
+	let interactionStartTransform: LayoutTransform | null = null;
+	let undoRing: LayoutTransform[] = [];
+	let spacePressed = false;
 	let changeSyncTimer: ReturnType<typeof setTimeout> | null = null;
 	let dirtyGroupKeys = new Set<string>();
 
@@ -324,7 +349,11 @@
 		groupTransformByKey = new Map();
 		activeGroupKey = "";
 		dragging = false;
+		dragPending = false;
 		rotating = false;
+		panning = false;
+		ghostTransform = null;
+		interactionStartTransform = null;
 		loadImage(localValue.base_image, generation, (img) => {
 			baseImg = img;
 			baseReady = !!img;
@@ -356,7 +385,161 @@
 	onDestroy(() => {
 		imageLoadGeneration += 1;
 		clearQueuedSync();
+		window.removeEventListener("keydown", onWindowKeyDown);
+		window.removeEventListener("keyup", onWindowKeyUp);
 	});
+
+	function isCanvasKeyboardActive(): boolean {
+		if (!canvasEl) return false;
+		const active = document.activeElement;
+		return active === canvasEl || canvasEl.contains(active);
+	}
+
+	function displayStatus(): string {
+		if (canvasFocused) return "键盘已接管";
+		return statusText;
+	}
+
+	function dragGainForEvent(evt: PointerEvent | KeyboardEvent): number {
+		return evt.shiftKey ? DRAG_GAIN_SHIFT : DRAG_GAIN_DEFAULT;
+	}
+
+	function pushUndoSnapshot(): void {
+		const snap = { ...normalizeTransform(transform) };
+		undoRing = [...undoRing.slice(-(UNDO_RING_SIZE - 1)), snap];
+	}
+
+	function undoTransform(): void {
+		if (!hasEditableMask() || undoRing.length === 0) return;
+		const prev = undoRing.pop();
+		if (!prev) return;
+		setActiveTransform(prev);
+		queueSyncValue("undo", "已撤销上一步变换");
+	}
+
+	function cancelInteraction(): void {
+		if (!dragging && !rotating && !dragPending) return;
+		if (interactionStartTransform) setActiveTransform(interactionStartTransform);
+		dragging = false;
+		dragPending = false;
+		rotating = false;
+		panning = false;
+		ghostTransform = null;
+		interactionStartTransform = null;
+		cursorStyle = "crosshair";
+		try {
+			if (canvasEl?.hasPointerCapture?.(0)) canvasEl.releasePointerCapture(0);
+		} catch (_) {
+			// Pointer capture may already have been released by the browser.
+		}
+		draw();
+	}
+
+	function beginInteractionSnapshot(): void {
+		pushUndoSnapshot();
+		interactionStartTransform = { ...normalizeTransform(transform) };
+	}
+
+	function effectivePreviewAlpha(t: LayoutTransform): number {
+		const base = clamp(Number(t.preview_alpha ?? 0.35), 0, 1);
+		if (dragging || rotating) return Math.min(base, DRAG_ALPHA_CAP);
+		return base;
+	}
+
+	function nudgeCenter(dx: number, dy: number): void {
+		if (!hasEditableMask() || !isCanvasKeyboardActive()) return;
+		pushUndoSnapshot();
+		setActiveTransform({
+			...transform,
+			center_x: Number(transform.center_x || 0) + dx,
+			center_y: Number(transform.center_y || 0) + dy,
+		});
+		queueSyncValue("keyboard", "键盘微调已同步");
+	}
+
+	function nudgeRotation(deltaDeg: number): void {
+		if (!hasEditableMask() || !isCanvasKeyboardActive()) return;
+		pushUndoSnapshot();
+		setActiveTransform({
+			...transform,
+			rotation_deg: normalizeRotation(Number(transform.rotation_deg || 0) + deltaDeg),
+		});
+		queueSyncValue("keyboard", "键盘旋转已同步");
+	}
+
+	function keyboardZoom(factor: number): void {
+		if (!hasEditableMask() || !isCanvasKeyboardActive()) return;
+		pushUndoSnapshot();
+		const cx = targetWidth() / 2;
+		const cy = targetHeight() / 2;
+		const before = targetToSource(cx, cy, transform);
+		const nextScale = clamp(Number(transform.scale || 1) * factor, 0.01, 20);
+		let next = { ...transform, scale: nextScale };
+		const afterTarget = sourceToTarget(before.x, before.y, next);
+		next = {
+			...next,
+			center_x: Number(next.center_x || 0) + cx - afterTarget.x,
+			center_y: Number(next.center_y || 0) + cy - afterTarget.y,
+		};
+		setActiveTransform(next);
+		queueSyncValue("keyboard", "键盘缩放已同步: scale=" + nextScale.toFixed(3));
+	}
+
+	function onWindowKeyDown(evt: KeyboardEvent): void {
+		if (evt.code === "Space") {
+			spacePressed = true;
+			if (isCanvasKeyboardActive()) evt.preventDefault();
+			return;
+		}
+		if (!isCanvasKeyboardActive()) return;
+		const key = evt.key;
+		if (key === "Escape") {
+			evt.preventDefault();
+			cancelInteraction();
+			return;
+		}
+		if ((evt.ctrlKey || evt.metaKey) && key.toLowerCase() === "z" && !evt.shiftKey) {
+			evt.preventDefault();
+			undoTransform();
+			return;
+		}
+		if (!hasEditableMask()) return;
+		const step = evt.shiftKey ? NUDGE_SHIFT_PX : NUDGE_PX;
+		if (key === "ArrowLeft" || key === "a" || key === "A") {
+			evt.preventDefault();
+			nudgeCenter(-step, 0);
+		} else if (key === "ArrowRight" || key === "d" || key === "D") {
+			evt.preventDefault();
+			nudgeCenter(step, 0);
+		} else if (key === "ArrowUp" || key === "w" || key === "W") {
+			evt.preventDefault();
+			nudgeCenter(0, -step);
+		} else if (key === "ArrowDown" || key === "s" || key === "S") {
+			evt.preventDefault();
+			nudgeCenter(0, step);
+		} else if (key === "[") {
+			evt.preventDefault();
+			nudgeRotation(-KEY_ROTATE_STEP_DEG);
+		} else if (key === "]") {
+			evt.preventDefault();
+			nudgeRotation(KEY_ROTATE_STEP_DEG);
+		} else if (key === "+" || key === "=") {
+			evt.preventDefault();
+			keyboardZoom(1.08);
+		} else if (key === "-" || key === "_") {
+			evt.preventDefault();
+			keyboardZoom(1 / 1.08);
+		}
+	}
+
+	function onWindowKeyUp(evt: KeyboardEvent): void {
+		if (evt.code === "Space") spacePressed = false;
+	}
+
+	if (typeof window !== "undefined") {
+		window.addEventListener("keydown", onWindowKeyDown);
+		window.addEventListener("keyup", onWindowKeyUp);
+	}
 
 	function matrix(t: LayoutTransform): [number, number, number, number, number, number] {
 		const theta = (Number(t.rotation_deg || 0) * Math.PI) / 180;
@@ -588,11 +771,28 @@
 		t: LayoutTransform,
 	): void {
 		ctx.save();
-		ctx.globalAlpha = clamp(Number(t.preview_alpha ?? 0.35), 0, 1);
+		ctx.globalAlpha = effectivePreviewAlpha(t);
+		if (differenceBlend) ctx.globalCompositeOperation = "difference";
 		const [a, b, c, d, e, f] = matrix(t);
 		ctx.setTransform(rs * a, rs * b, rs * c, rs * d, rs * e, rs * f);
 		ctx.imageSmoothingEnabled = false;
 		ctx.drawImage(tinted, 0, 0, tinted.width, tinted.height);
+		ctx.restore();
+	}
+
+	function drawGhostBbox(ctx: CanvasRenderingContext2D, tw: number): void {
+		if (!dragging || !ghostTransform) return;
+		const corners = bboxCorners(activeGroupKey, ghostTransform);
+		ctx.save();
+		ctx.lineJoin = "round";
+		ctx.setLineDash([Math.max(4, tw / 180), Math.max(4, tw / 180)]);
+		ctx.lineWidth = Math.max(1.5, tw / 900);
+		ctx.strokeStyle = "rgba(255,255,255,0.72)";
+		ctx.beginPath();
+		ctx.moveTo(corners[0].x, corners[0].y);
+		for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
+		ctx.closePath();
+		ctx.stroke();
 		ctx.restore();
 	}
 
@@ -677,14 +877,48 @@
 			for (const key of drawOrder) {
 				if (groupRuntimeByKey.get(key)?.ready) drawGroupLabel(ctx, key, key === activeGroupKey);
 			}
-			if (activeGroupKey && groupRuntimeByKey.get(activeGroupKey)?.ready) drawActiveControls(ctx, tw);
+			if (activeGroupKey && groupRuntimeByKey.get(activeGroupKey)?.ready) {
+				drawGhostBbox(ctx, tw);
+				drawActiveControls(ctx, tw);
+			}
+			drawLoupe();
 			return;
 		}
 		if (tintCanvas && maskReady) {
 			drawTint(ctx, rs, tintCanvas, transform);
 			ctx.setTransform(rs, 0, 0, rs, 0, 0);
+			drawGhostBbox(ctx, tw);
 			drawActiveControls(ctx, tw);
 		}
+		drawLoupe();
+	}
+
+	function drawLoupe(): void {
+		if (!loupeActive || !canvasEl || !loupeCanvasEl || !baseReady) return;
+		const rs = canvasRenderScale();
+		const tw = targetWidth();
+		const th = targetHeight();
+		const ctx = loupeCanvasEl.getContext("2d");
+		if (!ctx) return;
+		loupeCanvasEl.width = LOUPE_SIZE_PX;
+		loupeCanvasEl.height = LOUPE_SIZE_PX;
+		ctx.clearRect(0, 0, LOUPE_SIZE_PX, LOUPE_SIZE_PX);
+		const srcSize = LOUPE_SIZE_PX / LOUPE_ZOOM;
+		const sx = clamp(loupePointer.x * rs - srcSize / 2, 0, Math.max(0, tw * rs - srcSize));
+		const sy = clamp(loupePointer.y * rs - srcSize / 2, 0, Math.max(0, th * rs - srcSize));
+		ctx.imageSmoothingEnabled = false;
+		ctx.drawImage(canvasEl, sx, sy, srcSize, srcSize, 0, 0, LOUPE_SIZE_PX, LOUPE_SIZE_PX);
+		ctx.strokeStyle = "#ffffff";
+		ctx.lineWidth = 2;
+		ctx.strokeRect(1, 1, LOUPE_SIZE_PX - 2, LOUPE_SIZE_PX - 2);
+		ctx.strokeStyle = "rgba(15,23,42,0.55)";
+		ctx.lineWidth = 1;
+		ctx.beginPath();
+		ctx.moveTo(LOUPE_SIZE_PX / 2, 0);
+		ctx.lineTo(LOUPE_SIZE_PX / 2, LOUPE_SIZE_PX);
+		ctx.moveTo(0, LOUPE_SIZE_PX / 2);
+		ctx.lineTo(LOUPE_SIZE_PX, LOUPE_SIZE_PX / 2);
+		ctx.stroke();
 	}
 
 	function hasEditableMask(): boolean {
@@ -713,6 +947,7 @@
 
 	function onPointerDown(evt: PointerEvent): void {
 		if (evt.button !== 0) return;
+		canvasEl?.focus();
 		if (!hasEditableMask()) {
 			statusText = "请先启用并加载版图 mask";
 			draw();
@@ -720,7 +955,21 @@
 		}
 		clearQueuedSync();
 		const p = eventToTarget(evt);
+		if (spacePressed && canvasWrapEl) {
+			panning = true;
+			panStart = {
+				x: evt.clientX,
+				y: evt.clientY,
+				scrollLeft: canvasWrapEl.scrollLeft,
+				scrollTop: canvasWrapEl.scrollTop,
+			};
+			cursorStyle = "grab";
+			canvasEl.setPointerCapture(evt.pointerId);
+			return;
+		}
 		if (hitRotateHandle(p.x, p.y)) {
+			beginInteractionSnapshot();
+			ghostTransform = null;
 			cursorStyle = "grabbing";
 			rotating = true;
 			rotateStart = {
@@ -743,23 +992,57 @@
 			draw();
 			return;
 		}
-		cursorStyle = "grabbing";
-		dragging = true;
+		ghostTransform = { ...normalizeTransform(transform) };
+		dragPending = true;
 		dragStart = {
 			x: p.x,
 			y: p.y,
+			clientX: evt.clientX,
+			clientY: evt.clientY,
 			center_x: Number(transform.center_x || 0),
 			center_y: Number(transform.center_y || 0),
 		};
+		cursorStyle = "grab";
 		canvasEl.setPointerCapture(evt.pointerId);
 	}
 
+	function updateLoupePosition(evt: PointerEvent, p: { x: number; y: number }): void {
+		loupePointer = { x: p.x, y: p.y };
+		if (!canvasWrapEl) return;
+		const wrapRect = canvasWrapEl.getBoundingClientRect();
+		const offset = 18;
+		loupeScreen = {
+			x: clamp(evt.clientX - wrapRect.left + offset, 0, Math.max(0, wrapRect.width - LOUPE_SIZE_PX)),
+			y: clamp(evt.clientY - wrapRect.top + offset, 0, Math.max(0, wrapRect.height - LOUPE_SIZE_PX)),
+		};
+		loupeActive = true;
+	}
+
+	function activateDragFromPending(evt: PointerEvent): void {
+		if (!dragPending || dragging) return;
+		const dist = Math.hypot(evt.clientX - dragStart.clientX, evt.clientY - dragStart.clientY);
+		if (dist < DRAG_DEADZONE_PX) return;
+		beginInteractionSnapshot();
+		dragging = true;
+		dragPending = false;
+		currentDragGain = dragGainForEvent(evt);
+		cursorStyle = "grabbing";
+	}
+
 	function updateCursor(p: { x: number; y: number }): void {
+		if (panning) {
+			cursorStyle = "grabbing";
+			return;
+		}
 		if (!hasEditableMask()) {
 			cursorStyle = "not-allowed";
 			return;
 		}
 		const hit = isGroupMode() ? !!hitGroupAt(p.x, p.y) : hitLegacyMask(p.x, p.y);
+		if (spacePressed) {
+			cursorStyle = "grab";
+			return;
+		}
 		if (hitRotateHandle(p.x, p.y) || hit) {
 			cursorStyle = "grab";
 			return;
@@ -769,16 +1052,26 @@
 
 	function onPointerMove(evt: PointerEvent): void {
 		const p = eventToTarget(evt);
-		if (!dragging && !rotating) {
-			updateCursor(p);
+		updateLoupePosition(evt, p);
+		if (panning && canvasWrapEl) {
+			canvasWrapEl.scrollLeft = panStart.scrollLeft - (evt.clientX - panStart.x);
+			canvasWrapEl.scrollTop = panStart.scrollTop - (evt.clientY - panStart.y);
+			cursorStyle = "grabbing";
 			return;
 		}
-		cursorStyle = "grabbing";
+		if (dragPending) activateDragFromPending(evt);
+		if (!dragging && !rotating && !dragPending) {
+			updateCursor(p);
+			drawLoupe();
+			return;
+		}
 		if (dragging) {
+			currentDragGain = dragGainForEvent(evt);
+			const gain = currentDragGain;
 			setActiveTransform({
 				...transform,
-				center_x: dragStart.center_x + p.x - dragStart.x,
-				center_y: dragStart.center_y + p.y - dragStart.y,
+				center_x: dragStart.center_x + (p.x - dragStart.x) * gain,
+				center_y: dragStart.center_y + (p.y - dragStart.y) * gain,
 			});
 			statusText = "正在拖动 " + (isGroupMode() ? activeGroupLabel() : "版图") + "；松开后同步变换";
 		} else if (rotating) {
@@ -793,13 +1086,40 @@
 	}
 
 	function onPointerLeave(): void {
-		if (!dragging && !rotating) cursorStyle = "crosshair";
+		loupeActive = false;
+		if (!dragging && !rotating && !dragPending && !panning) cursorStyle = "crosshair";
 	}
 
 	function onPointerUp(evt: PointerEvent): void {
+		if (panning) {
+			panning = false;
+			try {
+				canvasEl.releasePointerCapture(evt.pointerId);
+			} catch (_) {
+				// Pointer capture may already have been released by the browser.
+			}
+			updateCursor(eventToTarget(evt));
+			return;
+		}
+		if (dragPending && !dragging) {
+			dragPending = false;
+			ghostTransform = null;
+			interactionStartTransform = null;
+			try {
+				canvasEl.releasePointerCapture(evt.pointerId);
+			} catch (_) {
+				// Pointer capture may already have been released by the browser.
+			}
+			updateCursor(eventToTarget(evt));
+			draw();
+			return;
+		}
 		if (dragging || rotating) {
 			dragging = false;
+			dragPending = false;
 			rotating = false;
+			ghostTransform = null;
+			interactionStartTransform = null;
 			try {
 				canvasEl.releasePointerCapture(evt.pointerId);
 			} catch (_) {
@@ -814,6 +1134,7 @@
 	function onWheel(evt: WheelEvent): void {
 		if (!hasEditableMask()) return;
 		evt.preventDefault();
+		pushUndoSnapshot();
 		const p = eventToTarget(evt);
 		if (isGroupMode()) {
 			const hitKey = hitGroupAt(p.x, p.y);
@@ -891,7 +1212,7 @@
 <Block
 	visible={gradio.shared.visible}
 	variant="solid"
-	border_mode={dragging || rotating ? "focus" : "base"}
+	border_mode={dragging || rotating || panning ? "focus" : "base"}
 	padding={false}
 	elem_id={gradio.shared.elem_id}
 	elem_classes={gradio.shared.elem_classes}
@@ -924,20 +1245,53 @@
 			<button type="button" on:click={centerTransform} disabled={!hasEditableMask()}>居中</button>
 			<button type="button" on:click={fitTransform} disabled={!hasEditableMask()}>适配</button>
 			<button type="button" on:click={bringIntoView} disabled={!hasEditableMask()}>找回视野</button>
+			<button
+				type="button"
+				class:toggled={differenceBlend}
+				on:click={() => {
+					differenceBlend = !differenceBlend;
+					draw();
+				}}
+				disabled={!hasEditableMask()}
+			>差异混合</button>
 		</div>
-		<div class="canvas-wrap">
+		<div class="canvas-wrap" bind:this={canvasWrapEl}>
+			<div class="hud" aria-live="polite">
+				<div>tx {transform.center_x.toFixed(1)} · ty {transform.center_y.toFixed(1)}</div>
+				<div>scale {transform.scale.toFixed(3)} · rot {transform.rotation_deg.toFixed(1)}°</div>
+				<div>gain {currentDragGain.toFixed(2)} · {canvasFocused ? "focused" : "blur"}</div>
+			</div>
+			<div
+				class="loupe"
+				class:active={loupeActive}
+				style={"left:" + String(loupeScreen.x) + "px;top:" + String(loupeScreen.y) + "px"}
+			>
+				<canvas bind:this={loupeCanvasEl} width={LOUPE_SIZE_PX} height={LOUPE_SIZE_PX}></canvas>
+			</div>
 			<canvas
 				bind:this={canvasEl}
+				tabindex="0"
+				role="application"
+				aria-label="版图变换编辑器"
 				on:pointerdown={onPointerDown}
 				on:pointermove={onPointerMove}
 				on:pointerup={onPointerUp}
 				on:pointercancel={onPointerUp}
 				on:pointerleave={onPointerLeave}
 				on:wheel={onWheel}
+				on:focus={() => {
+					canvasFocused = true;
+				}}
+				on:blur={() => {
+					canvasFocused = false;
+				}}
 				style={"cursor:" + cursorStyle}
 			></canvas>
 		</div>
-		<div class="status">{statusText}</div>
+		<div class="shortcut-bar">
+			拖拽 0.25× · Shift 拖拽 1× · 方向键/WASD 微调 · Shift 10px · [ ] 旋转 · Esc 取消 · Ctrl+Z 撤销 · 空格+拖 平移 · 滚轮/+/- 缩放
+		</div>
+		<div class="status">{displayStatus()}</div>
 	</div>
 </Block>
 
@@ -970,7 +1324,7 @@
 	}
 	.toolbar {
 		display: grid;
-		grid-template-columns: repeat(4, minmax(0, 1fr));
+		grid-template-columns: repeat(5, minmax(0, 1fr));
 		gap: 8px;
 	}
 	.toolbar button {
@@ -982,6 +1336,11 @@
 		color: #0f172a;
 		cursor: pointer;
 	}
+	.toolbar button.toggled {
+		border-color: #2563eb;
+		background: #eff6ff;
+		color: #1d4ed8;
+	}
 	.toolbar button:hover:not(:disabled) {
 		border-color: #2563eb;
 		color: #1d4ed8;
@@ -991,18 +1350,70 @@
 		opacity: 0.48;
 	}
 	.canvas-wrap {
+		position: relative;
 		flex: 1;
 		min-height: 280px;
 		overflow: auto;
 		border: 1px solid #cbd5e1;
 		background: #0f172a;
 	}
-	canvas {
+	.hud {
+		position: absolute;
+		top: 8px;
+		left: 8px;
+		z-index: 3;
+		pointer-events: none;
+		font: 600 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+		color: #e2e8f0;
+		background: rgba(15, 23, 42, 0.78);
+		border: 1px solid rgba(148, 163, 184, 0.45);
+		border-radius: 6px;
+		padding: 6px 8px;
+	}
+	.loupe {
+		position: absolute;
+		z-index: 4;
+		pointer-events: none;
+		width: 140px;
+		height: 140px;
+		border-radius: 50%;
+		overflow: hidden;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+		visibility: hidden;
+		opacity: 0;
+	}
+	.loupe.active {
+		visibility: visible;
+		opacity: 1;
+	}
+	.loupe canvas {
+		display: block;
+		width: 140px;
+		height: 140px;
+	}
+	canvas[role="application"] {
 		display: block;
 		width: 100%;
 		height: auto;
 		user-select: none;
 		touch-action: none;
+	}
+	canvas[role="application"]:focus {
+		outline: 2px solid #38bdf8;
+		outline-offset: -2px;
+	}
+	canvas[role="application"]:focus-visible {
+		outline: 2px solid #38bdf8;
+		outline-offset: -2px;
+	}
+	.shortcut-bar {
+		font-size: 11px;
+		line-height: 1.35;
+		color: #64748b;
+		background: #f1f5f9;
+		border: 1px solid #e2e8f0;
+		border-radius: 6px;
+		padding: 5px 8px;
 	}
 	.status {
 		font-size: 12px;

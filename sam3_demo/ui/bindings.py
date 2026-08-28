@@ -4,7 +4,7 @@
 _MULTI_USER_CONCURRENCY_LIMIT = 8
 
 
-def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
+def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_refs=None):
     """Bind the existing demo events without changing callback contracts."""
     session_state = state_refs.session_state
     image_state = state_refs.image_state
@@ -197,6 +197,14 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     _export_pcs = callbacks["_export_pcs"]
     _export_pvs = callbacks["_export_pvs"]
     _submit_feedback = callbacks["_submit_feedback"]
+    _load_stitch_tiles = callbacks["_load_stitch_tiles"]
+    _auto_align_stitch = callbacks["_auto_align_stitch"]
+    _stitch_canvas_changed = callbacks["_stitch_canvas_changed"]
+    _apply_stitch_xy = callbacks["_apply_stitch_xy"]
+    _apply_stitch_options = callbacks["_apply_stitch_options"]
+    _generate_stitch_mosaic = callbacks["_generate_stitch_mosaic"]
+    _load_stitch_layout_mask = callbacks["_load_stitch_layout_mask"]
+    _handoff_stitch_mosaic = callbacks["_handoff_stitch_mosaic"]
 
     layout_agent_control_inputs = [
         layout_threshold,
@@ -620,3 +628,112 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks):
     export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     submit_feedback_btn.click(fn=_submit_feedback, inputs=[image_state, pcs_state, pvs_state, mode, feedback_rating, feedback_tags, feedback_comment], outputs=common, concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+
+    if stitch_refs is None:
+        return
+    stitch_state = stitch_refs.stitch_state
+    stitch_files = stitch_refs.stitch_files
+    stitch_layout = stitch_refs.stitch_layout
+    stitch_load_btn = stitch_refs.stitch_load_btn
+    stitch_align_btn = stitch_refs.stitch_align_btn
+    stitch_nudge_step = stitch_refs.stitch_nudge_step
+    stitch_dx = stitch_refs.stitch_dx
+    stitch_dy = stitch_refs.stitch_dy
+    stitch_apply_xy_btn = stitch_refs.stitch_apply_xy_btn
+    stitch_diff_mode = stitch_refs.stitch_diff_mode
+    stitch_show_loupe = stitch_refs.stitch_show_loupe
+    stitch_blend = stitch_refs.stitch_blend
+    stitch_crop_periodic = stitch_refs.stitch_crop_periodic
+    stitch_export_btn = stitch_refs.stitch_export_btn
+    stitch_status = stitch_refs.stitch_status
+    stitch_mosaic_preview = stitch_refs.stitch_mosaic_preview
+    stitch_mosaic_file = stitch_refs.stitch_mosaic_file
+    stitch_canvas = stitch_refs.stitch_canvas
+    stitch_use_layout_btn = stitch_refs.stitch_use_layout_btn
+    stitch_handoff_btn = stitch_refs.stitch_handoff_btn
+    stitch_step2_status = stitch_refs.stitch_step2_status
+    stitch_layout_editor = stitch_refs.stitch_layout_editor
+    stitch_handoff_status = stitch_refs.stitch_handoff_status
+
+    stitch_load_btn.click(
+        fn=_load_stitch_tiles,
+        inputs=[
+            stitch_files,
+            stitch_layout,
+            stitch_state,
+            stitch_nudge_step,
+            stitch_diff_mode,
+            stitch_show_loupe,
+            stitch_blend,
+            stitch_crop_periodic,
+        ],
+        outputs=[
+            stitch_state,
+            stitch_canvas,
+            stitch_dx,
+            stitch_dy,
+            stitch_status,
+            stitch_mosaic_preview,
+            stitch_mosaic_file,
+            stitch_layout_editor,
+        ],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    stitch_align_btn.click(
+        fn=_auto_align_stitch,
+        inputs=[stitch_state, stitch_layout, stitch_nudge_step, stitch_diff_mode, stitch_show_loupe],
+        outputs=[stitch_state, stitch_canvas, stitch_dx, stitch_dy, stitch_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    stitch_canvas.change(
+        fn=_stitch_canvas_changed,
+        inputs=[stitch_canvas, stitch_state],
+        outputs=[stitch_state, stitch_dx, stitch_dy, stitch_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    stitch_apply_xy_btn.click(
+        fn=_apply_stitch_xy,
+        inputs=[stitch_dx, stitch_dy, stitch_state],
+        outputs=[stitch_state, stitch_canvas, stitch_dx, stitch_dy, stitch_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    for option in (stitch_nudge_step, stitch_diff_mode, stitch_show_loupe):
+        option.change(
+            fn=_apply_stitch_options,
+            inputs=[stitch_nudge_step, stitch_diff_mode, stitch_show_loupe, stitch_state],
+            outputs=[stitch_state, stitch_canvas, stitch_status],
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+            concurrency_id="image-prepost-state",
+        )
+    stitch_export_btn.click(
+        fn=_generate_stitch_mosaic,
+        inputs=[stitch_state, stitch_blend, stitch_crop_periodic, layout_state],
+        outputs=[stitch_state, stitch_mosaic_preview, stitch_mosaic_file, stitch_status, stitch_layout_editor],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    stitch_use_layout_btn.click(
+        fn=_load_stitch_layout_mask,
+        inputs=[stitch_state, layout_state],
+        outputs=[stitch_layout_editor, stitch_step2_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event = stitch_handoff_btn.click(
+        fn=_handoff_stitch_mosaic,
+        inputs=[stitch_state, mode, session_state, layout_state],
+        outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event.then(
+        fn=lambda: "拼接整图已写入智能图像分割工作区（相当于上传原图并使用整图）。",
+        inputs=None,
+        outputs=[stitch_handoff_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )

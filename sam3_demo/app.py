@@ -78,9 +78,11 @@ from sam3_demo.ui.bindings import bind_demo_events
 from sam3_demo.ui.image_tab import build_image_tab
 from sam3_demo.ui.refs import ComponentRefs
 from sam3_demo.ui.layout_mask_tab import build_layout_mask_tab
+from sam3_demo.ui.stitch_tab import build_stitch_tab
 from sam3_demo.ui.styles import CUSTOM_CSS, build_theme
 from sam3_demo.ui.top_bar import build_top_bar
 from sam3_demo.model_supervisor import SUPERVISOR
+from sam3_demo import stitch_callbacks as _stitch_cb
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, request_identity
@@ -122,6 +124,14 @@ except Exception as exc:
     _image_gesture_overlay_import_error = exc
 else:
     _image_gesture_overlay_import_error = None
+
+try:
+    from gradio_stitch_preview_canvas import StitchPreviewCanvas
+except Exception as exc:
+    StitchPreviewCanvas = None
+    _stitch_canvas_import_error = exc
+else:
+    _stitch_canvas_import_error = None
 
 try:
     from scripts.layout_image_to_mask import extract_layout_mask as _layout_extract_mask
@@ -3932,6 +3942,7 @@ _SESSION_GUARDED_CALLBACKS = frozenset(
         "_export_pcs",
         "_export_pvs",
         "_submit_feedback",
+        "_handoff_stitch_mosaic",
     }
 )
 
@@ -4018,6 +4029,52 @@ def _close_request_session(request: gr.Request):
         logger.info("Ignoring invalid session unload request: %s", exc)
 
 
+def _load_stitch_tiles(files, layout, stitch_state, nudge_step, diff_mode, show_loupe, blend, crop_periodic):
+    return _stitch_cb.load_tiles(
+        files, layout, stitch_state, nudge_step, diff_mode, show_loupe, blend, crop_periodic
+    )
+
+
+def _auto_align_stitch(stitch_state, layout, nudge_step, diff_mode, show_loupe):
+    return _stitch_cb.auto_align(stitch_state, layout, nudge_step, diff_mode, show_loupe)
+
+
+def _stitch_canvas_changed(payload, stitch_state):
+    return _stitch_cb.canvas_changed(payload, stitch_state)
+
+
+def _apply_stitch_xy(dx, dy, stitch_state):
+    return _stitch_cb.apply_numeric_shift(dx, dy, stitch_state)
+
+
+def _apply_stitch_options(nudge_step, diff_mode, show_loupe, stitch_state):
+    return _stitch_cb.apply_canvas_options(nudge_step, diff_mode, show_loupe, stitch_state)
+
+
+def _generate_stitch_mosaic(stitch_state, blend, crop_periodic, layout_state):
+    return _stitch_cb.generate_mosaic(
+        stitch_state,
+        blend,
+        crop_periodic,
+        layout_state=layout_state,
+        cache_get=_layout_cache_get,
+    )
+
+
+def _load_stitch_layout_mask(stitch_state, layout_state):
+    payload, status = _stitch_cb.stitch_layout_payload(
+        stitch_state,
+        layout_state,
+        cache_get=_layout_cache_get,
+    )
+    return payload, status
+
+
+def _handoff_stitch_mosaic(stitch_state, mode, session_state, layout_state):
+    mosaic = stitch_state.get("mosaic") if isinstance(stitch_state, dict) else None
+    return _source_upload_workspace(mosaic, mode, session_state, layout_state)
+
+
 def _session_callback_registry():
     callbacks = dict(globals())
     missing = sorted(_SESSION_GUARDED_CALLBACKS.difference(callbacks))
@@ -4087,6 +4144,15 @@ def create_demo():
                     _layout_region_editor_empty=_layout_region_editor_empty,
                     _LAYOUT_MASK_MORPH_LIMIT_PX=_LAYOUT_MASK_MORPH_LIMIT_PX,
                 )
+                stitch_ui = build_stitch_tab(
+                    StitchPreviewCanvas=StitchPreviewCanvas,
+                    _stitch_canvas_import_error=_stitch_canvas_import_error,
+                    LayoutTransformEditor=LayoutTransformEditor,
+                    _layout_editor_import_error=_layout_editor_import_error,
+                    empty_canvas=_stitch_cb.empty_canvas_payload(),
+                    empty_layout_editor=_layout_editor_empty(),
+                    layout_choices=_stitch_cb.LAYOUT_CHOICES,
+                )
 
             state_refs = ComponentRefs(
                 session_state=session_state,
@@ -4107,6 +4173,7 @@ def create_demo():
                 state_refs=state_refs,
                 image_refs=image_ui,
                 layout_refs=layout_ui,
+                stitch_refs=stitch_ui,
                 callbacks=_session_callback_registry(),
             )
             demo.load(

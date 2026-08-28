@@ -1,5 +1,5 @@
 {
-  "component_count": 241,
+  "component_count": 279,
   "components": [
     {
       "props": {
@@ -2084,6 +2084,352 @@
     {
       "props": {},
       "type": "form"
+    },
+    {
+      "props": {
+        "id": "tab_stitch_layout",
+        "interactive": true,
+        "label": "分块拼接与版图对齐",
+        "visible": true
+      },
+      "type": "tabitem"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "### 分块拼接与版图对齐\n先自动对齐分块并手动微调，再把拼好的整图当作底图，用半透明版图层对齐。分块应已去掉红黄 UI overlay。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {},
+      "type": "state"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "#### 1 拼接微调",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "label": "上传分块图（一组）",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "file"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "横向 1×N（从左到右）",
+            "horizontal"
+          ],
+          [
+            "纵向 N×1（从上到下）",
+            "vertical"
+          ],
+          [
+            "2×2 网格",
+            "grid_2x2"
+          ],
+          [
+            "2×N 网格（两行）",
+            "grid_2xn"
+          ]
+        ],
+        "label": "布局",
+        "show_label": true,
+        "value": "horizontal",
+        "visible": true
+      },
+      "type": "dropdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "加载分组",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "自动对齐当前组",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "choices": [
+          [
+            "1 px",
+            1
+          ],
+          [
+            "5 px",
+            5
+          ],
+          [
+            "10 px",
+            10
+          ]
+        ],
+        "label": "方向键步长",
+        "show_label": true,
+        "value": 1,
+        "visible": true
+      },
+      "type": "radio"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "label": "选中块 x",
+        "show_label": true,
+        "step": 1,
+        "value": 0,
+        "visible": true
+      },
+      "type": "number"
+    },
+    {
+      "props": {
+        "label": "选中块 y",
+        "show_label": true,
+        "step": 1,
+        "value": 0,
+        "visible": true
+      },
+      "type": "number"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "应用 x/y",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "label": "差分闪边",
+        "show_label": true,
+        "value": false,
+        "visible": true
+      },
+      "type": "checkbox"
+    },
+    {
+      "props": {
+        "label": "光标放大镜",
+        "show_label": true,
+        "value": true,
+        "visible": true
+      },
+      "type": "checkbox"
+    },
+    {
+      "props": {
+        "label": "接缝融合",
+        "show_label": true,
+        "value": true,
+        "visible": true
+      },
+      "type": "checkbox"
+    },
+    {
+      "props": {
+        "label": "裁完整周期",
+        "show_label": true,
+        "value": false,
+        "visible": true
+      },
+      "type": "checkbox"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "生成拼接结果",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "请上传一组分块图。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "height": 180,
+        "interactive": false,
+        "label": "拼接结果",
+        "show_label": true,
+        "sources": [
+          "upload",
+          "webcam",
+          "clipboard"
+        ],
+        "visible": true
+      },
+      "type": "image"
+    },
+    {
+      "props": {
+        "interactive": false,
+        "label": "下载拼接 PNG",
+        "show_label": true,
+        "visible": true
+      },
+      "type": "file"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {},
+      "type": "form"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
+        "elem_id": "stitch_preview_canvas",
+        "height": 560,
+        "label": "分块预览",
+        "show_label": false,
+        "value": {
+          "diff_mode": false,
+          "drag_gain": 0.25,
+          "nudge_step": 1,
+          "selected": 0,
+          "show_loupe": true,
+          "status": "请先上传分块图",
+          "tiles": []
+        },
+        "visible": true
+      },
+      "type": "stitchpreviewcanvas"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "group"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "#### 2 版图对齐（需先有拼接结果）",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "使用当前已保存版图 mask",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "interactive": true,
+        "value": "写入智能图像分割工作区",
+        "visible": true
+      },
+      "type": "button"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "生成拼接结果后即可在底图上对齐版图。",
+        "visible": true
+      },
+      "type": "markdown"
+    },
+    {
+      "props": {
+        "elem_id": "stitch_layout_transform_editor",
+        "height": 520,
+        "label": "拼接底图上的版图",
+        "show_label": false,
+        "value": {
+          "base_image": "",
+          "enabled": false,
+          "foreground_bbox_xyxy": null,
+          "mask_image": "",
+          "source_height": 0,
+          "source_width": 0,
+          "status": "请先加载或生成版图 mask",
+          "target_height": 0,
+          "target_width": 0,
+          "transform": null
+        },
+        "visible": true
+      },
+      "type": "layouttransformeditor"
+    },
+    {
+      "props": {
+        "show_label": false,
+        "value": "",
+        "visible": true
+      },
+      "type": "markdown"
     },
     {
       "props": {},
@@ -5249,6 +5595,345 @@
       "trigger_only_on_success": false
     },
     {
+      "api_name": "_load_stitch_tiles",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        245,
+        246,
+        241,
+        250,
+        256,
+        257,
+        258,
+        259
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        241,
+        268,
+        252,
+        253,
+        261,
+        262,
+        263,
+        275
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          248,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_auto_align_stitch",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        241,
+        246,
+        250,
+        256,
+        257
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        241,
+        268,
+        252,
+        253,
+        261
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          249,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_stitch_canvas_changed",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        268,
+        241
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        241,
+        252,
+        253,
+        261
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          268,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_apply_stitch_xy",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        252,
+        253,
+        241
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        241,
+        268,
+        252,
+        253,
+        261
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          255,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_apply_stitch_options",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        250,
+        256,
+        257,
+        241
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        241,
+        268,
+        261
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          250,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_apply_stitch_options_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        250,
+        256,
+        257,
+        241
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        241,
+        268,
+        261
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          256,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_apply_stitch_options_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        250,
+        256,
+        257,
+        241
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        241,
+        268,
+        261
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          257,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_generate_stitch_mosaic",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        241,
+        258,
+        259,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        241,
+        262,
+        263,
+        261,
+        275
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          260,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_load_stitch_layout_mask",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        241,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        275,
+        274
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          272,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_handoff_stitch_mosaic",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        241,
+        48,
+        12,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        14,
+        31,
+        35,
+        13,
+        15,
+        16,
+        18,
+        59,
+        87,
+        52,
+        128,
+        130,
+        79,
+        107,
+        156,
+        64,
+        86,
+        163,
+        134
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          273,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "lambda_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        276
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          null,
+          "then"
+        ]
+      ],
+      "trigger_after": 108,
+      "trigger_only_on_success": false
+    },
+    {
       "api_name": "_bootstrap_session",
       "backend_fn": true,
       "batch": false,
@@ -5300,7 +5985,7 @@
       "trigger_only_on_success": false
     }
   ],
-  "dependency_count": 101,
+  "dependency_count": 112,
   "layout": {
     "children": [
       {
@@ -5388,7 +6073,7 @@
                 "component": 24
               }
             ],
-            "component": 239
+            "component": 277
           },
           {
             "component": 22
@@ -6183,6 +6868,144 @@
                   }
                 ],
                 "component": 171
+              },
+              {
+                "children": [
+                  {
+                    "component": 240
+                  },
+                  {
+                    "component": 241
+                  },
+                  {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "component": 244
+                          },
+                          {
+                            "component": 245
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 246
+                              }
+                            ],
+                            "component": 264
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 248
+                              },
+                              {
+                                "component": 249
+                              }
+                            ],
+                            "component": 247
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 250
+                              }
+                            ],
+                            "component": 265
+                          },
+                          {
+                            "children": [
+                              {
+                                "children": [
+                                  {
+                                    "component": 252
+                                  },
+                                  {
+                                    "component": 253
+                                  }
+                                ],
+                                "component": 254
+                              }
+                            ],
+                            "component": 251
+                          },
+                          {
+                            "component": 255
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 256
+                              },
+                              {
+                                "component": 257
+                              },
+                              {
+                                "component": 258
+                              },
+                              {
+                                "component": 259
+                              }
+                            ],
+                            "component": 266
+                          },
+                          {
+                            "component": 260
+                          },
+                          {
+                            "component": 261
+                          },
+                          {
+                            "component": 262
+                          },
+                          {
+                            "component": 263
+                          }
+                        ],
+                        "component": 243
+                      },
+                      {
+                        "children": [
+                          {
+                            "component": 268
+                          }
+                        ],
+                        "component": 267
+                      }
+                    ],
+                    "component": 242
+                  },
+                  {
+                    "children": [
+                      {
+                        "component": 270
+                      },
+                      {
+                        "children": [
+                          {
+                            "component": 272
+                          },
+                          {
+                            "component": 273
+                          }
+                        ],
+                        "component": 271
+                      },
+                      {
+                        "component": 274
+                      },
+                      {
+                        "component": 275
+                      }
+                    ],
+                    "component": 269
+                  },
+                  {
+                    "component": 276
+                  }
+                ],
+                "component": 239
               }
             ],
             "component": 25
@@ -6191,7 +7014,7 @@
         "component": 0
       },
       {
-        "component": 240
+        "component": 278
       }
     ],
     "component": "root"
