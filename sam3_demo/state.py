@@ -253,7 +253,6 @@ def _make_inst(inst_id, source, mask, box, score, pvs_logits=None, pcs_prob=None
         "score": float(score),
         "pvs_lowres_logits": None if pvs_logits is None else np.asarray(pvs_logits, dtype=np.float32),
         "pcs_fullres_prob": None if pcs_prob is None else np.asarray(pcs_prob, dtype=np.float16),
-        "status": "draft",
         "prompt_history": history or [],
     }
 
@@ -263,7 +262,6 @@ def _snapshot(inst):
         "pvs_lowres_logits": None if inst.get("pvs_lowres_logits") is None else np.asarray(inst["pvs_lowres_logits"]).copy(),
         "box_xyxy_px": list(inst.get("box_xyxy_px") or []),
         "score": float(inst.get("score", 0.0)),
-        "status": inst.get("status", "draft"),
     }
 
 def _restore(inst, snap):
@@ -271,13 +269,11 @@ def _restore(inst, snap):
     inst["pvs_lowres_logits"] = None if snap.get("pvs_lowres_logits") is None else np.asarray(snap["pvs_lowres_logits"]).copy()
     inst["box_xyxy_px"] = list(snap.get("box_xyxy_px") or [])
     inst["score"] = float(snap.get("score", 0.0))
-    inst["status"] = snap.get("status", inst.get("status", "draft"))
 
 def _history_snapshot(inst):
     return {
         "box_xyxy_px": list(inst.get("box_xyxy_px") or []),
         "score": float(inst.get("score", 0.0)),
-        "status": inst.get("status", "draft"),
     }
 
 def _append_prompt_history(inst, event):

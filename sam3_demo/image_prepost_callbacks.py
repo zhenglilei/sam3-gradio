@@ -300,9 +300,8 @@ def _template_pvs_instance(pvs_state, instance_id):
 
 def _template_instance_choices_impl(_deps, pvs_state):
     _active_instances = _deps["_active_instances"]
-    _status_label = _deps["_status_label"]
     choices = [
-        (f"PVS #{item['id']} {_status_label(item.get('status'))}", str(item["id"]))
+        (f"PVS #{item['id']}", str(item["id"]))
         for item in _active_instances(pvs_state or {})
     ]
     selected = (pvs_state or {}).get("template_match_instance_id")

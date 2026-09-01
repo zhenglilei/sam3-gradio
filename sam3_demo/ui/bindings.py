@@ -107,9 +107,8 @@ def bind_demo_events(
     layout_pvs_info = image_refs.layout_pvs_info
     pvs_action_panel = image_refs.pvs_action_panel
     active_pvs = image_refs.active_pvs
-    undo_pvs_btn = image_refs.undo_pvs_btn
-    delete_pvs_btn = image_refs.delete_pvs_btn
-    accept_pvs_btn = image_refs.accept_pvs_btn
+    delete_active_pvs_btn = image_refs.delete_active_pvs_btn
+    clear_pvs_btn = image_refs.clear_pvs_btn
     export_pvs_btn = image_refs.export_pvs_btn
     export_file = image_refs.export_file
     feedback_rating = image_refs.feedback_rating
@@ -208,9 +207,8 @@ def bind_demo_events(
     _pvs_point_prompt = callbacks["_pvs_point_prompt"]
     _layout_point_refine = callbacks["_layout_point_refine"]
     _set_active_pvs = callbacks["_set_active_pvs"]
-    _undo_pvs = callbacks["_undo_pvs"]
-    _delete_pvs = callbacks["_delete_pvs"]
-    _accept_pvs = callbacks["_accept_pvs"]
+    _delete_active_pvs = callbacks["_delete_active_pvs"]
+    _clear_pvs = callbacks["_clear_pvs"]
     _export_pcs = callbacks["_export_pcs"]
     _export_pvs = callbacks["_export_pvs"]
     _submit_feedback = callbacks["_submit_feedback"]
@@ -672,9 +670,8 @@ def bind_demo_events(
     pvs_point_event = pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     layout_point_event = layout_point_btn.click(fn=_layout_point_refine, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, layout_point_kind, prompt_state], outputs=[prompt_state, point_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     active_pvs_event = active_pvs.change(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    undo_pvs_event = undo_pvs_btn.click(fn=_undo_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    delete_pvs_event = delete_pvs_btn.click(fn=_delete_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    accept_pvs_event = accept_pvs_btn.click(fn=_accept_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    delete_active_pvs_event = delete_active_pvs_btn.click(fn=_delete_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    clear_pvs_event = clear_pvs_btn.click(fn=_clear_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     for invalidating_event in (
         mode_event,
         finish_polygon_event,
@@ -682,9 +679,8 @@ def bind_demo_events(
         pvs_point_event,
         layout_point_event,
         active_pvs_event,
-        undo_pvs_event,
-        delete_pvs_event,
-        accept_pvs_event,
+        delete_active_pvs_event,
+        clear_pvs_event,
     ):
         clear_event = invalidating_event.then(
             fn=_clear_template_match_outputs,

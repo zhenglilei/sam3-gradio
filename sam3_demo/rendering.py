@@ -53,14 +53,9 @@ def _pcs_choice_update_impl(_deps, pcs_state):
     return gr.update(choices=choices, value=choices[0][1] if choices else None)
 
 
-def _status_label_impl(_deps, status):
-    return {"draft": "草稿", "accepted": "已确认", "deleted": "已删除"}.get(str(status or "draft"), str(status or "草稿"))
-
-
 def _pvs_choice_update_impl(_deps, pvs_state):
     _active_instances = _deps['_active_instances']
-    _status_label = _deps['_status_label']
-    choices = [(f"PVS #{i['id']} {_status_label(i.get('status'))}", str(i["id"])) for i in _active_instances(pvs_state)]
+    choices = [(f"PVS #{i['id']}", str(i["id"])) for i in _active_instances(pvs_state)]
     active = pvs_state.get("active_instance_id")
     value = str(active) if active is not None and any(c[1] == str(active) for c in choices) else None
     return gr.update(choices=choices, value=value)
@@ -90,7 +85,6 @@ def _pcs_summary_impl(_deps, pcs_state):
 
 def _pvs_summary_impl(_deps, pvs_state):
     _active_instances = _deps['_active_instances']
-    _status_label = _deps['_status_label']
     items = _active_instances(pvs_state)
     active = pvs_state.get("active_instance_id")
     pending = pvs_state.get("pending_boxes", [])
@@ -98,13 +92,13 @@ def _pvs_summary_impl(_deps, pvs_state):
         f"PVS 实例: {len(items)}",
         f"待生成 bbox: {len(pending)}",
         f"当前实例: {active or '-'}",
-        "说明: 草稿=draft，表示还未点击确认；score 是 SAM3 返回的候选 mask 质量/置信估计，不等同于人工质检分数。",
+        "说明: 实例生成后即可使用；score 是 SAM3 返回的候选 mask 质量/置信估计，不等同于人工质检分数。",
     ]
     for idx, box in enumerate(pending[:20], start=1):
         lines.append(f"pending#{idx} box={[round(v,1) for v in box]}")
     for inst in items[:80]:
         mark = "*" if str(inst["id"]) == str(active) else " "
-        lines.append(f"{mark}#{inst['id']} {inst['source']} {_status_label(inst.get('status'))} score={inst['score']:.3f}")
+        lines.append(f"{mark}#{inst['id']} {inst['source']} score={inst['score']:.3f}")
     return "\n".join(lines)
 
 

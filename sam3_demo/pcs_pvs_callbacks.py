@@ -607,7 +607,6 @@ def _refine_active_pvs_with_point_impl(_deps, image_state, pvs_state, point, poi
     after = {
         "box_xyxy_px": list(box),
         "score": score,
-        "status": active_inst.get("status", "draft"),
     }
     prompt_type = "negative_point" if point_label == 0 else "positive_point"
     op = "negative_point_refine" if point_label == 0 else "positive_point_refine"
@@ -689,35 +688,41 @@ def _pvs_point_prompt_impl(_deps, image_state, pcs_state, pvs_state, mode, point
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
-def _undo_pvs_impl(_deps, image_state, pcs_state, pvs_state, mode):
+def _delete_active_pvs_impl(_deps, image_state, pcs_state, pvs_state, mode):
     _active_instances = _deps['_active_instances']
-    _restore = _deps['_restore']
     _view = _deps['_view']
     try:
         active_id = pvs_state.get("active_instance_id")
-        active_inst = pvs_state.get("instances", {}).get(int(active_id)) if active_id is not None else None
-        if active_inst is not None:
-            history = active_inst.get("prompt_history", [])
-            if history and history[-1].get("op") == "refine_with_layout_mask" and history[-1].get("before"):
-                _restore(active_inst, history[-1]["before"])
-                history.pop()
-                info = f"已撤销 PVS #{active_id} 的版图精修"
-                return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
-        items = _active_instances(pvs_state)
-        if not items:
-            raise ValueError("没有可撤销的 PVS 实例")
-        inst = max(items, key=lambda item: int(item["id"]))
-        pvs_state["instances"].pop(int(inst["id"]), None)
-        if str(pvs_state.get("active_instance_id")) == str(inst["id"]):
-            remaining = _active_instances(pvs_state)
-            pvs_state["active_instance_id"] = max(remaining, key=lambda item: int(item["id"]))["id"] if remaining else None
-        info = f"已撤销上一个 PVS 实例 #{inst['id']}"
+        if active_id is None:
+            raise ValueError("请先选择当前 PVS 实例")
+        instances = pvs_state.get("instances", {})
+        target_key = next(
+            (
+                key
+                for key, instance in instances.items()
+                if str(instance.get("id", key)) == str(active_id)
+            ),
+            None,
+        )
+        if target_key is None:
+            raise ValueError(f"PVS #{active_id} 不存在")
+        instances.pop(target_key)
+        remaining = _active_instances(pvs_state)
+        next_active = (
+            max(remaining, key=lambda item: int(item["id"]))["id"]
+            if remaining
+            else None
+        )
+        pvs_state["active_instance_id"] = next_active
+        if str(pvs_state.get("template_match_instance_id")) == str(active_id):
+            pvs_state["template_match_instance_id"] = next_active
+        info = f"已删除当前 PVS 实例 #{active_id}"
     except Exception as exc:
-        info = f"撤销上一个实例失败: {exc}"
+        info = f"删除当前实例失败: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
-def _delete_pvs_impl(_deps, image_state, pcs_state, pvs_state, mode):
+def _clear_pvs_impl(_deps, image_state, pcs_state, pvs_state, mode):
     _active_instances = _deps['_active_instances']
     _view = _deps['_view']
     try:
@@ -726,20 +731,8 @@ def _delete_pvs_impl(_deps, image_state, pcs_state, pvs_state, mode):
             raise ValueError("没有可清空的 PVS 实例")
         pvs_state["instances"] = {}
         pvs_state["active_instance_id"] = None
+        pvs_state.pop("template_match_instance_id", None)
         info = f"已清空 {len(items)} 个 PVS 实例；待生成 bbox 不受影响"
     except Exception as exc:
         info = f"清空实例失败: {exc}"
-    return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
-
-
-def _accept_pvs_impl(_deps, image_state, pcs_state, pvs_state, mode):
-    _view = _deps['_view']
-    try:
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None:
-            raise ValueError("Select a PVS instance first")
-        pvs_state["instances"][int(active_id)]["status"] = "accepted"
-        info = f"PVS #{active_id} accepted"
-    except Exception as exc:
-        info = f"Accept failed: {exc}"
     return pvs_state, *_view(image_state, pcs_state, pvs_state, mode, info)

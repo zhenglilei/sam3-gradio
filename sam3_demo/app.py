@@ -465,9 +465,8 @@ from sam3_demo.pcs_pvs_callbacks import (
     _set_active_pvs_impl,
     _refine_active_pvs_with_point_impl,
     _pvs_point_prompt_impl,
-    _undo_pvs_impl,
-    _delete_pvs_impl,
-    _accept_pvs_impl,
+    _delete_active_pvs_impl,
+    _clear_pvs_impl,
 )
 
 def _workspace_gesture_payload(image_state, mode=None, click_tool=None, status=""):
@@ -884,7 +883,6 @@ from sam3_demo.rendering import (
     _workspace_image_impl,
     _result_image_impl,
     _pcs_choice_update_impl,
-    _status_label_impl,
     _pvs_choice_update_impl,
     _pvs_pending_count_text_impl,
     _pcs_summary_impl,
@@ -1205,19 +1203,10 @@ def _pcs_choice_update(pcs_state):
     )
 
 
-def _status_label(status):
-    return _status_label_impl(
-        {
-        },
-        status,
-    )
-
-
 def _pvs_choice_update(pvs_state):
     return _pvs_choice_update_impl(
         {
             '_active_instances': _active_instances,
-            '_status_label': _status_label,
         },
         pvs_state,
     )
@@ -1247,7 +1236,6 @@ def _pvs_summary(pvs_state):
     return _pvs_summary_impl(
         {
             '_active_instances': _active_instances,
-            '_status_label': _status_label,
         },
         pvs_state,
     )
@@ -1448,7 +1436,6 @@ def _template_instance_choices(pvs_state):
     return _template_instance_choices_impl(
         {
             '_active_instances': _active_instances,
-            '_status_label': _status_label,
         },
         pvs_state,
     )
@@ -1757,22 +1744,8 @@ def _layout_point_refine(image_state, pcs_state, pvs_state, mode, point_payload,
         progress,
     )
 
-def _undo_pvs(image_state, pcs_state, pvs_state, mode):
-    return _undo_pvs_impl(
-        {
-            '_active_instances': _active_instances,
-            '_restore': _restore,
-            '_view': _view,
-        },
-        image_state,
-        pcs_state,
-        pvs_state,
-        mode,
-    )
-
-
-def _delete_pvs(image_state, pcs_state, pvs_state, mode):
-    return _delete_pvs_impl(
+def _delete_active_pvs(image_state, pcs_state, pvs_state, mode):
+    return _delete_active_pvs_impl(
         {
             '_active_instances': _active_instances,
             '_view': _view,
@@ -1784,9 +1757,10 @@ def _delete_pvs(image_state, pcs_state, pvs_state, mode):
     )
 
 
-def _accept_pvs(image_state, pcs_state, pvs_state, mode):
-    return _accept_pvs_impl(
+def _clear_pvs(image_state, pcs_state, pvs_state, mode):
+    return _clear_pvs_impl(
         {
+            '_active_instances': _active_instances,
             '_view': _view,
         },
         image_state,
@@ -1794,8 +1768,6 @@ def _accept_pvs(image_state, pcs_state, pvs_state, mode):
         pvs_state,
         mode,
     )
-
-
 from sam3_demo.feedback_export import (
     _history_json_impl,
     _latest_layout_prompt_from_instances_impl,
@@ -4042,9 +4014,8 @@ _SESSION_GUARDED_CALLBACKS = frozenset(
         "_pvs_point_prompt",
         "_layout_point_refine",
         "_set_active_pvs",
-        "_undo_pvs",
-        "_delete_pvs",
-        "_accept_pvs",
+        "_delete_active_pvs",
+        "_clear_pvs",
         "_export_pcs",
         "_export_pvs",
         "_submit_feedback",

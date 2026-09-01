@@ -291,9 +291,8 @@ def run_template_match_workflow(
 ) -> dict[str, Any]:
     """Match one active crop-local PVS mask across the full source image.
 
-    The current seed always blocks itself.  Other instances block candidates
-    only when their status is ``accepted``; draft and deleted instances are
-    deliberately ignored.
+    The current seed always blocks itself. Every other generated instance also
+    blocks duplicate candidates immediately; only deleted instances are ignored.
     """
 
     source_height, source_width = _image_shape(source_image)
@@ -320,26 +319,26 @@ def run_template_match_workflow(
     seed_polygon = _bbox_polygon(seed_bbox)
     seed_id = _instance_id(seed_instance, active_instance_id)
 
-    accepted_polygons: list[list[list[int]]] = []
+    blocker_polygons: list[list[list[int]]] = []
     exact_blocker_bboxes = [tuple(seed_bbox)]
-    accepted_ids: list[int | str] = []
+    blocker_ids: list[int | str] = []
     for key, candidate in instances.items():
         if not isinstance(candidate, Mapping):
             continue
         candidate_id = _instance_id(candidate, key)
-        if str(candidate_id) == str(seed_id) or candidate.get("status") != "accepted":
+        if str(candidate_id) == str(seed_id) or candidate.get("status") == "deleted":
             continue
-        accepted_mask = map_crop_mask_to_source(
+        blocker_mask = map_crop_mask_to_source(
             candidate.get("mask_fullres_bool"),
             (source_height, source_width),
             crop_bbox,
         )
-        if not np.any(accepted_mask):
+        if not np.any(blocker_mask):
             continue
-        accepted_bbox = mask_bbox_xyxy(accepted_mask)
-        accepted_polygons.append(_bbox_polygon(accepted_bbox))
-        exact_blocker_bboxes.append(tuple(accepted_bbox))
-        accepted_ids.append(candidate_id)
+        blocker_bbox = mask_bbox_xyxy(blocker_mask)
+        blocker_polygons.append(_bbox_polygon(blocker_bbox))
+        exact_blocker_bboxes.append(tuple(blocker_bbox))
+        blocker_ids.append(candidate_id)
 
     raw_matches = match_periodic_instances(
         source_image,
@@ -348,7 +347,7 @@ def run_template_match_workflow(
         match_threshold=match_threshold,
         expand_threshold=expand_threshold,
         nms_threshold=nms_threshold,
-        all_segmentations=accepted_polygons,
+        all_segmentations=blocker_polygons,
     )
 
     match_masks: list[np.ndarray] = []
@@ -393,7 +392,6 @@ def run_template_match_workflow(
         "crop_bbox_xyxy": list(crop_bbox),
         "seed": {
             "instance_id": seed_id,
-            "status": str(seed_instance.get("status", "draft")),
             "bbox_xyxy": seed_bbox,
             "area": int(np.count_nonzero(seed_mask)),
             "mask_pixel_sha256": hashlib.sha256(
@@ -402,7 +400,7 @@ def run_template_match_workflow(
         },
         "blockers": {
             "seed_instance_id": seed_id,
-            "accepted_instance_ids": accepted_ids,
+            "instance_ids": blocker_ids,
         },
         "parameters": {
             "match_threshold": float(match_threshold),

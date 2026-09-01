@@ -56,7 +56,7 @@ class TemplateMatchWorkflowTest(unittest.TestCase):
         expected[4:7, 6:10] = True
         np.testing.assert_array_equal(mapped, expected)
 
-    def test_only_seed_and_accepted_instances_are_blockers(self):
+    def test_all_non_deleted_instances_are_blockers(self):
         image, _, seed = _repeated_source()
         accepted = translate_source_mask(seed, 40, 0)
         draft = translate_source_mask(seed, 80, 0)
@@ -82,10 +82,10 @@ class TemplateMatchWorkflowTest(unittest.TestCase):
         )
 
         translations = [item["translation_xy"] for item in workflow["result"]["matches"]]
-        self.assertEqual(translations, [[80, 0], [120, 0]])
+        self.assertEqual(translations, [[120, 0]])
         self.assertEqual(
             workflow["result"]["blockers"],
-            {"seed_instance_id": 1, "accepted_instance_ids": [2]},
+            {"seed_instance_id": 1, "instance_ids": [2, 3]},
         )
         self.assertEqual(state.keys(), before.keys())
         self.assertEqual(state["active_instance_id"], before["active_instance_id"])
@@ -99,7 +99,7 @@ class TemplateMatchWorkflowTest(unittest.TestCase):
                 before["instances"][instance_id]["mask_fullres_bool"],
             )
 
-    def test_empty_accepted_instance_is_ignored_as_blocker(self):
+    def test_empty_instance_is_ignored_as_blocker(self):
         image, _, seed = _repeated_source(count=2)
         empty = np.zeros_like(seed)
         state = {
@@ -122,7 +122,7 @@ class TemplateMatchWorkflowTest(unittest.TestCase):
         self.assertEqual(workflow["result"]["match_count"], 1)
         self.assertEqual(
             workflow["result"]["blockers"],
-            {"seed_instance_id": 1, "accepted_instance_ids": []},
+            {"seed_instance_id": 1, "instance_ids": []},
         )
 
     def test_exact_seed_is_suppressed_when_nms_threshold_is_one(self):

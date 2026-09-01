@@ -296,7 +296,7 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         snapshot = demo_module._history_snapshot(instance)
         self.assertEqual(
             set(snapshot),
-            {"box_xyxy_px", "score", "status"},
+            {"box_xyxy_px", "score"},
         )
         for index in range(100):
             demo_module._append_prompt_history(
@@ -315,7 +315,7 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         self.assertEqual(history[0]["op"], "create")
         self.assertEqual(history[-1]["op"], "refine-99")
 
-    def test_undo_and_clear_release_pvs_instances(self):
+    def test_delete_current_and_clear_release_pvs_instances(self):
         mask = np.ones((8, 8), dtype=bool)
         pvs_state = demo_module._new_pvs_state()
         pvs_state["instances"] = {
@@ -329,22 +329,28 @@ class WorkspaceTransactionsTest(unittest.TestCase):
             )
             for instance_id in (1, 2)
         }
-        pvs_state["active_instance_id"] = 2
+        pvs_state["active_instance_id"] = 1
+        pvs_state["template_match_instance_id"] = 1
         pvs_state["next_instance_id"] = 3
 
         with mock.patch.object(demo_module, "_view", return_value=(None,) * 8):
-            demo_module._undo_pvs(
+            demo_module._delete_active_pvs(
                 {},
                 demo_module._new_pcs_state(),
                 pvs_state,
                 demo_module.MODE_PVS,
             )
-        self.assertEqual(list(pvs_state["instances"]), [1])
-        self.assertEqual(pvs_state["active_instance_id"], 1)
+        self.assertEqual(list(pvs_state["instances"]), [2])
+        self.assertEqual(pvs_state["active_instance_id"], 2)
+        self.assertEqual(pvs_state["template_match_instance_id"], 2)
         self.assertEqual(pvs_state["next_instance_id"], 3)
+        self.assertNotIn("status", pvs_state["instances"][2])
+        summary = demo_module._pvs_summary(pvs_state)
+        self.assertNotIn("draft", summary)
+        self.assertNotIn("已确认", summary)
 
         with mock.patch.object(demo_module, "_view", return_value=(None,) * 8):
-            demo_module._delete_pvs(
+            demo_module._clear_pvs(
                 {},
                 demo_module._new_pcs_state(),
                 pvs_state,
@@ -352,6 +358,7 @@ class WorkspaceTransactionsTest(unittest.TestCase):
             )
         self.assertEqual(pvs_state["instances"], {})
         self.assertIsNone(pvs_state["active_instance_id"])
+        self.assertNotIn("template_match_instance_id", pvs_state)
         self.assertEqual(pvs_state["next_instance_id"], 3)
 
 

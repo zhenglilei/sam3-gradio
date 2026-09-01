@@ -264,9 +264,8 @@ def build_image_tab(
                     gr.Markdown("### PVS 实例操作")
                     active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
                     with gr.Row():
-                        undo_pvs_btn = gr.Button("撤销上一个实例")
-                        delete_pvs_btn = gr.Button("清空实例")
-                        accept_pvs_btn = gr.Button("确认", variant="primary")
+                        delete_active_pvs_btn = gr.Button("删除当前实例", variant="secondary")
+                        clear_pvs_btn = gr.Button("清空所有实例", variant="secondary")
                     export_pvs_btn = gr.Button("\u5bfc\u51fa PVS")
                 export_file = gr.File(label="\u4e0b\u8f7d\u7ed3\u679c\u5305\uff08PNG + masks + JSON\uff09", interactive=False)
                 with gr.Accordion("结果反馈（PCS 结果 / PVS 当前实例，用于 RL 数据收集）", open=False):
@@ -362,9 +361,8 @@ def build_image_tab(
         layout_pvs_info=layout_pvs_info,
         pvs_action_panel=pvs_action_panel,
         active_pvs=active_pvs,
-        undo_pvs_btn=undo_pvs_btn,
-        delete_pvs_btn=delete_pvs_btn,
-        accept_pvs_btn=accept_pvs_btn,
+        delete_active_pvs_btn=delete_active_pvs_btn,
+        clear_pvs_btn=clear_pvs_btn,
         export_pvs_btn=export_pvs_btn,
         export_file=export_file,
         feedback_rating=feedback_rating,

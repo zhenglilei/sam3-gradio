@@ -252,7 +252,7 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
                 },
                 "blockers": {
                     "seed_instance_id": 1,
-                    "accepted_instance_ids": [],
+                    "instance_ids": [],
                 },
             },
             "seed_mask_fullres_bool": seed.copy(),
@@ -333,7 +333,6 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
             "source",
             "box_xyxy_px",
             "score",
-            "status",
             "prompt_history",
         ):
             self.assertEqual(current_instance[key], previous_instance[key])
