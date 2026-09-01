@@ -129,6 +129,17 @@ Region 标注与管理控件只属于 `版图截图转掩码` Tab，不显示在
 下载采用显式导出边界：PCS/PVS 结果包、版图 mask/contour 和 Region 标注包会复制或打包到随机 ID 的 `public_downloads/` 子目录；`.runtime/layout_masks`、`.runtime/layout_regions`、反馈、源码、配置和模型文件不允许直接下载。Region 导出包由服务端重新校验当前 session、layout、source-mask hash 和 revision，包含 `source_mask.png`、`region_label_index.png`、`labels.json`、`regions.json`、`manifest.json`，以及每个活动 Label 对应的 `label_masks/label_<index>_R<region_id>.png`。
 每张 Label mask 都是独立的 8-bit 灰度二值图，`0` 为背景、`255` 为该 Label 前景；软删除 Label 不导出。`labels.json` 通过 `mask_file` 指向对应文件，`region_label_index.png` 则保留为 `uint16` 汇总索引图，值 `0` 表示背景或尚未标注的 source-mask 前景。公开副本在启动及后续导出时清理，Gradio 下载缓存每小时扫描并清理超过 24 小时的文件。
 
+### 6. 模板拼接与周期拼接
+
+`模板拼接` 和 `周期拼接` 是两个独立 Tab，均不包含额外的版图对齐步骤：
+
+- `模板拼接` 面向周期孔阵分块。上传与行列网格数量一致的图片后，系统检测孔心与周期；2×2 自动判断角点排列，其他网格按文件顺序做相邻配准，并输出拼接 PNG 与诊断元数据。
+- `周期拼接` 保留原分块工作流：横向、纵向或网格排列，自动对齐，画布拖动、方向键和 x/y 数值微调，以及接缝融合和完整周期裁切。
+
+周期拼接生成后，可直接在导出预览上拖拽长方形截图；当前截图会同步成为下载和交接结果，也可点击 `恢复完整拼接图` 撤销截图。两个 Tab 的 `导入到智能图像分割 · 上传与裁剪` 都复用普通完整原图上传流程，并把结果实际显示在“上传与裁剪”组件中；导入会按新图语义清理旧提示、实例、版图选择和模板匹配结果。
+
+分块位置或输出选项改变后，旧周期拼接图会立即失效，必须重新生成后才能交接。模板拼接与周期拼接使用相互独立、按会话隔离的状态和公开下载目录。
+
 
 ---
 

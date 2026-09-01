@@ -139,6 +139,70 @@ h1 { text-align: center; font-family: 'Helvetica Neue', Helvetica, Arial, sans-s
     scroll-snap-align: start;
     scroll-snap-stop: always;
 }
+.stitch-intro {
+    margin-bottom: 6px !important;
+}
+.stitch-main-row {
+    align-items: flex-start !important;
+    gap: 16px !important;
+}
+.stitch-control-column,
+.stitch-preview-column {
+    gap: 12px !important;
+}
+.stitch-card,
+.stitch-canvas-card,
+.stitch-result-card {
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 14px !important;
+    background: rgba(255, 255, 255, 0.92) !important;
+    box-shadow: 0 5px 18px rgba(15, 23, 42, 0.05) !important;
+    padding: 14px !important;
+}
+.stitch-card h4,
+.stitch-canvas-card h4,
+.stitch-result-card h4 {
+    margin: 0 0 8px !important;
+    color: #1e3a5f !important;
+}
+.stitch-canvas-help {
+    color: #64748b !important;
+    font-size: 0.9rem !important;
+    margin-top: -4px !important;
+}
+.stitch-status-card {
+    border-left: 4px solid #3b82f6 !important;
+    border-radius: 10px !important;
+    background: #eff6ff !important;
+    color: #1e3a5f !important;
+    padding: 10px 12px !important;
+    min-height: 44px !important;
+}
+.stitch-status-card .prose,
+.stitch-handoff-status .prose {
+    margin: 0 !important;
+}
+.stitch-handoff-status {
+    color: #166534 !important;
+    font-weight: 600 !important;
+}
+#stitch_preview_canvas {
+    overflow: hidden !important;
+    border-radius: 10px !important;
+}
+@media (max-width: 900px) {
+    .stitch-main-row {
+        flex-direction: column !important;
+    }
+    .stitch-control-column,
+    .stitch-preview-column {
+        min-width: 100% !important;
+        width: 100% !important;
+    }
+    #stitch_preview_canvas {
+        min-height: 380px !important;
+    }
+}
 """
 
 

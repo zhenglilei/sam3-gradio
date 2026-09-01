@@ -10,7 +10,7 @@
 	import { Gradio } from "@gradio/utils";
 	import { Block } from "@gradio/atoms";
 	import { StatusTracker } from "@gradio/statustracker";
-	import { onDestroy } from "svelte";
+	import { onDestroy, onMount } from "svelte";
 
 	interface TileRuntime {
 		tile: StitchTile;
@@ -31,7 +31,8 @@
 	const LOUPE_SCALE = 3;
 	const UNDO_LIMIT = 30;
 	const WHEEL_ZOOM_SPEED = 0.001;
-	const DEFAULT_DRAG_GAIN = 0.25;
+	const DEFAULT_DRAG_GAIN = 1.0;
+	const PRECISE_DRAG_GAIN = 0.25;
 	const gradio = new Gradio<StitchPreviewCanvasEvents, StitchPreviewCanvasProps>(props);
 
 	let canvasEl: HTMLCanvasElement;
@@ -59,6 +60,7 @@
 	let dragMoved = false;
 	let dragShift = false;
 	let pointerIdActive = -1;
+	let pointerDownSelected = 0;
 	let loupeX = 0;
 	let loupeY = 0;
 	let showLoupePointer = false;
@@ -111,6 +113,10 @@
 		return gain > 0 ? gain : DEFAULT_DRAG_GAIN;
 	}
 
+	function preciseDragGain(): number {
+		return Math.min(dragGain(), PRECISE_DRAG_GAIN);
+	}
+
 	function diffMode(): boolean {
 		return !!localValue.diff_mode;
 	}
@@ -139,7 +145,7 @@
 	}
 
 	function currentDragGain(): number {
-		if (dragging && dragShift) return 1.0;
+		if (dragging && dragShift) return preciseDragGain();
 		return dragGain();
 	}
 
@@ -360,6 +366,11 @@
 		clearQueuedSync();
 	});
 
+	onMount(() => {
+		window.addEventListener("blur", onWindowBlur);
+		return () => window.removeEventListener("blur", onWindowBlur);
+	});
+
 	function publishClientValue(status?: string): void {
 		const outbound: StitchPreviewValue = {
 			...localValue,
@@ -436,12 +447,49 @@
 		draw();
 	}
 
+	function releasePointerCapture(pointerId: number): void {
+		if (!canvasEl || pointerId < 0) return;
+		try {
+			if (canvasEl.hasPointerCapture(pointerId)) canvasEl.releasePointerCapture(pointerId);
+		} catch {
+			// capture may already be released
+		}
+	}
+
+	function cancelPointerInteraction(status = "已取消拖动"): void {
+		const hadInteraction = panning || pointerIdActive >= 0 || dragTileIndex >= 0;
+		const activePointerId = pointerIdActive;
+		const runtime = tileRuntimes.find((entry) => entry.tile.index === dragTileIndex);
+		if (runtime && (dragging || dragMoved)) {
+			runtime.tile.x = dragOriginX;
+			runtime.tile.y = dragOriginY;
+			tileRuntimes = [...tileRuntimes];
+		}
+		if (hadInteraction) clearQueuedSync();
+		localValue = { ...localValue, selected: pointerDownSelected };
+		dragging = false;
+		dragTileIndex = -1;
+		dragMoved = false;
+		panning = false;
+		pointerIdActive = -1;
+		dragShift = false;
+		releasePointerCapture(activePointerId);
+		if (hadInteraction) {
+			statusText = status;
+			publishClientValue(status);
+			draw();
+		}
+	}
+
+	function onWindowBlur(): void {
+		cancelPointerInteraction("窗口失焦，已取消拖动");
+	}
+
 	function drawLoupe(ctx: CanvasRenderingContext2D): void {
 		if (!showLoupe() || !showLoupePointer) return;
 		const { width, height } = canvasSize();
 		const cx = clamp(loupeX, LOUPE_RADIUS + 2, width - LOUPE_RADIUS - 2);
 		const cy = clamp(loupeY, LOUPE_RADIUS + 2, height - LOUPE_RADIUS - 2);
-		const srcRadiusWorld = LOUPE_RADIUS / (viewZoom * LOUPE_SCALE);
 		const centerWorld = screenToWorld(cx, cy);
 		ctx.save();
 		ctx.beginPath();
@@ -450,9 +498,10 @@
 		ctx.fillStyle = "#0f172a";
 		ctx.fillRect(cx - LOUPE_RADIUS, cy - LOUPE_RADIUS, LOUPE_RADIUS * 2, LOUPE_RADIUS * 2);
 		ctx.translate(cx, cy);
-		ctx.scale(LOUPE_SCALE, LOUPE_SCALE);
-		ctx.translate(-centerWorld.x * viewZoom - viewPanX / LOUPE_SCALE, -centerWorld.y * viewZoom - viewPanY / LOUPE_SCALE);
-		ctx.scale(viewZoom, viewZoom);
+		ctx.scale(LOUPE_SCALE * viewZoom, LOUPE_SCALE * viewZoom);
+		// Match the main canvas transform around the world point under the cursor.
+		// The previous screen-space translation applied pan twice after zooming.
+		ctx.translate(-centerWorld.x, -centerWorld.y);
 		for (const runtime of tileRuntimes) {
 			if (!runtime.ready || !runtime.image) continue;
 			const tile = runtime.tile;
@@ -571,6 +620,7 @@
 	}
 
 	function onCanvasBlur(): void {
+		cancelPointerInteraction();
 		focused = false;
 		spaceDown = false;
 		if (!dragging && !panning) cursorStyle = "crosshair";
@@ -612,18 +662,8 @@
 			return;
 		}
 		if (key === "Escape") {
-			if (dragging) {
-				const runtime = tileRuntimes.find((entry) => entry.tile.index === dragTileIndex);
-				if (runtime) {
-					runtime.tile.x = dragOriginX;
-					runtime.tile.y = dragOriginY;
-					tileRuntimes = [...tileRuntimes];
-				}
-				dragging = false;
-				dragTileIndex = -1;
-				dragMoved = false;
-				statusText = "已取消拖动";
-				draw();
+			if (dragging || panning || pointerIdActive >= 0) {
+				cancelPointerInteraction("已取消拖动");
 			}
 			return;
 		}
@@ -668,6 +708,7 @@
 
 	function onPointerDown(evt: PointerEvent): void {
 		if (!canvasEl) return;
+		clearQueuedSync();
 		const screen = eventToScreen(evt);
 		pointerDownX = screen.x;
 		pointerDownY = screen.y;
@@ -677,6 +718,7 @@
 		loupeY = screen.y;
 		showLoupePointer = true;
 		dragShift = evt.shiftKey;
+		pointerDownSelected = selectedIndex();
 
 		if (evt.button === 1 || (evt.button === 0 && spaceDown)) {
 			panning = true;
@@ -735,7 +777,8 @@
 				cursorStyle = "grabbing";
 			}
 			if (dragging) {
-				const gain = evt.shiftKey ? 1.0 : dragGain();
+				dragShift = evt.shiftKey;
+				const gain = evt.shiftKey ? preciseDragGain() : dragGain();
 				const dx = ((screen.x - pointerLastX) / viewZoom) * gain;
 				const dy = ((screen.y - pointerLastY) / viewZoom) * gain;
 				runtime.tile.x += dx;
@@ -750,7 +793,8 @@
 					String(offset.dx) +
 					" dy=" +
 					String(offset.dy);
-				queueSyncValue(statusText);
+				localValue = { ...localValue, status: statusText };
+				publishClientValue(statusText);
 			}
 			pointerLastX = screen.x;
 			pointerLastY = screen.y;
@@ -766,11 +810,7 @@
 	function onPointerUp(evt: PointerEvent): void {
 		if (panning) {
 			panning = false;
-			try {
-				canvasEl.releasePointerCapture(evt.pointerId);
-			} catch {
-				// capture may already be released
-			}
+			releasePointerCapture(evt.pointerId);
 			cursorStyle = spaceDown ? "grab" : "crosshair";
 			pointerIdActive = -1;
 			draw();
@@ -794,14 +834,14 @@
 			dragTileIndex = -1;
 			dragMoved = false;
 			pointerIdActive = -1;
-			try {
-				canvasEl.releasePointerCapture(evt.pointerId);
-			} catch {
-				// capture may already be released
-			}
+			releasePointerCapture(evt.pointerId);
 			cursorStyle = spaceDown ? "grab" : "crosshair";
 			draw();
 		}
+	}
+
+	function onPointerCancel(): void {
+		cancelPointerInteraction();
 	}
 
 	function onPointerLeave(): void {
@@ -853,13 +893,13 @@
 				onpointerdown={onPointerDown}
 				onpointermove={onPointerMove}
 				onpointerup={onPointerUp}
-				onpointercancel={onPointerUp}
+				onpointercancel={onPointerCancel}
 				onpointerleave={onPointerLeave}
 				onwheel={onWheel}
 			></canvas>
 		</div>
 		<div class="shortcut-bar">
-			↑↓←→ 步长 · Shift 10x · 拖精细 · Shift+拖粗调 · Space平移 · Esc取消 · Ctrl+Z撤销
+			↑↓←→ / WASD 步进 · Shift 10x · 普通拖动 1×原图倍率 · Shift+拖精准 0.25× · Space平移 · +/-缩放 · Esc取消 · Ctrl+Z撤销
 		</div>
 		<div class="status">{statusText}</div>
 	</div>

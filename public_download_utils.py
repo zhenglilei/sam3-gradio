@@ -19,6 +19,8 @@ PUBLIC_DOWNLOAD_CATEGORIES = frozenset(
         "pcs_pvs_exports",
         "layout_mask_exports",
         "region_annotation_exports",
+        "stitch_exports",
+        "template_stitch_exports",
     }
 )
 DEFAULT_PUBLIC_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60

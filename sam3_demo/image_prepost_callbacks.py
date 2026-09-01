@@ -280,6 +280,215 @@ def _clear_template_match_outputs_impl(_deps, status, session_id=None):
     return _new_template_match_state(session_id), None, None, str(status)
 
 
+def _template_pvs_instance(pvs_state, instance_id):
+    instances = pvs_state.get("instances") if isinstance(pvs_state, dict) else None
+    if not isinstance(instances, dict):
+        raise ValueError("PVS 实例池不可用")
+    candidates = (instance_id, str(instance_id))
+    try:
+        candidates = (*candidates, int(instance_id))
+    except (TypeError, ValueError):
+        pass
+    for candidate in candidates:
+        instance = instances.get(candidate)
+        if isinstance(instance, dict):
+            if instance.get("status") == "deleted":
+                raise ValueError(f"PVS #{instance_id} 已删除")
+            return instance
+    raise ValueError(f"PVS #{instance_id} 不存在")
+
+
+def _template_instance_choices_impl(_deps, pvs_state):
+    _active_instances = _deps["_active_instances"]
+    _status_label = _deps["_status_label"]
+    choices = [
+        (f"PVS #{item['id']} {_status_label(item.get('status'))}", str(item["id"]))
+        for item in _active_instances(pvs_state or {})
+    ]
+    selected = (pvs_state or {}).get("template_match_instance_id")
+    if selected is None:
+        selected = (pvs_state or {}).get("active_instance_id")
+    value = str(selected) if selected is not None and any(choice[1] == str(selected) for choice in choices) else None
+    return gr.update(choices=choices, value=value)
+
+
+def _preview_template_instance_impl(
+    _deps,
+    source_state,
+    image_state,
+    pvs_state,
+    selected_id,
+):
+    _clear_template_match_outputs = _deps["_clear_template_match_outputs"]
+    _new_template_match_state = _deps["_new_template_match_state"]
+    _source_image_cache_get = _deps["_source_image_cache_get"]
+    if selected_id in (None, ""):
+        pvs_state.pop("template_match_instance_id", None)
+        session_id = _template_failure_session_id(source_state, image_state, pvs_state)
+        return (
+            pvs_state,
+            *_clear_template_match_outputs(
+                {"session_id": session_id} if session_id else None,
+                "请选择用于模板匹配的 PVS 实例",
+            ),
+        )
+    try:
+        session_id = _validated_template_session_id(source_state, image_state, pvs_state)
+        source = _source_image_cache_get(source_state)
+        if str(source_state.get("workspace_image_id") or "") != str(image_state.get("image_id") or ""):
+            raise ValueError("当前工作图 provenance 已过期，请重新应用裁剪")
+        if str(source_state.get("workspace_hash") or "") != str(image_state.get("target_image_sha256") or ""):
+            raise ValueError("当前工作图 hash 已过期，请重新应用裁剪")
+        crop_bbox = list(image_state.get("crop_bbox_xyxy") or [])
+        if crop_bbox != list(source_state.get("crop_bbox_xyxy") or []):
+            raise ValueError("当前裁剪 provenance 已过期，请重新应用裁剪")
+        instance = _template_pvs_instance(pvs_state, selected_id)
+        seed_mask = _template_matching.map_crop_mask_to_source(
+            instance.get("mask_fullres_bool"),
+            (source.height, source.width),
+            crop_bbox,
+        )
+        overlay = _template_matching.render_template_overlay(
+            np.asarray(source.convert("RGB")),
+            seed_mask,
+            [],
+        )
+        selected_id = int(selected_id)
+        pvs_state["template_match_instance_id"] = selected_id
+        state = _new_template_match_state(session_id)
+        state.update(
+            {
+                "source_image_id": str(source_state.get("source_image_id") or ""),
+                "workspace_image_id": str(image_state.get("image_id") or ""),
+                "active_instance_id": selected_id,
+            }
+        )
+        return (
+            pvs_state,
+            state,
+            Image.fromarray(overlay, mode="RGB"),
+            None,
+            f"已选择 PVS #{selected_id} 作为模板；黄色轮廓为当前模板",
+        )
+    except Exception as exc:
+        session_id = _template_failure_session_id(source_state, image_state, pvs_state)
+        return (
+            pvs_state,
+            *_clear_template_match_outputs(
+                {"session_id": session_id} if session_id else None,
+                f"模板预览失败: {exc}",
+            ),
+        )
+
+
+def _template_match_selection_choices_impl(_deps, template_match_state):
+    result = template_match_state.get("result") if isinstance(template_match_state, dict) else None
+    matches = result.get("matches") if isinstance(result, dict) else None
+    choices = []
+    for match in matches or []:
+        if not isinstance(match, dict):
+            continue
+        match_id = int(match.get("match_id"))
+        score = float(match.get("score", 0.0))
+        choices.append((f"M{match_id}  score={score:.3f}", str(match_id)))
+    return gr.update(choices=choices, value=[value for _, value in choices])
+
+
+def _export_template_match_selection_impl(
+    _deps,
+    source_state,
+    image_state,
+    pvs_state,
+    template_match_state,
+    export_scope,
+    selected_match_ids,
+):
+    _publish_template_match_export = _deps["_publish_template_match_export"]
+    _source_image_cache_get = _deps["_source_image_cache_get"]
+    try:
+        session_id = _validated_template_session_id(source_state, image_state, pvs_state)
+        if _template_state_session_id(template_match_state, "template_match_state") != session_id:
+            raise ValueError("模板匹配结果不属于当前会话")
+        if str(template_match_state.get("source_image_id") or "") != str(source_state.get("source_image_id") or ""):
+            raise ValueError("模板匹配结果已过期，请重新运行")
+        if str(template_match_state.get("workspace_image_id") or "") != str(image_state.get("image_id") or ""):
+            raise ValueError("模板匹配工作图已过期，请重新运行")
+        result = template_match_state.get("result")
+        matches = result.get("matches") if isinstance(result, dict) else None
+        if not isinstance(matches, list) or not matches:
+            raise ValueError("没有可导出的模板匹配结果")
+        available = {int(match["match_id"]): match for match in matches}
+        scope = str(export_scope or "all")
+        if scope == "all":
+            selected_ids = list(available)
+        elif scope == "selected":
+            selected_ids = []
+            for value in selected_match_ids or []:
+                match_id = int(value)
+                if match_id not in available:
+                    raise ValueError(f"匹配实例 M{match_id} 不存在")
+                if match_id not in selected_ids:
+                    selected_ids.append(match_id)
+            if not selected_ids:
+                raise ValueError("请选择至少一个匹配实例")
+        else:
+            raise ValueError("未知的保存范围")
+
+        source = _source_image_cache_get(source_state)
+        crop_bbox = list(image_state.get("crop_bbox_xyxy") or [])
+        if crop_bbox != list(source_state.get("crop_bbox_xyxy") or []):
+            raise ValueError("当前裁剪 provenance 已过期，请重新应用裁剪")
+        seed_id = template_match_state.get("active_instance_id")
+        instance = _template_pvs_instance(pvs_state, seed_id)
+        seed_mask = _template_matching.map_crop_mask_to_source(
+            instance.get("mask_fullres_bool"),
+            (source.height, source.width),
+            crop_bbox,
+        )
+        selected_matches = [copy.deepcopy(available[match_id]) for match_id in selected_ids]
+        selected_masks = []
+        for match in selected_matches:
+            translation = match.get("translation_xy")
+            if not isinstance(translation, (list, tuple)) or len(translation) != 2:
+                raise ValueError(f"匹配实例 M{match['match_id']} 缺少合法位移")
+            selected_masks.append(
+                _template_matching.translate_source_mask(
+                    seed_mask,
+                    int(translation[0]),
+                    int(translation[1]),
+                )
+            )
+        filtered_result = copy.deepcopy(result)
+        filtered_result["matches"] = selected_matches
+        filtered_result["match_count"] = len(selected_matches)
+        filtered_result["selection"] = {
+            "scope": scope,
+            "selected_match_ids": selected_ids,
+        }
+        source_rgb = np.asarray(source.convert("RGB"))
+        workflow = {
+            "result": filtered_result,
+            "seed_mask_fullres_bool": seed_mask,
+            "match_masks_fullres_bool": selected_masks,
+            "overlay_rgb": _template_matching.render_template_overlay(
+                source_rgb,
+                seed_mask,
+                selected_masks,
+                selected_matches,
+            ),
+        }
+        zip_path, _ = _publish_template_match_export(
+            source,
+            workflow,
+            source_state,
+            image_state,
+        )
+        scope_text = "全部" if scope == "all" else "所选"
+        return str(zip_path), f"已生成{scope_text}结果下载包：{len(selected_ids)} 个匹配实例"
+    except Exception as exc:
+        return None, f"生成模板匹配下载包失败: {exc}"
+
+
 def _publish_template_match_export_impl(_deps, source_image, workflow, source_state, image_state):
     _publish_segmentation_zip = _deps['_publish_segmentation_zip']
     runtime_export_dir = _deps['runtime_export_dir']
@@ -298,9 +507,16 @@ def _publish_template_match_export_impl(_deps, source_image, workflow, source_st
     Image.fromarray(np.asarray(workflow["overlay_rgb"], dtype=np.uint8), mode="RGB").save(
         export_dir / "template_match_overlay.png"
     )
-    for index, mask in enumerate(workflow["match_masks_fullres_bool"], start=1):
+    matches = list(workflow["result"].get("matches") or [])
+    match_masks = list(workflow["match_masks_fullres_bool"])
+    if len(matches) != len(match_masks):
+        raise ValueError("template match metadata and masks must align")
+    for index, (match, mask) in enumerate(zip(matches, match_masks), start=1):
+        match_id = int(match.get("match_id", index))
+        if match_id <= 0:
+            raise ValueError("template match id must be positive")
         Image.fromarray(np.asarray(mask, dtype=bool).astype(np.uint8) * 255, mode="L").save(
-            masks_dir / f"match_{index:04d}.png"
+            masks_dir / f"match_{match_id:04d}.png"
         )
     manifest = copy.deepcopy(workflow["result"])
     manifest["session_id"] = session_id
@@ -355,14 +571,16 @@ def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mod
         crop_bbox = list(image_state.get("crop_bbox_xyxy") or [])
         if crop_bbox != list(source_state.get("crop_bbox_xyxy") or []):
             raise ValueError("当前裁剪 provenance 已过期，请重新应用裁剪")
-        active_id = pvs_state.get("active_instance_id")
-        if active_id is None:
+        seed_instance_id = pvs_state.get("template_match_instance_id")
+        if seed_instance_id is None:
+            seed_instance_id = pvs_state.get("active_instance_id")
+        if seed_instance_id is None:
             raise ValueError("请先完成智能分割并选择当前 PVS 实例")
         workflow = _template_matching.run_template_match_workflow(
             np.asarray(source.convert("RGB")),
             crop_bbox,
             pvs_state,
-            active_instance_id=active_id,
+            active_instance_id=seed_instance_id,
             match_threshold=float(0.7 if match_threshold in (None, "") else match_threshold),
             expand_threshold=int(20 if expand_threshold in (None, "") else expand_threshold),
             nms_threshold=float(0.3 if nms_threshold in (None, "") else nms_threshold),
@@ -379,10 +597,13 @@ def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mod
             "schema_version": 1,
             "source_image_id": source_id,
             "workspace_image_id": str(image_state.get("image_id") or ""),
-            "active_instance_id": active_id,
+            "active_instance_id": seed_instance_id,
             "result": manifest,
         }
-        status = f"模板匹配完成：{count} matches；结果使用完整原图坐标，不写入 PVS 实例池"
+        status = (
+            f"模板匹配完成：PVS #{seed_instance_id}，{count} matches；"
+            "结果使用完整原图坐标，不写入 PVS 实例池"
+        )
         return (
             state,
             Image.fromarray(np.asarray(workflow["overlay_rgb"], dtype=np.uint8), mode="RGB"),

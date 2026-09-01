@@ -4,7 +4,15 @@
 _MULTI_USER_CONCURRENCY_LIMIT = 8
 
 
-def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_refs=None):
+def bind_demo_events(
+    *,
+    state_refs,
+    image_refs,
+    layout_refs,
+    callbacks,
+    stitch_refs=None,
+    template_stitch_refs=None,
+):
     """Bind the existing demo events without changing callback contracts."""
     session_state = state_refs.session_state
     image_state = state_refs.image_state
@@ -28,9 +36,14 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
     match_threshold = image_refs.match_threshold
     expand_threshold = image_refs.expand_threshold
     nms_threshold = image_refs.nms_threshold
+    template_instance_selector = image_refs.template_instance_selector
+    refresh_template_instances_btn = image_refs.refresh_template_instances_btn
     template_match_preview = image_refs.template_match_preview
     run_template_match_btn = image_refs.run_template_match_btn
     template_match_status = image_refs.template_match_status
+    template_match_selection = image_refs.template_match_selection
+    template_export_scope = image_refs.template_export_scope
+    export_template_selection_btn = image_refs.export_template_selection_btn
     template_match_file = image_refs.template_match_file
     mode = image_refs.mode
     image_upload = image_refs.image_upload
@@ -178,6 +191,10 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
     _workspace_gesture_payload = callbacks["_workspace_gesture_payload"]
     _workspace_gesture_input = callbacks["_workspace_gesture_input"]
     _run_template_matching = callbacks["_run_template_matching"]
+    _template_instance_choices = callbacks["_template_instance_choices"]
+    _preview_template_instance = callbacks["_preview_template_instance"]
+    _template_match_selection_choices = callbacks["_template_match_selection_choices"]
+    _export_template_match_selection = callbacks["_export_template_match_selection"]
     _finish_native_polygon = callbacks["_finish_native_polygon"]
     _clear_prompt_selection = callbacks["_clear_prompt_selection"]
     _switch_mode_with_layout_editor = callbacks["_switch_mode_with_layout_editor"]
@@ -198,13 +215,22 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
     _export_pvs = callbacks["_export_pvs"]
     _submit_feedback = callbacks["_submit_feedback"]
     _load_stitch_tiles = callbacks["_load_stitch_tiles"]
+    _apply_stitch_layout = callbacks["_apply_stitch_layout"]
     _auto_align_stitch = callbacks["_auto_align_stitch"]
     _stitch_canvas_changed = callbacks["_stitch_canvas_changed"]
     _apply_stitch_xy = callbacks["_apply_stitch_xy"]
     _apply_stitch_options = callbacks["_apply_stitch_options"]
+    _apply_stitch_export_options = callbacks["_apply_stitch_export_options"]
     _generate_stitch_mosaic = callbacks["_generate_stitch_mosaic"]
-    _load_stitch_layout_mask = callbacks["_load_stitch_layout_mask"]
+    _crop_stitch_mosaic = callbacks["_crop_stitch_mosaic"]
+    _restore_stitch_mosaic = callbacks["_restore_stitch_mosaic"]
     _handoff_stitch_mosaic = callbacks["_handoff_stitch_mosaic"]
+    _stitch_handoff_source_image = callbacks["_stitch_handoff_source_image"]
+    _stitch_handoff_status = callbacks["_stitch_handoff_status"]
+    _run_template_stitch = callbacks["_run_template_stitch"]
+    _handoff_template_stitch = callbacks["_handoff_template_stitch"]
+    _template_stitch_handoff_source_image = callbacks["_template_stitch_handoff_source_image"]
+    _template_stitch_handoff_status = callbacks["_template_stitch_handoff_status"]
 
     layout_agent_control_inputs = [
         layout_threshold,
@@ -574,18 +600,60 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
-    run_template_match_btn.click(
+    refresh_template_instances_btn.click(
+        fn=_template_instance_choices,
+        inputs=[pvs_state],
+        outputs=[template_instance_selector],
+        queue=False,
+        show_progress="hidden",
+    )
+    template_instance_event = template_instance_selector.change(
+        fn=_preview_template_instance,
+        inputs=[source_image_state, image_state, pvs_state, template_instance_selector],
+        outputs=[pvs_state, template_match_state, template_match_preview, template_match_file, template_match_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    template_instance_event.then(
+        fn=_template_match_selection_choices,
+        inputs=[template_match_state],
+        outputs=[template_match_selection],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    run_template_match_event = run_template_match_btn.click(
         fn=_run_template_matching,
         inputs=[source_image_state, image_state, pvs_state, mode, match_threshold, expand_threshold, nms_threshold],
         outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
+    run_template_match_event.then(
+        fn=_template_match_selection_choices,
+        inputs=[template_match_state],
+        outputs=[template_match_selection],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    export_template_selection_btn.click(
+        fn=_export_template_match_selection,
+        inputs=[source_image_state, image_state, pvs_state, template_match_state, template_export_scope, template_match_selection],
+        outputs=[template_match_file, template_match_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
     for template_parameter in (match_threshold, expand_threshold, nms_threshold):
-        template_parameter.change(
+        clear_event = template_parameter.change(
             fn=_clear_template_match_outputs,
             inputs=[template_match_state],
             outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+            concurrency_id="image-prepost-state",
+        )
+        clear_event.then(
+            fn=_template_match_selection_choices,
+            inputs=[template_match_state],
+            outputs=[template_match_selection],
             concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
@@ -618,10 +686,24 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
         delete_pvs_event,
         accept_pvs_event,
     ):
-        invalidating_event.then(
+        clear_event = invalidating_event.then(
             fn=_clear_template_match_outputs,
             inputs=[template_match_state],
             outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+            concurrency_id="image-prepost-state",
+        )
+        sync_event = clear_event.then(
+            fn=_template_instance_choices,
+            inputs=[pvs_state],
+            outputs=[template_instance_selector],
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+            concurrency_id="image-prepost-state",
+        )
+        sync_event.then(
+            fn=_template_match_selection_choices,
+            inputs=[template_match_state],
+            outputs=[template_match_selection],
             concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
@@ -647,12 +729,11 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
     stitch_export_btn = stitch_refs.stitch_export_btn
     stitch_status = stitch_refs.stitch_status
     stitch_mosaic_preview = stitch_refs.stitch_mosaic_preview
+    stitch_mosaic_crop_overlay = stitch_refs.stitch_mosaic_crop_overlay
+    stitch_restore_full_btn = stitch_refs.stitch_restore_full_btn
     stitch_mosaic_file = stitch_refs.stitch_mosaic_file
     stitch_canvas = stitch_refs.stitch_canvas
-    stitch_use_layout_btn = stitch_refs.stitch_use_layout_btn
     stitch_handoff_btn = stitch_refs.stitch_handoff_btn
-    stitch_step2_status = stitch_refs.stitch_step2_status
-    stitch_layout_editor = stitch_refs.stitch_layout_editor
     stitch_handoff_status = stitch_refs.stitch_handoff_status
 
     stitch_load_btn.click(
@@ -675,7 +756,26 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
             stitch_status,
             stitch_mosaic_preview,
             stitch_mosaic_file,
-            stitch_layout_editor,
+            stitch_handoff_btn,
+            stitch_handoff_status,
+        ],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    stitch_layout.input(
+        fn=_apply_stitch_layout,
+        inputs=[stitch_layout, stitch_state],
+        outputs=[
+            stitch_state,
+            stitch_layout,
+            stitch_canvas,
+            stitch_dx,
+            stitch_dy,
+            stitch_status,
+            stitch_mosaic_preview,
+            stitch_mosaic_file,
+            stitch_handoff_btn,
+            stitch_handoff_status,
         ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
@@ -683,21 +783,51 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
     stitch_align_btn.click(
         fn=_auto_align_stitch,
         inputs=[stitch_state, stitch_layout, stitch_nudge_step, stitch_diff_mode, stitch_show_loupe],
-        outputs=[stitch_state, stitch_canvas, stitch_dx, stitch_dy, stitch_status],
-        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
-        concurrency_id="image-prepost-state",
+        outputs=[
+            stitch_state,
+            stitch_canvas,
+            stitch_dx,
+            stitch_dy,
+            stitch_status,
+            stitch_mosaic_preview,
+            stitch_mosaic_file,
+            stitch_handoff_btn,
+            stitch_handoff_status,
+        ],
+        show_progress_on=[stitch_canvas],
+        concurrency_limit=2,
+        concurrency_id="stitch-auto-align",
     )
     stitch_canvas.change(
         fn=_stitch_canvas_changed,
         inputs=[stitch_canvas, stitch_state],
-        outputs=[stitch_state, stitch_dx, stitch_dy, stitch_status],
+        outputs=[
+            stitch_state,
+            stitch_dx,
+            stitch_dy,
+            stitch_status,
+            stitch_mosaic_preview,
+            stitch_mosaic_file,
+            stitch_handoff_btn,
+            stitch_handoff_status,
+        ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     stitch_apply_xy_btn.click(
         fn=_apply_stitch_xy,
         inputs=[stitch_dx, stitch_dy, stitch_state],
-        outputs=[stitch_state, stitch_canvas, stitch_dx, stitch_dy, stitch_status],
+        outputs=[
+            stitch_state,
+            stitch_canvas,
+            stitch_dx,
+            stitch_dy,
+            stitch_status,
+            stitch_mosaic_preview,
+            stitch_mosaic_file,
+            stitch_handoff_btn,
+            stitch_handoff_status,
+        ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
@@ -709,17 +839,66 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
             concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
-    stitch_export_btn.click(
+    for option in (stitch_blend, stitch_crop_periodic):
+        option.change(
+            fn=_apply_stitch_export_options,
+            inputs=[stitch_blend, stitch_crop_periodic, stitch_state],
+            outputs=[
+                stitch_state,
+                stitch_status,
+                stitch_mosaic_preview,
+                stitch_mosaic_file,
+                stitch_handoff_btn,
+                stitch_handoff_status,
+            ],
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+            concurrency_id="image-prepost-state",
+        )
+    stitch_generate_event = stitch_export_btn.click(
         fn=_generate_stitch_mosaic,
-        inputs=[stitch_state, stitch_blend, stitch_crop_periodic, layout_state],
-        outputs=[stitch_state, stitch_mosaic_preview, stitch_mosaic_file, stitch_status, stitch_layout_editor],
+        inputs=[stitch_state, stitch_blend, stitch_crop_periodic],
+        outputs=[
+            stitch_state,
+            stitch_mosaic_preview,
+            stitch_mosaic_file,
+            stitch_status,
+            stitch_handoff_btn,
+            stitch_handoff_status,
+            stitch_mosaic_crop_overlay,
+        ],
+        show_progress_on=[stitch_canvas],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
-    stitch_use_layout_btn.click(
-        fn=_load_stitch_layout_mask,
-        inputs=[stitch_state, layout_state],
-        outputs=[stitch_layout_editor, stitch_step2_status],
+    stitch_mosaic_crop_overlay.input(
+        fn=_crop_stitch_mosaic,
+        inputs=[stitch_mosaic_crop_overlay, stitch_state],
+        outputs=[
+            stitch_state,
+            stitch_mosaic_preview,
+            stitch_mosaic_file,
+            stitch_status,
+            stitch_handoff_btn,
+            stitch_handoff_status,
+            stitch_mosaic_crop_overlay,
+            stitch_restore_full_btn,
+        ],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    stitch_restore_full_btn.click(
+        fn=_restore_stitch_mosaic,
+        inputs=[stitch_state],
+        outputs=[
+            stitch_state,
+            stitch_mosaic_preview,
+            stitch_mosaic_file,
+            stitch_status,
+            stitch_handoff_btn,
+            stitch_handoff_status,
+            stitch_mosaic_crop_overlay,
+            stitch_restore_full_btn,
+        ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
@@ -730,10 +909,149 @@ def bind_demo_events(*, state_refs, image_refs, layout_refs, callbacks, stitch_r
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
-    handoff_event.then(
-        fn=lambda: "拼接整图已写入智能图像分割工作区（相当于上传原图并使用整图）。",
-        inputs=None,
+    handoff_event.success(
+        fn=_stitch_handoff_source_image,
+        inputs=[stitch_state],
+        outputs=[source_image_upload],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event.success(
+        fn=_stitch_handoff_status,
+        inputs=[source_crop_status],
         outputs=[stitch_handoff_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event.success(
+        fn=_clear_pending_point_payload,
+        inputs=None,
+        outputs=[point_payload],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event.success(
+        fn=_clear_bbox_polygon_payloads,
+        inputs=None,
+        outputs=[bbox_payload, polygon_payload],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event.success(
+        fn=_reset_layout_prompt_selection,
+        inputs=[image_state, layout_state],
+        outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event.success(
+        fn=_workspace_gesture_payload,
+        inputs=[image_state, mode, click_tool],
+        outputs=[workspace_gesture_overlay],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event.success(
+        fn=_clear_template_match_outputs,
+        inputs=[template_match_state],
+        outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+
+    if template_stitch_refs is None:
+        return
+    template_stitch_state = template_stitch_refs.template_stitch_state
+    template_stitch_files = template_stitch_refs.template_stitch_files
+    template_stitch_rows = template_stitch_refs.template_stitch_rows
+    template_stitch_cols = template_stitch_refs.template_stitch_cols
+    template_stitch_run_btn = template_stitch_refs.template_stitch_run_btn
+    template_stitch_preview = template_stitch_refs.template_stitch_preview
+    template_stitch_meta = template_stitch_refs.template_stitch_meta
+    template_stitch_file = template_stitch_refs.template_stitch_file
+    template_stitch_status = template_stitch_refs.template_stitch_status
+    template_stitch_handoff_btn = template_stitch_refs.template_stitch_handoff_btn
+    template_stitch_handoff_status = template_stitch_refs.template_stitch_handoff_status
+
+    template_stitch_run_btn.click(
+        fn=_run_template_stitch,
+        inputs=[
+            template_stitch_files,
+            template_stitch_rows,
+            template_stitch_cols,
+            template_stitch_state,
+        ],
+        outputs=[
+            template_stitch_state,
+            template_stitch_preview,
+            template_stitch_meta,
+            template_stitch_file,
+            template_stitch_status,
+            template_stitch_handoff_btn,
+            template_stitch_handoff_status,
+        ],
+        show_progress_on=[template_stitch_preview],
+        concurrency_limit=2,
+        concurrency_id="template-stitch",
+    )
+    template_handoff_event = template_stitch_handoff_btn.click(
+        fn=_handoff_template_stitch,
+        inputs=[template_stitch_state, mode, session_state, layout_state],
+        outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    template_handoff_event.success(
+        fn=_template_stitch_handoff_source_image,
+        inputs=[template_stitch_state],
+        outputs=[source_image_upload],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    template_handoff_event.success(
+        fn=_template_stitch_handoff_status,
+        inputs=[source_crop_status],
+        outputs=[template_stitch_handoff_status],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    template_handoff_event.success(
+        fn=_clear_pending_point_payload,
+        inputs=None,
+        outputs=[point_payload],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    template_handoff_event.success(
+        fn=_clear_bbox_polygon_payloads,
+        inputs=None,
+        outputs=[bbox_payload, polygon_payload],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    template_handoff_event.success(
+        fn=_reset_layout_prompt_selection,
+        inputs=[image_state, layout_state],
+        outputs=[layout_state, layout_editor, layout_prompt_mask_selector],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    template_handoff_event.success(
+        fn=_workspace_gesture_payload,
+        inputs=[image_state, mode, click_tool],
+        outputs=[workspace_gesture_overlay],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    template_handoff_event.success(
+        fn=_clear_template_match_outputs,
+        inputs=[template_match_state],
+        outputs=[
+            template_match_state,
+            template_match_preview,
+            template_match_file,
+            template_match_status,
+        ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )

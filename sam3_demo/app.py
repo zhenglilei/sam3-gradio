@@ -79,10 +79,12 @@ from sam3_demo.ui.image_tab import build_image_tab
 from sam3_demo.ui.refs import ComponentRefs
 from sam3_demo.ui.layout_mask_tab import build_layout_mask_tab
 from sam3_demo.ui.stitch_tab import build_stitch_tab
+from sam3_demo.ui.template_stitch_tab import build_template_stitch_tab
 from sam3_demo.ui.styles import CUSTOM_CSS, build_theme
 from sam3_demo.ui.top_bar import build_top_bar
 from sam3_demo.model_supervisor import SUPERVISOR
 from sam3_demo import stitch_callbacks as _stitch_cb
+from sam3_demo import template_stitch_callbacks as _template_stitch_cb
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, request_identity
@@ -198,6 +200,52 @@ def _publish_segmentation_zip(export_dir, zip_name, session_id):
         zip_name,
         session_id=session_id,
     )
+
+
+def _publish_stitch_mosaic(mosaic, session_id):
+    session_id = validate_server_session_id(session_id)
+    _prune_public_downloads()
+    with tempfile.NamedTemporaryFile(
+        prefix="stitch_mosaic_",
+        suffix=".png",
+        dir=runtime_tmp_dir,
+        delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        mosaic.save(temporary_path, format="PNG")
+        export_dir = _public_downloads.publish_files(
+            public_download_dir,
+            "stitch_exports",
+            {"stitch_mosaic.png": temporary_path},
+            session_id=session_id,
+        )
+        return str(export_dir / "stitch_mosaic.png")
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _publish_template_stitch_mosaic(mosaic, session_id):
+    session_id = validate_server_session_id(session_id)
+    _prune_public_downloads()
+    with tempfile.NamedTemporaryFile(
+        prefix="template_stitch_",
+        suffix=".png",
+        dir=runtime_tmp_dir,
+        delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        mosaic.save(temporary_path, format="PNG")
+        export_dir = _public_downloads.publish_files(
+            public_download_dir,
+            "template_stitch_exports",
+            {"template_stitch.png": temporary_path},
+            session_id=session_id,
+        )
+        return str(export_dir / "template_stitch.png")
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 from sam3_demo.model_runtime import (
@@ -1248,6 +1296,10 @@ from sam3_demo.image_prepost_callbacks import (
     _apply_source_crop_impl,
     _use_full_source_image_impl,
     _clear_template_match_outputs_impl,
+    _template_instance_choices_impl,
+    _preview_template_instance_impl,
+    _template_match_selection_choices_impl,
+    _export_template_match_selection_impl,
     _publish_template_match_export_impl,
     _run_template_matching_impl,
 )
@@ -1389,6 +1441,56 @@ def _clear_template_match_outputs(
         },
         status,
         session_id,
+    )
+
+
+def _template_instance_choices(pvs_state):
+    return _template_instance_choices_impl(
+        {
+            '_active_instances': _active_instances,
+            '_status_label': _status_label,
+        },
+        pvs_state,
+    )
+
+
+def _preview_template_instance(source_state, image_state, pvs_state, selected_id):
+    return _preview_template_instance_impl(
+        {
+            '_clear_template_match_outputs': _clear_template_match_outputs,
+            '_new_template_match_state': _new_template_match_state,
+            '_source_image_cache_get': _source_image_cache_get,
+        },
+        source_state,
+        image_state,
+        pvs_state,
+        selected_id,
+    )
+
+
+def _template_match_selection_choices(template_match_state):
+    return _template_match_selection_choices_impl({}, template_match_state)
+
+
+def _export_template_match_selection(
+    source_state,
+    image_state,
+    pvs_state,
+    template_match_state,
+    export_scope,
+    selected_match_ids,
+):
+    return _export_template_match_selection_impl(
+        {
+            '_publish_template_match_export': _publish_template_match_export,
+            '_source_image_cache_get': _source_image_cache_get,
+        },
+        source_state,
+        image_state,
+        pvs_state,
+        template_match_state,
+        export_scope,
+        selected_match_ids,
     )
 
 
@@ -3923,6 +4025,10 @@ _SESSION_GUARDED_CALLBACKS = frozenset(
         "_workspace_gesture_payload",
         "_workspace_gesture_input",
         "_run_template_matching",
+        "_template_instance_choices",
+        "_preview_template_instance",
+        "_template_match_selection_choices",
+        "_export_template_match_selection",
         "_clear_template_match_outputs",
         "_finish_native_polygon",
         "_clear_prompt_selection",
@@ -3942,7 +4048,21 @@ _SESSION_GUARDED_CALLBACKS = frozenset(
         "_export_pcs",
         "_export_pvs",
         "_submit_feedback",
+        "_load_stitch_tiles",
+        "_apply_stitch_layout",
+        "_auto_align_stitch",
+        "_stitch_canvas_changed",
+        "_apply_stitch_xy",
+        "_apply_stitch_options",
+        "_apply_stitch_export_options",
+        "_generate_stitch_mosaic",
+        "_crop_stitch_mosaic",
+        "_restore_stitch_mosaic",
         "_handoff_stitch_mosaic",
+        "_stitch_handoff_source_image",
+        "_run_template_stitch",
+        "_handoff_template_stitch",
+        "_template_stitch_handoff_source_image",
     }
 )
 
@@ -4011,6 +4131,8 @@ def _session_state_bundle(server_state):
         owned(_new_layout_state(session_id)),
         owned(region),
         owned(_new_layout_mask_agent_state(session_id)),
+        owned(_stitch_cb.new_stitch_state(session_id)),
+        owned(_template_stitch_cb.new_template_stitch_state(session_id)),
     )
 
 
@@ -4039,6 +4161,10 @@ def _auto_align_stitch(stitch_state, layout, nudge_step, diff_mode, show_loupe):
     return _stitch_cb.auto_align(stitch_state, layout, nudge_step, diff_mode, show_loupe)
 
 
+def _apply_stitch_layout(layout, stitch_state):
+    return _stitch_cb.apply_layout(layout, stitch_state)
+
+
 def _stitch_canvas_changed(payload, stitch_state):
     return _stitch_cb.canvas_changed(payload, stitch_state)
 
@@ -4051,28 +4177,74 @@ def _apply_stitch_options(nudge_step, diff_mode, show_loupe, stitch_state):
     return _stitch_cb.apply_canvas_options(nudge_step, diff_mode, show_loupe, stitch_state)
 
 
-def _generate_stitch_mosaic(stitch_state, blend, crop_periodic, layout_state):
+def _apply_stitch_export_options(blend, crop_periodic, stitch_state):
+    return _stitch_cb.apply_export_options(blend, crop_periodic, stitch_state)
+
+
+def _generate_stitch_mosaic(stitch_state, blend, crop_periodic):
     return _stitch_cb.generate_mosaic(
         stitch_state,
         blend,
         crop_periodic,
-        layout_state=layout_state,
-        cache_get=_layout_cache_get,
+        publish_mosaic=_publish_stitch_mosaic,
     )
 
 
-def _load_stitch_layout_mask(stitch_state, layout_state):
-    payload, status = _stitch_cb.stitch_layout_payload(
+def _crop_stitch_mosaic(gesture_payload, stitch_state):
+    return _stitch_cb.crop_mosaic_preview(
+        gesture_payload,
         stitch_state,
-        layout_state,
-        cache_get=_layout_cache_get,
+        publish_mosaic=_publish_stitch_mosaic,
     )
-    return payload, status
+
+
+def _restore_stitch_mosaic(stitch_state):
+    return _stitch_cb.restore_full_mosaic(
+        stitch_state,
+        publish_mosaic=_publish_stitch_mosaic,
+    )
 
 
 def _handoff_stitch_mosaic(stitch_state, mode, session_state, layout_state):
-    mosaic = stitch_state.get("mosaic") if isinstance(stitch_state, dict) else None
+    try:
+        mosaic = _stitch_cb.mosaic_for_handoff(stitch_state)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
     return _source_upload_workspace(mosaic, mode, session_state, layout_state)
+
+
+def _stitch_handoff_source_image(stitch_state):
+    return _stitch_cb.mosaic_for_handoff(stitch_state)
+
+
+def _stitch_handoff_status(source_status):
+    return _stitch_cb.handoff_status(source_status)
+
+
+def _run_template_stitch(files, rows, cols, template_stitch_state):
+    return _template_stitch_cb.run_template_stitch(
+        files,
+        rows,
+        cols,
+        template_stitch_state,
+        publish_mosaic=_publish_template_stitch_mosaic,
+    )
+
+
+def _handoff_template_stitch(template_stitch_state, mode, session_state, layout_state):
+    try:
+        mosaic = _template_stitch_cb.mosaic_for_handoff(template_stitch_state)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+    return _source_upload_workspace(mosaic, mode, session_state, layout_state)
+
+
+def _template_stitch_handoff_source_image(template_stitch_state):
+    return _template_stitch_cb.mosaic_for_handoff(template_stitch_state)
+
+
+def _template_stitch_handoff_status(source_status):
+    return _template_stitch_cb.handoff_status(source_status)
 
 
 def _session_callback_registry():
@@ -4144,13 +4316,14 @@ def create_demo():
                     _layout_region_editor_empty=_layout_region_editor_empty,
                     _LAYOUT_MASK_MORPH_LIMIT_PX=_LAYOUT_MASK_MORPH_LIMIT_PX,
                 )
+                template_stitch_ui = build_template_stitch_tab()
                 stitch_ui = build_stitch_tab(
                     StitchPreviewCanvas=StitchPreviewCanvas,
                     _stitch_canvas_import_error=_stitch_canvas_import_error,
-                    LayoutTransformEditor=LayoutTransformEditor,
-                    _layout_editor_import_error=_layout_editor_import_error,
+                    ImageGestureOverlay=ImageGestureOverlay,
+                    _image_gesture_overlay_import_error=_image_gesture_overlay_import_error,
                     empty_canvas=_stitch_cb.empty_canvas_payload(),
-                    empty_layout_editor=_layout_editor_empty(),
+                    empty_crop_overlay=_stitch_cb.empty_mosaic_crop_payload(),
                     layout_choices=_stitch_cb.LAYOUT_CHOICES,
                 )
 
@@ -4174,6 +4347,7 @@ def create_demo():
                 image_refs=image_ui,
                 layout_refs=layout_ui,
                 stitch_refs=stitch_ui,
+                template_stitch_refs=template_stitch_ui,
                 callbacks=_session_callback_registry(),
             )
             demo.load(
@@ -4190,6 +4364,8 @@ def create_demo():
                     layout_state,
                     layout_region_state,
                     layout_mask_agent_state,
+                    stitch_ui.stitch_state,
+                    template_stitch_ui.template_stitch_state,
                 ],
                 queue=False,
                 show_progress="hidden",

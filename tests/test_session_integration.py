@@ -3,12 +3,15 @@ from __future__ import annotations
 import ast
 import copy
 import inspect
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import gradio as gr
+from PIL import Image
 
 from sam3_demo import app
 from sam3_demo.session_guard import SessionGuardError
@@ -39,7 +42,7 @@ class SessionIntegrationTests(unittest.TestCase):
         before = app.SUPERVISOR.snapshot()
         bundle = self._bootstrap("browser-" + uuid.uuid4().hex)
         session_id = bundle[0]["session_id"]
-        self.assertEqual(len(bundle), 10)
+        self.assertEqual(len(bundle), 12)
         for state in bundle[1:]:
             self.assertEqual(state["session_id"], session_id)
             self.assertEqual(state["owner_token"], bundle[0]["owner_token"])
@@ -159,6 +162,83 @@ class SessionIntegrationTests(unittest.TestCase):
             bundle[0]["owner_token"],
         )
 
+    def test_stitch_handoff_rejects_missing_mosaic_without_clearing_workspace(self):
+        stitch_state = app._stitch_cb.new_stitch_state("a" * 32, "owner")
+        with mock.patch.object(app, "_source_upload_workspace") as source_upload:
+            with self.assertRaises(gr.Error):
+                app._handoff_stitch_mosaic(stitch_state, app.MODE_PVS, {}, {})
+        source_upload.assert_not_called()
+
+    def test_stitch_download_is_published_under_session_scope(self):
+        session_id = "c" * 32
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            public_root = root / "public"
+            runtime_tmp = root / "tmp"
+            runtime_tmp.mkdir()
+            with mock.patch.object(app, "public_download_dir", public_root), mock.patch.object(
+                app, "runtime_tmp_dir", runtime_tmp
+            ):
+                published = Path(
+                    app._publish_stitch_mosaic(
+                        Image.new("RGB", (5, 4), "white"),
+                        session_id,
+                    )
+                )
+            self.assertTrue(published.is_file())
+            self.assertEqual(published.name, "stitch_mosaic.png")
+            self.assertEqual(
+                published.parents[1],
+                public_root.resolve() / session_id / "stitch_exports",
+            )
+
+    def test_guarded_stitch_handoff_accepts_bootstrapped_state(self):
+        browser_hash = "browser-stitch-" + uuid.uuid4().hex
+        bundle = self._bootstrap(browser_hash)
+        stitch_state = bundle[10]
+        stitch_state["mosaic"] = Image.new("RGB", (8, 6), "white")
+        stitch_state["revision"] = 1
+        stitch_state["generated_revision"] = 1
+        guarded = app._session_callback_registry()["_handoff_stitch_mosaic"]
+        with mock.patch.object(
+            app,
+            "_source_upload_workspace",
+            return_value=("handoff-ok",),
+        ) as source_upload:
+            result = guarded(
+                stitch_state,
+                app.MODE_PVS,
+                bundle[0],
+                bundle[7],
+                _request(browser_hash),
+            )
+        self.assertEqual(result, ("handoff-ok",))
+        source_upload.assert_called_once()
+
+    def test_guarded_stitch_handoff_initializes_real_workspace(self):
+        browser_hash = "browser-stitch-real-" + uuid.uuid4().hex
+        bundle = self._bootstrap(browser_hash)
+        stitch_state = bundle[10]
+        stitch_state["mosaic"] = Image.new("RGB", (9, 7), "white")
+        stitch_state["revision"] = 2
+        stitch_state["generated_revision"] = 2
+
+        result = app._session_callback_registry()["_handoff_stitch_mosaic"](
+            stitch_state,
+            app.MODE_PVS,
+            bundle[0],
+            bundle[7],
+            _request(browser_hash),
+        )
+
+        self.assertEqual(len(result), 19)
+        self.assertEqual(result[0]["session_id"], bundle[0]["session_id"])
+        self.assertEqual(result[0]["source_width"], 9)
+        self.assertEqual(result[0]["source_height"], 7)
+        self.assertTrue(result[2].startswith("已载入完整原图 9x7"))
+        self.assertEqual(result[3]["width"], 9)
+        self.assertEqual(result[3]["height"], 7)
+
     def test_create_demo_has_private_nonqueued_bootstrap(self):
         demo = app.create_demo()
         load_dependencies = [
@@ -169,7 +249,7 @@ class SessionIntegrationTests(unittest.TestCase):
         self.assertEqual(len(load_dependencies), 1)
         dependency = load_dependencies[0]
         self.assertEqual(len(dependency["inputs"]), 0)
-        self.assertEqual(len(dependency["outputs"]), 10)
+        self.assertEqual(len(dependency["outputs"]), 12)
         self.assertFalse(dependency["queue"])
         self.assertEqual(dependency["show_progress"], "hidden")
         self.assertEqual(dependency["api_visibility"], "private")

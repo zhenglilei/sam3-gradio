@@ -57,36 +57,102 @@ class StitchPreviewCanvas(Component):
         return payload.root if isinstance(payload, JsonData) else payload
 
     @staticmethod
-    def _sanitize_tile(value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if "index" not in value:
+    def _coerce_integer(value: Any, *, minimum: int, maximum: int) -> int | None:
+        if isinstance(value, bool):
             return None
         try:
-            index = int(value["index"])
-        except (TypeError, ValueError):
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
             return None
-        tile: dict[str, Any] = {"index": index}
-        for key in _TILE_FIELDS:
-            if key != "index" and key in value:
-                tile[key] = value[key]
-        return tile
+        if not math.isfinite(number):
+            return None
+        integer = math.trunc(number)
+        if integer < minimum or integer > maximum:
+            return None
+        return integer
+
+    @classmethod
+    def _sanitize_tile(cls, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if not _REQUIRED_TILE_FIELDS.issubset(value):
+            return None
+        index = cls._coerce_integer(
+            value["index"], minimum=0, maximum=_MAX_TILE_INDEX
+        )
+        x = cls._coerce_integer(
+            value["x"], minimum=-_MAX_TILE_COORDINATE, maximum=_MAX_TILE_COORDINATE
+        )
+        y = cls._coerce_integer(
+            value["y"], minimum=-_MAX_TILE_COORDINATE, maximum=_MAX_TILE_COORDINATE
+        )
+        width = cls._coerce_integer(
+            value["width"], minimum=1, maximum=_MAX_TILE_SIZE
+        )
+        height = cls._coerce_integer(
+            value["height"], minimum=1, maximum=_MAX_TILE_SIZE
+        )
+        if None in (index, x, y, width, height):
+            return None
+        return {
+            "index": index,
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+        }
+
+    @classmethod
+    def _sanitize_value_fields(cls, raw: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        selected = cls._coerce_integer(
+            raw.get("selected"), minimum=0, maximum=_MAX_TILE_INDEX
+        )
+        if selected is not None:
+            result["selected"] = selected
+
+        nudge_step = cls._coerce_integer(raw.get("nudge_step"), minimum=1, maximum=10)
+        if nudge_step in (1, 5, 10):
+            result["nudge_step"] = nudge_step
+
+        if isinstance(raw.get("diff_mode"), bool):
+            result["diff_mode"] = raw["diff_mode"]
+        if isinstance(raw.get("show_loupe"), bool):
+            result["show_loupe"] = raw["show_loupe"]
+
+        drag_gain = raw.get("drag_gain")
+        if not isinstance(drag_gain, bool):
+            try:
+                drag_gain_value = float(drag_gain)
+            except (TypeError, ValueError, OverflowError):
+                drag_gain_value = None
+            if drag_gain_value is not None and math.isfinite(drag_gain_value):
+                if 0.0 < drag_gain_value <= 10.0:
+                    result["drag_gain"] = drag_gain_value
+
+        status = raw.get("status")
+        if isinstance(status, str) and len(status) <= _MAX_STATUS_LENGTH:
+            result["status"] = status
+        return result
 
     def preprocess(self, payload: Any) -> dict[str, Any]:
         raw = self._unwrap(payload)
         if not isinstance(raw, dict):
             return {}
 
-        result: dict[str, Any] = {}
-        for field in _VALUE_FIELDS:
-            if field in raw:
-                result[field] = raw[field]
+        result = self._sanitize_value_fields(raw)
 
         tiles = []
+        seen_indices: set[int] = set()
         for item in raw.get("tiles") or []:
             sanitized = self._sanitize_tile(item)
-            if sanitized is not None:
-                tiles.append(sanitized)
+            if sanitized is None:
+                continue
+            index = sanitized["index"]
+            if index in seen_indices:
+                continue
+            seen_indices.add(index)
+            tiles.append(sanitized)
         if tiles:
             result["tiles"] = tiles
         return result
