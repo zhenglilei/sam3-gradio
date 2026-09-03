@@ -87,6 +87,21 @@ class StitchPreviewCanvas(Component):
             return None
         return integer
 
+    @staticmethod
+    def _normalize_rotation(value: Any) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            angle = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(angle):
+            return None
+        angle = (angle + 180.0) % 360.0 - 180.0
+        if angle == -180.0:
+            angle = 180.0
+        return 0.0 if abs(angle) < 1e-9 else angle
+
     @classmethod
     def _sanitize_tile(cls, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict):
@@ -108,7 +123,8 @@ class StitchPreviewCanvas(Component):
         height = cls._coerce_integer(
             value["height"], minimum=1, maximum=_MAX_TILE_SIZE
         )
-        if None in (index, x, y, width, height):
+        rotation = cls._normalize_rotation(value.get("rotation_deg", 0.0))
+        if None in (index, x, y, width, height, rotation):
             return None
         return {
             "index": index,
@@ -116,6 +132,7 @@ class StitchPreviewCanvas(Component):
             "y": y,
             "width": width,
             "height": height,
+            "rotation_deg": rotation,
         }
 
     @classmethod

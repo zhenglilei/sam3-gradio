@@ -42,7 +42,6 @@ def bind_demo_events(
     run_template_match_btn = image_refs.run_template_match_btn
     template_match_status = image_refs.template_match_status
     template_match_selection = image_refs.template_match_selection
-    template_export_scope = image_refs.template_export_scope
     export_template_selection_btn = image_refs.export_template_selection_btn
     template_match_file = image_refs.template_match_file
     mode = image_refs.mode
@@ -635,7 +634,7 @@ def bind_demo_events(
     )
     export_template_selection_btn.click(
         fn=_export_template_match_selection,
-        inputs=[source_image_state, image_state, pvs_state, template_match_state, template_export_scope, template_match_selection],
+        inputs=[source_image_state, image_state, pvs_state, template_match_state, template_match_selection],
         outputs=[template_match_file, template_match_status],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
@@ -712,11 +711,13 @@ def bind_demo_events(
     stitch_state = stitch_refs.stitch_state
     stitch_files = stitch_refs.stitch_files
     stitch_layout = stitch_refs.stitch_layout
+    stitch_remove_black_border = stitch_refs.stitch_remove_black_border
     stitch_load_btn = stitch_refs.stitch_load_btn
     stitch_align_btn = stitch_refs.stitch_align_btn
     stitch_nudge_step = stitch_refs.stitch_nudge_step
     stitch_dx = stitch_refs.stitch_dx
     stitch_dy = stitch_refs.stitch_dy
+    stitch_rotation = stitch_refs.stitch_rotation
     stitch_apply_xy_btn = stitch_refs.stitch_apply_xy_btn
     stitch_diff_mode = stitch_refs.stitch_diff_mode
     stitch_show_loupe = stitch_refs.stitch_show_loupe
@@ -743,6 +744,7 @@ def bind_demo_events(
             stitch_show_loupe,
             stitch_blend,
             stitch_crop_periodic,
+            stitch_remove_black_border,
         ],
         outputs=[
             stitch_state,
@@ -754,6 +756,7 @@ def bind_demo_events(
             stitch_mosaic_file,
             stitch_handoff_btn,
             stitch_handoff_status,
+            stitch_rotation,
         ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
@@ -772,6 +775,7 @@ def bind_demo_events(
             stitch_mosaic_file,
             stitch_handoff_btn,
             stitch_handoff_status,
+            stitch_rotation,
         ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
@@ -789,6 +793,7 @@ def bind_demo_events(
             stitch_mosaic_file,
             stitch_handoff_btn,
             stitch_handoff_status,
+            stitch_rotation,
         ],
         show_progress_on=[stitch_canvas],
         concurrency_limit=2,
@@ -806,13 +811,14 @@ def bind_demo_events(
             stitch_mosaic_file,
             stitch_handoff_btn,
             stitch_handoff_status,
+            stitch_rotation,
         ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     stitch_apply_xy_btn.click(
         fn=_apply_stitch_xy,
-        inputs=[stitch_dx, stitch_dy, stitch_state],
+        inputs=[stitch_dx, stitch_dy, stitch_rotation, stitch_state],
         outputs=[
             stitch_state,
             stitch_canvas,
@@ -823,6 +829,7 @@ def bind_demo_events(
             stitch_mosaic_file,
             stitch_handoff_btn,
             stitch_handoff_status,
+            stitch_rotation,
         ],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",

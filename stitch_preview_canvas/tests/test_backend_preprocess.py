@@ -25,6 +25,7 @@ class StitchPreviewCanvasPreprocessTests(unittest.TestCase):
                     "y": 2.5,
                     "width": 100,
                     "height": 80,
+                    "rotation_deg": 370,
                     "extra": "drop-me",
                 },
                 {
@@ -64,9 +65,11 @@ class StitchPreviewCanvasPreprocessTests(unittest.TestCase):
         self.assertNotIn("image", sanitized["tiles"][0])
         self.assertEqual(sanitized["tiles"][0]["x"], 1)
         self.assertEqual(sanitized["tiles"][0]["y"], 2)
+        self.assertEqual(sanitized["tiles"][0]["rotation_deg"], 10.0)
         self.assertEqual(sanitized["tiles"][1]["index"], 1)
         self.assertEqual(sanitized["tiles"][1]["width"], 50)
         self.assertEqual(sanitized["tiles"][1]["height"], 40)
+        self.assertEqual(sanitized["tiles"][1]["rotation_deg"], 0.0)
         self.assertNotIn("extra", sanitized["tiles"][0])
         self.assertEqual(sanitized["selected"], 1)
         self.assertEqual(sanitized["nudge_step"], 5)
@@ -170,6 +173,21 @@ class StitchPreviewCanvasPreprocessTests(unittest.TestCase):
         self.assertNotIn("diff_mode", sanitized)
         self.assertNotIn("show_loupe", sanitized)
         self.assertNotIn("status", sanitized)
+
+    def test_preprocess_rejects_nonfinite_rotation(self) -> None:
+        payload = {
+            "tiles": [
+                {
+                    "index": 0,
+                    "x": 0,
+                    "y": 0,
+                    "width": 10,
+                    "height": 10,
+                    "rotation_deg": float("nan"),
+                }
+            ]
+        }
+        self.assertNotIn("tiles", self.component.preprocess(payload))
 
     def test_preprocess_empty_payload(self) -> None:
         self.assertEqual(self.component.preprocess(None), {})

@@ -187,9 +187,15 @@ def _draw_match_label(
     """Draw one fixed-size readable label next to a match bbox."""
 
     try:
-        label = f"M{int(match_id)} {float(score):.2f}"
+        score_value = float(score)
     except (TypeError, ValueError) as exc:
-        raise ValueError("match metadata must contain numeric match_id and score") from exc
+        raise ValueError("match metadata must contain a numeric score") from exc
+    label_id = str(match_id).strip()
+    if not label_id:
+        raise ValueError("match metadata must contain a display id")
+    if label_id.isdigit():
+        label_id = f"M{int(label_id)}"
+    label = f"{label_id} {score_value:.2f}"
 
     x1, y1, _, _ = (int(value) for value in bbox_xyxy)
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -265,7 +271,10 @@ def render_template_overlay(
             _draw_match_label(
                 overlay,
                 mask_bbox_xyxy(match),
-                match_item.get("match_id", match_index + 1),
+                match_item.get(
+                    "display_id",
+                    match_item.get("match_id", match_index + 1),
+                ),
                 match_item.get("score", 0.0),
             )
 

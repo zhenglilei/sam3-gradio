@@ -1464,8 +1464,7 @@ def _export_template_match_selection(
     image_state,
     pvs_state,
     template_match_state,
-    export_scope,
-    selected_match_ids,
+    selected_group_ids,
 ):
     return _export_template_match_selection_impl(
         {
@@ -1476,8 +1475,7 @@ def _export_template_match_selection(
         image_state,
         pvs_state,
         template_match_state,
-        export_scope,
-        selected_match_ids,
+        selected_group_ids,
     )
 
 
@@ -4112,6 +4110,15 @@ def _bootstrap_session(request: gr.Request):
     return _session_state_bundle(_SESSION_REGISTRY.bind(session_hash, client_ip))
 
 
+def _enable_source_controls():
+    return (
+        gr.update(interactive=True),
+        gr.update(interactive=True),
+        gr.update(interactive=True),
+        "请上传完整原图；默认直接使用整图。",
+    )
+
+
 def _close_request_session(request: gr.Request):
     # An unload request carries only browser hash/IP, not the owner token. Closing
     # by that incomplete identity can race with a newly rebound page. Exact
@@ -4122,9 +4129,27 @@ def _close_request_session(request: gr.Request):
         logger.info("Ignoring invalid session unload request: %s", exc)
 
 
-def _load_stitch_tiles(files, layout, stitch_state, nudge_step, diff_mode, show_loupe, blend, crop_periodic):
+def _load_stitch_tiles(
+    files,
+    layout,
+    stitch_state,
+    nudge_step,
+    diff_mode,
+    show_loupe,
+    blend,
+    crop_periodic,
+    remove_black_border=True,
+):
     return _stitch_cb.load_tiles(
-        files, layout, stitch_state, nudge_step, diff_mode, show_loupe, blend, crop_periodic
+        files,
+        layout,
+        stitch_state,
+        nudge_step,
+        diff_mode,
+        show_loupe,
+        blend,
+        crop_periodic,
+        remove_black_border,
     )
 
 
@@ -4140,8 +4165,8 @@ def _stitch_canvas_changed(payload, stitch_state):
     return _stitch_cb.canvas_changed(payload, stitch_state)
 
 
-def _apply_stitch_xy(dx, dy, stitch_state):
-    return _stitch_cb.apply_numeric_shift(dx, dy, stitch_state)
+def _apply_stitch_xy(dx, dy, rotation_deg, stitch_state):
+    return _stitch_cb.apply_numeric_transform(dx, dy, rotation_deg, stitch_state)
 
 
 def _apply_stitch_options(nudge_step, diff_mode, show_loupe, stitch_state):
@@ -4321,7 +4346,7 @@ def create_demo():
                 template_stitch_refs=template_stitch_ui,
                 callbacks=_session_callback_registry(),
             )
-            demo.load(
+            bootstrap_event = demo.load(
                 fn=_bootstrap_session,
                 inputs=None,
                 outputs=[
@@ -4337,6 +4362,19 @@ def create_demo():
                     layout_mask_agent_state,
                     stitch_ui.stitch_state,
                     template_stitch_ui.template_stitch_state,
+                ],
+                queue=False,
+                show_progress="hidden",
+                api_visibility="private",
+            )
+            bootstrap_event.success(
+                fn=_enable_source_controls,
+                inputs=None,
+                outputs=[
+                    image_ui.source_image_upload,
+                    image_ui.apply_crop_btn,
+                    image_ui.use_full_image_btn,
+                    image_ui.source_crop_status,
                 ],
                 queue=False,
                 show_progress="hidden",

@@ -298,16 +298,250 @@ def _template_pvs_instance(pvs_state, instance_id):
     raise ValueError(f"PVS #{instance_id} 不存在")
 
 
+def _template_available_instance_ids(pvs_state):
+    instances = pvs_state.get("instances") if isinstance(pvs_state, dict) else None
+    if not isinstance(instances, dict):
+        return []
+    values = []
+    for key, instance in instances.items():
+        if not isinstance(instance, dict) or instance.get("status") == "deleted":
+            continue
+        try:
+            instance_id = int(instance.get("id", key))
+        except (TypeError, ValueError):
+            continue
+        if instance_id not in values:
+            values.append(instance_id)
+    return sorted(values)
+
+
+def _template_selected_instance_ids(pvs_state, selected_values=None, *, default_all=False):
+    if selected_values is None:
+        if isinstance(pvs_state, dict) and "template_match_instance_ids" in pvs_state:
+            selected_values = pvs_state.get("template_match_instance_ids")
+        elif isinstance(pvs_state, dict) and pvs_state.get("template_match_instance_id") is not None:
+            selected_values = [pvs_state.get("template_match_instance_id")]
+        elif default_all:
+            selected_values = _template_available_instance_ids(pvs_state)
+        else:
+            selected_values = []
+    if selected_values in (None, ""):
+        selected_values = []
+    elif not isinstance(selected_values, (list, tuple, set)):
+        selected_values = [selected_values]
+    selected_ids = []
+    for value in selected_values:
+        try:
+            instance_id = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"PVS 实例 {value!r} 非法") from exc
+        _template_pvs_instance(pvs_state, instance_id)
+        if instance_id not in selected_ids:
+            selected_ids.append(instance_id)
+    return selected_ids
+
+
+def _template_group_alias(index):
+    number = int(index) + 1
+    letters = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return f"{letters}x"
+
+
+def _template_group_id(instance_id):
+    return f"PVS-{int(instance_id)}"
+
+
+def _template_mask_iou(
+    left,
+    right,
+    *,
+    left_area=None,
+    right_area=None,
+    left_bbox=None,
+    right_bbox=None,
+):
+    """Return pixel IoU, optionally using cached mask geometry."""
+    left_array = np.asarray(left, dtype=bool)
+    right_array = np.asarray(right, dtype=bool)
+    if left_array.ndim != 2 or right_array.ndim != 2:
+        raise ValueError("template match masks must be two-dimensional")
+    if left_array.shape != right_array.shape:
+        raise ValueError("template match masks must have the same shape")
+    if left_area is None:
+        left_area = int(np.count_nonzero(left_array))
+    if right_area is None:
+        right_area = int(np.count_nonzero(right_array))
+    if not left_area or not right_area:
+        return 0.0
+    if left_bbox is None:
+        ys, xs = np.nonzero(left_array)
+        left_bbox = (
+            (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+            if len(xs)
+            else None
+        )
+    if right_bbox is None:
+        ys, xs = np.nonzero(right_array)
+        right_bbox = (
+            (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+            if len(xs)
+            else None
+        )
+    if left_bbox is None or right_bbox is None:
+        return 0.0
+    x1 = max(left_bbox[0], right_bbox[0])
+    y1 = max(left_bbox[1], right_bbox[1])
+    x2 = min(left_bbox[2], right_bbox[2])
+    y2 = min(left_bbox[3], right_bbox[3])
+    if x1 >= x2 or y1 >= y2:
+        return 0.0
+    intersection = np.count_nonzero(
+        left_array[y1:y2, x1:x2] & right_array[y1:y2, x1:x2]
+    )
+    union = left_area + right_area - intersection
+    return float(intersection / union) if union else 0.0
+
+
+def _deduplicate_template_groups(groups, group_masks, iou_threshold):
+    """Remove only cross-group duplicate matches with score-ordered NMS.
+
+    Candidates are compared only when their source groups differ.  A higher
+    ``match['score']`` wins an overlap strictly above ``iou_threshold``;
+    equal scores retain the candidate that appeared first in the original
+    group/match order.  The returned groups, group masks, and flattened lists
+    are rebuilt together so their positional correspondence is preserved.
+    """
+    if len(groups) != len(group_masks):
+        raise ValueError("template groups and group masks must be aligned")
+    threshold = float(iou_threshold)
+    candidates = []
+    for group_index, (group, group_mask) in enumerate(zip(groups, group_masks)):
+        matches = list(group.get("matches") or [])
+        masks = list(group_mask.get("match_masks_fullres_bool") or [])
+        if len(matches) != len(masks):
+            raise ValueError(
+                f"template group {group.get('group_id', group_index)} matches and masks are misaligned"
+            )
+        for match_index, (match, mask) in enumerate(zip(matches, masks)):
+            if not isinstance(match, dict):
+                raise ValueError("template match metadata must be a mapping")
+            try:
+                score = float(match["score"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("template match metadata must contain a numeric score") from exc
+            if not np.isfinite(score):
+                raise ValueError("template match score must be finite")
+            mask_array = np.asarray(mask, dtype=bool)
+            if mask_array.ndim != 2:
+                raise ValueError("template match masks must be two-dimensional")
+            ys, xs = np.nonzero(mask_array)
+            mask_bbox = (
+                (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+                if len(xs)
+                else None
+            )
+            candidates.append(
+                {
+                    "group_index": group_index,
+                    "match_index": match_index,
+                    "original_order": len(candidates),
+                    "score": score,
+                    "match": match,
+                    "mask": mask_array,
+                    "area": int(len(xs)),
+                    "bbox": mask_bbox,
+                }
+            )
+
+    retained = []
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (-item["score"], item["original_order"]),
+    ):
+        if any(
+            candidate["group_index"] != previous["group_index"]
+            and _template_mask_iou(
+                candidate["mask"],
+                previous["mask"],
+                left_area=candidate["area"],
+                right_area=previous["area"],
+                left_bbox=candidate["bbox"],
+                right_bbox=previous["bbox"],
+            ) > threshold
+            for previous in retained
+        ):
+            continue
+        retained.append(candidate)
+
+    retained_indices = {}
+    for candidate in retained:
+        retained_indices.setdefault(candidate["group_index"], set()).add(
+            candidate["match_index"]
+        )
+
+    filtered_groups = []
+    filtered_group_masks = []
+    flat_matches = []
+    flat_masks = []
+    for group_index, (group, group_mask) in enumerate(zip(groups, group_masks)):
+        matches = list(group.get("matches") or [])
+        masks = list(group_mask.get("match_masks_fullres_bool") or [])
+        keep = sorted(retained_indices.get(group_index, set()))
+        filtered_group = copy.deepcopy(group)
+        filtered_group["matches"] = [copy.deepcopy(matches[index]) for index in keep]
+        filtered_group["match_count"] = len(keep)
+        filtered_group_mask = copy.deepcopy(group_mask)
+        filtered_group_mask["match_masks_fullres_bool"] = [
+            np.asarray(masks[index], dtype=bool).copy() for index in keep
+        ]
+        filtered_groups.append(filtered_group)
+        filtered_group_masks.append(filtered_group_mask)
+        flat_matches.extend(filtered_group["matches"])
+        flat_masks.extend(filtered_group_mask["match_masks_fullres_bool"])
+    return filtered_groups, filtered_group_masks, flat_matches, flat_masks
+
+
+def _template_result_groups(result, fallback_instance_id=None):
+    if not isinstance(result, dict):
+        return []
+    groups = result.get("groups")
+    if isinstance(groups, list):
+        return [group for group in groups if isinstance(group, dict)]
+    matches = result.get("matches")
+    if not isinstance(matches, list):
+        return []
+    seed = result.get("seed") if isinstance(result.get("seed"), dict) else {}
+    instance_id = seed.get("instance_id", fallback_instance_id)
+    if instance_id is None:
+        return []
+    return [
+        {
+            "group_id": _template_group_id(instance_id),
+            "group_label": "Ax",
+            "source_instance_id": int(instance_id),
+            "seed": copy.deepcopy(seed),
+            "blockers": copy.deepcopy(result.get("blockers") or {}),
+            "match_count": len(matches),
+            "matches": copy.deepcopy(matches),
+        }
+    ]
+
+
 def _template_instance_choices_impl(_deps, pvs_state):
     _active_instances = _deps["_active_instances"]
     choices = [
         (f"PVS #{item['id']}", str(item["id"]))
         for item in _active_instances(pvs_state or {})
     ]
-    selected = (pvs_state or {}).get("template_match_instance_id")
-    if selected is None:
-        selected = (pvs_state or {}).get("active_instance_id")
-    value = str(selected) if selected is not None and any(choice[1] == str(selected) for choice in choices) else None
+    available = {value for _, value in choices}
+    if isinstance(pvs_state, dict) and "template_match_instance_ids" in pvs_state:
+        selected = pvs_state.get("template_match_instance_ids") or []
+    else:
+        selected = [value for _, value in choices]
+    value = [str(item) for item in selected if str(item) in available]
     return gr.update(choices=choices, value=value)
 
 
@@ -316,19 +550,20 @@ def _preview_template_instance_impl(
     source_state,
     image_state,
     pvs_state,
-    selected_id,
+    selected_ids,
 ):
     _clear_template_match_outputs = _deps["_clear_template_match_outputs"]
     _new_template_match_state = _deps["_new_template_match_state"]
     _source_image_cache_get = _deps["_source_image_cache_get"]
-    if selected_id in (None, ""):
+    if not selected_ids:
+        pvs_state["template_match_instance_ids"] = []
         pvs_state.pop("template_match_instance_id", None)
         session_id = _template_failure_session_id(source_state, image_state, pvs_state)
         return (
             pvs_state,
             *_clear_template_match_outputs(
                 {"session_id": session_id} if session_id else None,
-                "请选择用于模板匹配的 PVS 实例",
+                "请选择至少一个用于模板匹配的 PVS 实例",
             ),
         )
     try:
@@ -341,33 +576,37 @@ def _preview_template_instance_impl(
         crop_bbox = list(image_state.get("crop_bbox_xyxy") or [])
         if crop_bbox != list(source_state.get("crop_bbox_xyxy") or []):
             raise ValueError("当前裁剪 provenance 已过期，请重新应用裁剪")
-        instance = _template_pvs_instance(pvs_state, selected_id)
-        seed_mask = _template_matching.map_crop_mask_to_source(
-            instance.get("mask_fullres_bool"),
-            (source.height, source.width),
-            crop_bbox,
-        )
+        selected_ids = _template_selected_instance_ids(pvs_state, selected_ids)
+        seed_mask = np.zeros((source.height, source.width), dtype=bool)
+        for selected_id in selected_ids:
+            instance = _template_pvs_instance(pvs_state, selected_id)
+            seed_mask |= _template_matching.map_crop_mask_to_source(
+                instance.get("mask_fullres_bool"),
+                (source.height, source.width),
+                crop_bbox,
+            )
         overlay = _template_matching.render_template_overlay(
             np.asarray(source.convert("RGB")),
             seed_mask,
             [],
         )
-        selected_id = int(selected_id)
-        pvs_state["template_match_instance_id"] = selected_id
+        pvs_state["template_match_instance_ids"] = selected_ids
+        pvs_state.pop("template_match_instance_id", None)
         state = _new_template_match_state(session_id)
         state.update(
             {
                 "source_image_id": str(source_state.get("source_image_id") or ""),
                 "workspace_image_id": str(image_state.get("image_id") or ""),
-                "active_instance_id": selected_id,
+                "selected_instance_ids": selected_ids,
             }
         )
+        selected_text = "、".join(f"PVS #{instance_id}" for instance_id in selected_ids)
         return (
             pvs_state,
             state,
             Image.fromarray(overlay, mode="RGB"),
             None,
-            f"已选择 PVS #{selected_id} 作为模板；黄色轮廓为当前模板",
+            f"已选择 {selected_text}；黄色轮廓为模板源，每个源将生成独立衍生组",
         )
     except Exception as exc:
         session_id = _template_failure_session_id(source_state, image_state, pvs_state)
@@ -382,14 +621,18 @@ def _preview_template_instance_impl(
 
 def _template_match_selection_choices_impl(_deps, template_match_state):
     result = template_match_state.get("result") if isinstance(template_match_state, dict) else None
-    matches = result.get("matches") if isinstance(result, dict) else None
     choices = []
-    for match in matches or []:
-        if not isinstance(match, dict):
+    fallback = template_match_state.get("active_instance_id") if isinstance(template_match_state, dict) else None
+    for group in _template_result_groups(result, fallback):
+        group_id = str(group.get("group_id") or "")
+        if not group_id:
             continue
-        match_id = int(match.get("match_id"))
-        score = float(match.get("score", 0.0))
-        choices.append((f"M{match_id}  score={score:.3f}", str(match_id)))
+        group_label = str(group.get("group_label") or group_id)
+        instance_id = int(group.get("source_instance_id"))
+        count = int(group.get("match_count") or len(group.get("matches") or []))
+        choices.append(
+            (f"{group_label} · PVS #{instance_id} · {count} 个衍生实例", group_id)
+        )
     return gr.update(choices=choices, value=[value for _, value in choices])
 
 
@@ -399,8 +642,7 @@ def _export_template_match_selection_impl(
     image_state,
     pvs_state,
     template_match_state,
-    export_scope,
-    selected_match_ids,
+    selected_group_ids,
 ):
     _publish_template_match_export = _deps["_publish_template_match_export"]
     _source_image_cache_get = _deps["_source_image_cache_get"]
@@ -413,67 +655,110 @@ def _export_template_match_selection_impl(
         if str(template_match_state.get("workspace_image_id") or "") != str(image_state.get("image_id") or ""):
             raise ValueError("模板匹配工作图已过期，请重新运行")
         result = template_match_state.get("result")
-        matches = result.get("matches") if isinstance(result, dict) else None
-        if not isinstance(matches, list) or not matches:
-            raise ValueError("没有可导出的模板匹配结果")
-        available = {int(match["match_id"]): match for match in matches}
-        scope = str(export_scope or "all")
-        if scope == "all":
-            selected_ids = list(available)
-        elif scope == "selected":
-            selected_ids = []
-            for value in selected_match_ids or []:
-                match_id = int(value)
-                if match_id not in available:
-                    raise ValueError(f"匹配实例 M{match_id} 不存在")
-                if match_id not in selected_ids:
-                    selected_ids.append(match_id)
-            if not selected_ids:
-                raise ValueError("请选择至少一个匹配实例")
-        else:
-            raise ValueError("未知的保存范围")
+        groups = _template_result_groups(
+            result,
+            template_match_state.get("active_instance_id"),
+        )
+        if not groups:
+            raise ValueError("没有可导出的模板匹配衍生组")
+        available = {
+            str(group.get("group_id")): group
+            for group in groups
+            if str(group.get("group_id") or "")
+        }
+        selected_ids = []
+        for value in selected_group_ids or []:
+            group_id = str(value)
+            if group_id not in available:
+                raise ValueError(f"衍生结果组 {group_id} 不存在")
+            if group_id not in selected_ids:
+                selected_ids.append(group_id)
+        if not selected_ids:
+            raise ValueError("请选择至少一个衍生结果组")
 
         source = _source_image_cache_get(source_state)
         crop_bbox = list(image_state.get("crop_bbox_xyxy") or [])
         if crop_bbox != list(source_state.get("crop_bbox_xyxy") or []):
             raise ValueError("当前裁剪 provenance 已过期，请重新应用裁剪")
-        seed_id = template_match_state.get("active_instance_id")
-        instance = _template_pvs_instance(pvs_state, seed_id)
-        seed_mask = _template_matching.map_crop_mask_to_source(
-            instance.get("mask_fullres_bool"),
-            (source.height, source.width),
-            crop_bbox,
-        )
-        selected_matches = [copy.deepcopy(available[match_id]) for match_id in selected_ids]
-        selected_masks = []
-        for match in selected_matches:
-            translation = match.get("translation_xy")
-            if not isinstance(translation, (list, tuple)) or len(translation) != 2:
-                raise ValueError(f"匹配实例 M{match['match_id']} 缺少合法位移")
-            selected_masks.append(
-                _template_matching.translate_source_mask(
+        selected_groups = []
+        group_masks = []
+        flat_matches = []
+        flat_masks = []
+        seed_union = np.zeros((source.height, source.width), dtype=bool)
+        for group_id in selected_ids:
+            group = copy.deepcopy(available[group_id])
+            source_instance_id = int(group.get("source_instance_id"))
+            instance = _template_pvs_instance(pvs_state, source_instance_id)
+            seed_mask = _template_matching.map_crop_mask_to_source(
+                instance.get("mask_fullres_bool"),
+                (source.height, source.width),
+                crop_bbox,
+            )
+            seed_union |= seed_mask
+            matches = list(group.get("matches") or [])
+            masks = []
+            for match in matches:
+                translation = match.get("translation_xy")
+                if not isinstance(translation, (list, tuple)) or len(translation) != 2:
+                    raise ValueError(
+                        f"衍生组 {group_id} 的 M{match.get('match_id')} 缺少合法位移"
+                    )
+                mask = _template_matching.translate_source_mask(
                     seed_mask,
                     int(translation[0]),
                     int(translation[1]),
                 )
+                masks.append(mask)
+                flat_masks.append(mask)
+                flat_matches.append(match)
+            group["match_count"] = len(matches)
+            selected_groups.append(group)
+            group_masks.append(
+                {
+                    "group_id": group_id,
+                    "source_instance_id": source_instance_id,
+                    "seed_mask_fullres_bool": seed_mask,
+                    "match_masks_fullres_bool": masks,
+                }
             )
+        parameters = result.get("parameters")
+        export_nms_threshold = (
+            parameters.get("nms_threshold", 0.3)
+            if isinstance(parameters, dict)
+            else 0.3
+        )
+        (
+            selected_groups,
+            group_masks,
+            flat_matches,
+            flat_masks,
+        ) = _deduplicate_template_groups(
+            selected_groups,
+            group_masks,
+            export_nms_threshold,
+        )
         filtered_result = copy.deepcopy(result)
-        filtered_result["matches"] = selected_matches
-        filtered_result["match_count"] = len(selected_matches)
+        filtered_result["schema_version"] = 2
+        filtered_result.pop("seed", None)
+        filtered_result.pop("blockers", None)
+        filtered_result.pop("matches", None)
+        filtered_result["groups"] = selected_groups
+        filtered_result["group_count"] = len(selected_groups)
+        filtered_result["match_count"] = len(flat_matches)
         filtered_result["selection"] = {
-            "scope": scope,
-            "selected_match_ids": selected_ids,
+            "selected_group_ids": selected_ids,
         }
         source_rgb = np.asarray(source.convert("RGB"))
         workflow = {
             "result": filtered_result,
-            "seed_mask_fullres_bool": seed_mask,
-            "match_masks_fullres_bool": selected_masks,
+            "seed_mask_fullres_bool": seed_union,
+            "match_masks_fullres_bool": flat_masks,
+            "group_masks": group_masks,
             "overlay_rgb": _template_matching.render_template_overlay(
                 source_rgb,
-                seed_mask,
-                selected_masks,
-                selected_matches,
+                seed_union,
+                flat_masks,
+                flat_matches,
             ),
         }
         zip_path, _ = _publish_template_match_export(
@@ -482,8 +767,11 @@ def _export_template_match_selection_impl(
             source_state,
             image_state,
         )
-        scope_text = "全部" if scope == "all" else "所选"
-        return str(zip_path), f"已生成{scope_text}结果下载包：{len(selected_ids)} 个匹配实例"
+        return (
+            str(zip_path),
+            f"已生成所选衍生组下载包：{len(selected_groups)} 组，"
+            f"{len(flat_matches)} 个衍生实例",
+        )
     except Exception as exc:
         return None, f"生成模板匹配下载包失败: {exc}"
 
@@ -506,17 +794,6 @@ def _publish_template_match_export_impl(_deps, source_image, workflow, source_st
     Image.fromarray(np.asarray(workflow["overlay_rgb"], dtype=np.uint8), mode="RGB").save(
         export_dir / "template_match_overlay.png"
     )
-    matches = list(workflow["result"].get("matches") or [])
-    match_masks = list(workflow["match_masks_fullres_bool"])
-    if len(matches) != len(match_masks):
-        raise ValueError("template match metadata and masks must align")
-    for index, (match, mask) in enumerate(zip(matches, match_masks), start=1):
-        match_id = int(match.get("match_id", index))
-        if match_id <= 0:
-            raise ValueError("template match id must be positive")
-        Image.fromarray(np.asarray(mask, dtype=bool).astype(np.uint8) * 255, mode="L").save(
-            masks_dir / f"match_{match_id:04d}.png"
-        )
     manifest = copy.deepcopy(workflow["result"])
     manifest["session_id"] = session_id
     manifest["source_image"] = {
@@ -530,8 +807,61 @@ def _publish_template_match_export_impl(_deps, source_image, workflow, source_st
         "pixel_sha256": str(image_state.get("target_image_sha256") or ""),
         "crop_bbox_xyxy": list(image_state.get("crop_bbox_xyxy") or []),
     }
-    for match in manifest.get("matches", []):
-        match["mask_file"] = f"masks/match_{int(match['match_id']):04d}.png"
+    groups = manifest.get("groups")
+    if isinstance(groups, list):
+        runtime_groups = {
+            str(group.get("group_id")): group
+            for group in workflow.get("group_masks") or []
+            if isinstance(group, dict)
+        }
+        for group in groups:
+            group_id = str(group.get("group_id") or "")
+            runtime_group = runtime_groups.get(group_id)
+            if runtime_group is None:
+                raise ValueError(f"template group masks missing for {group_id}")
+            source_instance_id = int(group.get("source_instance_id"))
+            seed_name = f"pvs_{source_instance_id:04d}_seed.png"
+            Image.fromarray(
+                np.asarray(
+                    runtime_group.get("seed_mask_fullres_bool"),
+                    dtype=bool,
+                ).astype(np.uint8) * 255,
+                mode="L",
+            ).save(masks_dir / seed_name)
+            group.setdefault("seed", {})["mask_file"] = f"masks/{seed_name}"
+            matches = list(group.get("matches") or [])
+            match_masks = list(runtime_group.get("match_masks_fullres_bool") or [])
+            if len(matches) != len(match_masks):
+                raise ValueError(
+                    f"template group {group_id} metadata and masks must align"
+                )
+            for index, (match, mask) in enumerate(zip(matches, match_masks), start=1):
+                match_id = int(match.get("match_id", index))
+                if match_id <= 0:
+                    raise ValueError("template match id must be positive")
+                mask_name = (
+                    f"pvs_{source_instance_id:04d}_match_{match_id:04d}.png"
+                )
+                Image.fromarray(
+                    np.asarray(mask, dtype=bool).astype(np.uint8) * 255,
+                    mode="L",
+                ).save(masks_dir / mask_name)
+                match["mask_file"] = f"masks/{mask_name}"
+    else:
+        matches = list(manifest.get("matches") or [])
+        match_masks = list(workflow["match_masks_fullres_bool"])
+        if len(matches) != len(match_masks):
+            raise ValueError("template match metadata and masks must align")
+        for index, (match, mask) in enumerate(zip(matches, match_masks), start=1):
+            match_id = int(match.get("match_id", index))
+            if match_id <= 0:
+                raise ValueError("template match id must be positive")
+            mask_name = f"match_{match_id:04d}.png"
+            Image.fromarray(
+                np.asarray(mask, dtype=bool).astype(np.uint8) * 255,
+                mode="L",
+            ).save(masks_dir / mask_name)
+            match["mask_file"] = f"masks/{mask_name}"
     with (export_dir / "matches.json").open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
     return (
@@ -570,20 +900,114 @@ def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mod
         crop_bbox = list(image_state.get("crop_bbox_xyxy") or [])
         if crop_bbox != list(source_state.get("crop_bbox_xyxy") or []):
             raise ValueError("当前裁剪 provenance 已过期，请重新应用裁剪")
-        seed_instance_id = pvs_state.get("template_match_instance_id")
-        if seed_instance_id is None:
-            seed_instance_id = pvs_state.get("active_instance_id")
-        if seed_instance_id is None:
-            raise ValueError("请先完成智能分割并选择当前 PVS 实例")
-        workflow = _template_matching.run_template_match_workflow(
-            np.asarray(source.convert("RGB")),
-            crop_bbox,
+        seed_instance_ids = _template_selected_instance_ids(
             pvs_state,
-            active_instance_id=seed_instance_id,
-            match_threshold=float(0.7 if match_threshold in (None, "") else match_threshold),
-            expand_threshold=int(20 if expand_threshold in (None, "") else expand_threshold),
-            nms_threshold=float(0.3 if nms_threshold in (None, "") else nms_threshold),
+            default_all=True,
         )
+        if not seed_instance_ids:
+            raise ValueError("请先完成智能分割并选择至少一个 PVS 模板实例")
+        pvs_state["template_match_instance_ids"] = seed_instance_ids
+        pvs_state.pop("template_match_instance_id", None)
+        source_rgb = np.asarray(source.convert("RGB"))
+        resolved_match_threshold = float(
+            0.7 if match_threshold in (None, "") else match_threshold
+        )
+        resolved_expand_threshold = int(
+            20 if expand_threshold in (None, "") else expand_threshold
+        )
+        resolved_nms_threshold = float(
+            0.3 if nms_threshold in (None, "") else nms_threshold
+        )
+        groups = []
+        group_masks = []
+        flat_matches = []
+        flat_masks = []
+        seed_union = np.zeros((source.height, source.width), dtype=bool)
+        for group_index, seed_instance_id in enumerate(seed_instance_ids):
+            group_workflow = _template_matching.run_template_match_workflow(
+                source_rgb,
+                crop_bbox,
+                pvs_state,
+                active_instance_id=seed_instance_id,
+                match_threshold=resolved_match_threshold,
+                expand_threshold=resolved_expand_threshold,
+                nms_threshold=resolved_nms_threshold,
+            )
+            group_result = group_workflow["result"]
+            group_id = _template_group_id(seed_instance_id)
+            group_label = _template_group_alias(group_index)
+            matches = copy.deepcopy(group_result.get("matches") or [])
+            for match in matches:
+                match["group_id"] = group_id
+                match["group_label"] = group_label
+                match["source_instance_id"] = seed_instance_id
+                match["display_id"] = (
+                    f"{group_label[:-1]}{int(match.get('match_id'))}"
+                )
+            group = {
+                "group_id": group_id,
+                "group_label": group_label,
+                "source_instance_id": seed_instance_id,
+                "seed": copy.deepcopy(group_result.get("seed") or {}),
+                "blockers": copy.deepcopy(group_result.get("blockers") or {}),
+                "match_count": len(matches),
+                "matches": matches,
+            }
+            seed_mask = np.asarray(
+                group_workflow["seed_mask_fullres_bool"],
+                dtype=bool,
+            )
+            match_masks = [
+                np.asarray(mask, dtype=bool)
+                for mask in group_workflow["match_masks_fullres_bool"]
+            ]
+            seed_union |= seed_mask
+            groups.append(group)
+            group_masks.append(
+                {
+                    "group_id": group_id,
+                    "source_instance_id": seed_instance_id,
+                    "seed_mask_fullres_bool": seed_mask,
+                    "match_masks_fullres_bool": match_masks,
+                }
+            )
+            flat_matches.extend(matches)
+            flat_masks.extend(match_masks)
+        (
+            groups,
+            group_masks,
+            flat_matches,
+            flat_masks,
+        ) = _deduplicate_template_groups(
+            groups,
+            group_masks,
+            resolved_nms_threshold,
+        )
+        result = {
+            "schema_version": 2,
+            "source_size_wh": [source.width, source.height],
+            "crop_bbox_xyxy": crop_bbox,
+            "parameters": {
+                "match_threshold": resolved_match_threshold,
+                "expand_threshold": resolved_expand_threshold,
+                "nms_threshold": resolved_nms_threshold,
+            },
+            "group_count": len(groups),
+            "match_count": len(flat_matches),
+            "groups": groups,
+        }
+        workflow = {
+            "result": result,
+            "seed_mask_fullres_bool": seed_union,
+            "match_masks_fullres_bool": flat_masks,
+            "group_masks": group_masks,
+            "overlay_rgb": _template_matching.render_template_overlay(
+                source_rgb,
+                seed_union,
+                flat_masks,
+                flat_matches,
+            ),
+        }
         zip_path, manifest = _publish_template_match_export(
             source,
             workflow,
@@ -593,14 +1017,18 @@ def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mod
         count = int(manifest.get("match_count") or 0)
         state = {
             "session_id": session_id,
-            "schema_version": 1,
+            "schema_version": 2,
             "source_image_id": source_id,
             "workspace_image_id": str(image_state.get("image_id") or ""),
-            "active_instance_id": seed_instance_id,
+            "selected_instance_ids": seed_instance_ids,
             "result": manifest,
         }
+        selected_text = "、".join(
+            f"PVS #{instance_id}" for instance_id in seed_instance_ids
+        )
         status = (
-            f"模板匹配完成：PVS #{seed_instance_id}，{count} matches；"
+            f"模板匹配完成：{selected_text}，"
+            f"{len(groups)} 个衍生组，{count} 个衍生实例；"
             "结果使用完整原图坐标，不写入 PVS 实例池"
         )
         return (

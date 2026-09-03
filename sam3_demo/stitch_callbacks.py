@@ -9,6 +9,7 @@ import gradio as gr
 from PIL import Image
 
 import image_crop_utils as _image_crop
+from sam3_demo.stitch_black_border import trim_black_borders
 from sam3_demo.stitch_workflow import (
     STITCH_LAYOUTS,
     auto_align_images,
@@ -18,7 +19,10 @@ from sam3_demo.stitch_workflow import (
     export_mosaic,
     load_images_from_files,
     normalize_layout,
+    normalize_rotation_deg,
+    normalize_rotations,
     pil_rgb,
+    rotations_from_canvas_payload,
     select_worst_tile,
     selected_from_canvas_payload,
     shifts_from_canvas_payload,
@@ -37,11 +41,12 @@ def _as_revision(value: Any) -> int:
 
 def new_stitch_state(session_id: str = "", owner_token: str = "") -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "session_id": str(session_id or ""),
         "owner_token": str(owner_token or ""),
         "images": [],
         "shifts": [],
+        "rotations": [],
         "layout": "horizontal",
         "selected": 0,
         "mosaic": None,
@@ -57,6 +62,8 @@ def new_stitch_state(session_id: str = "", owner_token: str = "") -> dict[str, A
         "show_loupe": True,
         "blend": True,
         "crop_periodic": False,
+        "remove_black_border": True,
+        "black_border_records": [],
         "status": "请上传一组已去 overlay 的分块图",
     }
 
@@ -97,9 +104,12 @@ def _payload(state: dict, extra_status: str = "") -> dict:
     if images and len(shifts) != len(images):
         shifts = default_shifts_for_layout(images, state.get("layout") or "horizontal")
         state["shifts"] = shifts
+    rotations = normalize_rotations(state.get("rotations"), len(images))
+    state["rotations"] = rotations
     return canvas_payload(
         images,
         shifts,
+        rotations=rotations,
         selected=int(state.get("selected") or 0),
         nudge_step=int(state.get("nudge_step") or 1),
         diff_mode=bool(state.get("diff_mode")),
@@ -116,6 +126,15 @@ def _selected_xy(state: dict) -> tuple[float, float]:
     selected = max(0, min(selected, len(shifts) - 1))
     x, y = shifts[selected]
     return float(x), float(y)
+
+
+def _selected_rotation(state: dict) -> float:
+    images = _images(state)
+    rotations = normalize_rotations(state.get("rotations"), len(images))
+    if not rotations:
+        return 0.0
+    selected = max(0, min(int(state.get("selected") or 0), len(rotations) - 1))
+    return rotations[selected]
 
 
 def _invalidate_mosaic(state: dict, *, bump_revision: bool = True) -> None:
@@ -302,7 +321,17 @@ def restore_full_mosaic(stitch_state, *, publish_mosaic=None):
     )
 
 
-def load_tiles(files, layout, stitch_state, nudge_step, diff_mode, show_loupe, blend, crop_periodic):
+def load_tiles(
+    files,
+    layout,
+    stitch_state,
+    nudge_step,
+    diff_mode,
+    show_loupe,
+    blend,
+    crop_periodic,
+    remove_black_border=True,
+):
     state = _fresh_owned_state(stitch_state)
     layout_key = normalize_layout(layout)
     images = load_images_from_files(files)
@@ -316,7 +345,12 @@ def load_tiles(files, layout, stitch_state, nudge_step, diff_mode, show_loupe, b
             0.0,
             status,
             *_cleared_result_updates(),
+            0.0,
         )
+    border_records = []
+    border_warnings = []
+    if remove_black_border:
+        images, border_records, border_warnings = trim_black_borders(images)
     state.update(
         {
             "images": images,
@@ -327,6 +361,9 @@ def load_tiles(files, layout, stitch_state, nudge_step, diff_mode, show_loupe, b
             "show_loupe": bool(show_loupe if show_loupe is not None else True),
             "blend": bool(blend),
             "crop_periodic": bool(crop_periodic),
+            "remove_black_border": bool(remove_black_border),
+            "black_border_records": border_records,
+            "warnings": border_warnings,
         }
     )
     try:
@@ -342,13 +379,37 @@ def load_tiles(files, layout, stitch_state, nudge_step, diff_mode, show_loupe, b
             0.0,
             status,
             *_cleared_result_updates(),
+            0.0,
         )
     state["shifts"] = shifts
-    state["logs"] = [f"已加载 {len(images)} 张，布局 {layout_key}，尚未自动对齐"]
+    state["rotations"] = [0.0] * len(images)
+    load_log = f"已加载 {len(images)} 张，布局 {layout_key}，尚未自动对齐"
+    if remove_black_border:
+        applied = [record for record in border_records if record.get("applied")]
+        if applied:
+            totals = {
+                side: sum(int(record["trim"].get(side, 0)) for record in applied)
+                for side in ("left", "top", "right", "bottom")
+            }
+            load_log += (
+                f"；自动去黑边 {len(applied)}/{len(images)} 张"
+                f"（左{totals['left']}、上{totals['top']}、右{totals['right']}、下{totals['bottom']} px）"
+            )
+        else:
+            load_log += "；未检测到可安全裁除的外部黑边"
+    state["logs"] = [load_log, *border_warnings]
     status = _status_text(state["logs"])
     state["status"] = status
     dx, dy = _selected_xy(state)
-    return state, _payload(state, status), dx, dy, status, *_cleared_result_updates()
+    return (
+        state,
+        _payload(state, status),
+        dx,
+        dy,
+        status,
+        *_cleared_result_updates(),
+        0.0,
+    )
 
 
 def auto_align(stitch_state, layout, nudge_step, diff_mode, show_loupe):
@@ -370,6 +431,7 @@ def auto_align(stitch_state, layout, nudge_step, diff_mode, show_loupe):
             0.0,
             status,
             *_cleared_result_updates(),
+            0.0,
         )
     try:
         shifts, logs = auto_align_images(images, layout_key)
@@ -387,18 +449,28 @@ def auto_align(stitch_state, layout, nudge_step, diff_mode, show_loupe):
             *_selected_xy(state),
             status,
             *result_updates,
+            _selected_rotation(state),
         )
     state["layout"] = layout_key
     baseline = default_shifts_for_layout(images, layout_key)
     selected = select_worst_tile(shifts, baseline)
     state["shifts"] = shifts
+    state["rotations"] = [0.0] * len(images)
     state["logs"] = logs
     state["selected"] = selected
     _invalidate_mosaic(state)
     status = _status_text(logs, f"已自动选中偏移最大的图{selected + 1}，可拖动或用方向键微调")
     state["status"] = status
     dx, dy = _selected_xy(state)
-    return state, _payload(state, status), dx, dy, status, *_cleared_result_updates()
+    return (
+        state,
+        _payload(state, status),
+        dx,
+        dy,
+        status,
+        *_cleared_result_updates(),
+        0.0,
+    )
 
 
 def apply_layout(layout, stitch_state):
@@ -418,6 +490,7 @@ def apply_layout(layout, stitch_state):
             0.0,
             status,
             *_cleared_result_updates(),
+            0.0,
         )
     if layout_key == previous_layout:
         status = state.get("status") or "就绪"
@@ -428,6 +501,7 @@ def apply_layout(layout, stitch_state):
             *_selected_xy(state),
             status,
             *_unchanged_result_updates(),
+            _selected_rotation(state),
         )
     try:
         shifts = default_shifts_for_layout(images, layout_key)
@@ -442,9 +516,11 @@ def apply_layout(layout, stitch_state):
             *_selected_xy(state),
             status,
             *_cleared_result_updates(),
+            _selected_rotation(state),
         )
     state["layout"] = layout_key
     state["shifts"] = shifts
+    state["rotations"] = [0.0] * len(images)
     state["selected"] = 0
     state["logs"] = ["排列方式已改变，位置已重置；请重新自动对齐"]
     _invalidate_mosaic(state)
@@ -457,6 +533,7 @@ def apply_layout(layout, stitch_state):
         *_selected_xy(state),
         status,
         *_cleared_result_updates(),
+        0.0,
     )
 
 
@@ -465,12 +542,20 @@ def canvas_changed(payload, stitch_state):
     images = _images(state)
     if not images:
         status = state.get("status") or "请先加载分块图"
-        return state, 0.0, 0.0, status, *_unchanged_result_updates()
+        return state, 0.0, 0.0, status, *_unchanged_result_updates(), 0.0
     old_shifts = list(state.get("shifts") or [])
+    old_rotations = normalize_rotations(state.get("rotations"), len(images))
     shifts = shifts_from_canvas_payload(payload, old_shifts)
-    geometry_changed = len(shifts) == len(images) and shifts != old_shifts
+    rotations = rotations_from_canvas_payload(payload, old_rotations)
+    geometry_changed = (
+        len(shifts) == len(images)
+        and len(rotations) == len(images)
+        and (shifts != old_shifts or rotations != old_rotations)
+    )
     if len(shifts) == len(images):
         state["shifts"] = shifts
+    if len(rotations) == len(images):
+        state["rotations"] = rotations
     selected = selected_from_canvas_payload(payload, len(images))
     state["selected"] = selected
     if isinstance(payload, dict):
@@ -481,7 +566,11 @@ def canvas_changed(payload, stitch_state):
         if "show_loupe" in payload:
             state["show_loupe"] = bool(payload["show_loupe"])
     dx, dy = _selected_xy(state)
-    status = f"图{selected + 1} 位置=({int(dx)}, {int(dy)})"
+    rotation = _selected_rotation(state)
+    status = (
+        f"图{selected + 1} 位置=({int(dx)}, {int(dy)}) "
+        f"旋转={rotation:.2f}°"
+    )
     if geometry_changed:
         _invalidate_mosaic(state)
         status += "；位置已改变，请重新生成拼接结果"
@@ -489,10 +578,10 @@ def canvas_changed(payload, stitch_state):
     else:
         result_updates = _unchanged_result_updates()
     state["status"] = status
-    return state, dx, dy, status, *result_updates
+    return state, dx, dy, status, *result_updates, rotation
 
 
-def apply_numeric_shift(dx, dy, stitch_state):
+def apply_numeric_transform(dx, dy, rotation_deg, stitch_state):
     state = dict(stitch_state or new_stitch_state())
     images = _images(state)
     shifts = list(state.get("shifts") or [])
@@ -506,6 +595,7 @@ def apply_numeric_shift(dx, dy, stitch_state):
             0.0,
             status,
             *_cleared_result_updates(),
+            0.0,
         )
     selected = max(0, min(int(state.get("selected") or 0), len(shifts) - 1))
     try:
@@ -513,10 +603,20 @@ def apply_numeric_shift(dx, dy, stitch_state):
         ny = int(round(float(dy)))
     except (TypeError, ValueError, OverflowError):
         nx, ny = shifts[selected]
-    changed = (nx, ny) != tuple(shifts[selected])
+    rotations = normalize_rotations(state.get("rotations"), len(images))
+    rotation = normalize_rotation_deg(rotation_deg)
+    changed = (
+        (nx, ny) != tuple(shifts[selected])
+        or rotation != rotations[selected]
+    )
     shifts[selected] = (nx, ny)
+    rotations[selected] = rotation
     state["shifts"] = shifts
-    status = f"已把图{selected + 1} 设为 ({nx}, {ny})"
+    state["rotations"] = rotations
+    status = (
+        f"已把图{selected + 1} 设为 ({nx}, {ny})，"
+        f"旋转 {rotation:.2f}°"
+    )
     if changed:
         _invalidate_mosaic(state)
         status += "；请重新生成拼接结果"
@@ -524,7 +624,26 @@ def apply_numeric_shift(dx, dy, stitch_state):
     else:
         result_updates = _unchanged_result_updates()
     state["status"] = status
-    return state, _payload(state, status), float(nx), float(ny), status, *result_updates
+    return (
+        state,
+        _payload(state, status),
+        float(nx),
+        float(ny),
+        status,
+        *result_updates,
+        rotation,
+    )
+
+
+def apply_numeric_shift(dx, dy, stitch_state):
+    """Backward-compatible translation-only helper."""
+
+    return apply_numeric_transform(
+        dx,
+        dy,
+        _selected_rotation(stitch_state if isinstance(stitch_state, dict) else {}),
+        stitch_state,
+    )
 
 
 def apply_canvas_options(nudge_step, diff_mode, show_loupe, stitch_state):
@@ -605,6 +724,7 @@ def generate_mosaic(
             layout=state.get("layout") or "horizontal",
             blend=next_blend,
             crop_periodic=next_crop,
+            rotations=state.get("rotations"),
         )
     except Exception as exc:
         status = f"生成拼接失败：{exc}"

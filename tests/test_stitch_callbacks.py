@@ -46,6 +46,61 @@ class StitchCallbacksTest(unittest.TestCase):
         self.assertEqual(len(state["images"]), 1)
         self.assertIsNone(state["mosaic"])
         self.assertFalse(result[7]["interactive"])
+        self.assertEqual(len(result), 10)
+        self.assertEqual(result[-1], 0.0)
+
+    def test_load_trims_black_border_before_default_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for index in range(2):
+                pixels = Image.new("RGB", (20, 14), (0, 0, 0))
+                content = Image.new("RGB", (14, 10), (80 + index * 20, 130, 180))
+                content.putpixel((4, 4), (240, 220, 180))
+                pixels.paste(content, (3, 2))
+                path = Path(tmp) / f"framed_{index}.png"
+                pixels.save(path)
+                paths.append(str(path))
+
+            result = callbacks.load_tiles(
+                paths,
+                "horizontal",
+                callbacks.new_stitch_state("d" * 32, "owner"),
+                1,
+                False,
+                True,
+                True,
+                False,
+                True,
+            )
+
+        state = result[0]
+        self.assertEqual([image.size for image in state["images"]], [(14, 10), (14, 10)])
+        self.assertEqual(state["shifts"], [(0, 0), (14, 0)])
+        self.assertTrue(all(record["applied"] for record in state["black_border_records"]))
+        self.assertIn("自动去黑边 2/2 张", result[4])
+
+    def test_load_can_disable_black_border_trimming(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Image.new("RGB", (20, 14), (0, 0, 0))
+            image.paste(Image.new("RGB", (14, 10), (120, 170, 210)), (3, 2))
+            path = Path(tmp) / "framed.png"
+            image.save(path)
+            result = callbacks.load_tiles(
+                [str(path)],
+                "horizontal",
+                callbacks.new_stitch_state("e" * 32, "owner"),
+                1,
+                False,
+                True,
+                True,
+                False,
+                False,
+            )
+
+        state = result[0]
+        self.assertEqual(state["images"][0].size, (20, 14))
+        self.assertFalse(state["remove_black_border"])
+        self.assertEqual(state["black_border_records"], [])
 
     def test_invalid_grid_load_is_recoverable_without_callback_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,6 +163,57 @@ class StitchCallbacksTest(unittest.TestCase):
         result = callbacks.canvas_changed(payload, state)
         self.assertIsNotNone(result[0]["mosaic"])
         self.assertEqual(result[0]["revision"], before_revision)
+
+    def test_canvas_rotation_invalidates_result_and_syncs_numeric_angle(self):
+        state = self._loaded_state()
+        state = callbacks.generate_mosaic(state, False, False)[0]
+        payload = {
+            "selected": 1,
+            "tiles": [
+                {
+                    "index": 0,
+                    "x": 0,
+                    "y": 0,
+                    "width": 12,
+                    "height": 8,
+                    "rotation_deg": 0,
+                },
+                {
+                    "index": 1,
+                    "x": 10,
+                    "y": 0,
+                    "width": 12,
+                    "height": 8,
+                    "rotation_deg": 2.75,
+                },
+            ],
+        }
+        result = callbacks.canvas_changed(payload, state)
+        self.assertEqual(result[0]["rotations"], [0.0, 2.75])
+        self.assertIsNone(result[0]["mosaic"])
+        self.assertEqual(result[-1], 2.75)
+        self.assertIn("旋转=2.75°", result[3])
+
+    def test_numeric_transform_updates_selected_angle(self):
+        state = self._loaded_state()
+        result = callbacks.apply_numeric_transform(9, 1, -181, state)
+        self.assertEqual(result[0]["shifts"][0], (9, 1))
+        self.assertEqual(result[0]["rotations"], [179.0, 0.0])
+        self.assertEqual(result[-1], 179.0)
+        self.assertEqual(result[1]["tiles"][0]["rotation_deg"], 179.0)
+        self.assertEqual(len(result), 10)
+
+    def test_auto_align_resets_manual_rotations(self):
+        state = self._loaded_state()
+        state["rotations"] = [3.0, -2.0]
+        with mock.patch.object(
+            callbacks,
+            "auto_align_images",
+            return_value=([(0, 0), (10, 0)], ["aligned"]),
+        ):
+            result = callbacks.auto_align(state, "horizontal", 1, False, True)
+        self.assertEqual(result[0]["rotations"], [0.0, 0.0])
+        self.assertEqual(result[-1], 0.0)
 
     def test_export_option_change_invalidates_result(self):
         state = self._loaded_state()

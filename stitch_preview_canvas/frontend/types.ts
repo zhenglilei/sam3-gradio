@@ -7,6 +7,8 @@ export interface StitchTile {
 	y: number;
 	width: number;
 	height: number;
+	/** Clockwise rotation around the tile center, normalized to (-180, 180]. */
+	rotation_deg: number;
 }
 
 export interface StitchPreviewValue {

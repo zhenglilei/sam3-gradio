@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -60,6 +61,60 @@ def _workflow():
     }
 
 
+def _grouped_workflow():
+    first_seed = np.zeros((6, 8), dtype=bool)
+    first_seed[1:3, 1:3] = True
+    first_match = np.zeros((6, 8), dtype=bool)
+    first_match[1:3, 5:7] = True
+    second_seed = np.zeros((6, 8), dtype=bool)
+    second_seed[1:3, 4:6] = True
+    second_match = np.zeros((6, 8), dtype=bool)
+    second_match[4:6, 4:6] = True
+    groups = [
+        {
+            "group_id": "PVS-1",
+            "group_label": "Ax",
+            "source_instance_id": 1,
+            "seed": {"instance_id": 1},
+            "match_count": 1,
+            "matches": [{"match_id": 1, "score": 0.91}],
+        },
+        {
+            "group_id": "PVS-2",
+            "group_label": "Bx",
+            "source_instance_id": 2,
+            "seed": {"instance_id": 2},
+            "match_count": 1,
+            "matches": [{"match_id": 1, "score": 0.89}],
+        },
+    ]
+    return {
+        "result": {
+            "schema_version": 2,
+            "group_count": 2,
+            "match_count": 2,
+            "groups": groups,
+        },
+        "seed_mask_fullres_bool": first_seed | second_seed,
+        "match_masks_fullres_bool": [first_match, second_match],
+        "group_masks": [
+            {
+                "group_id": "PVS-1",
+                "source_instance_id": 1,
+                "seed_mask_fullres_bool": first_seed,
+                "match_masks_fullres_bool": [first_match],
+            },
+            {
+                "group_id": "PVS-2",
+                "source_instance_id": 2,
+                "seed_mask_fullres_bool": second_seed,
+                "match_masks_fullres_bool": [second_match],
+            },
+        ],
+        "overlay_rgb": np.zeros((6, 8, 3), dtype=np.uint8),
+    }
+
+
 class SessionTemplateArtifactTests(unittest.TestCase):
     def test_clear_internal_path_can_retain_session_owner(self):
         deps = {
@@ -102,6 +157,36 @@ class SessionTemplateArtifactTests(unittest.TestCase):
             self.assertTrue((export_dir / "matches.json").is_file())
             self.assertEqual(Path(zip_path), export_dir / zip_path.name)
             self.assertEqual(manifest["source_image"]["image_id"], "source-1")
+
+    def test_group_export_uses_source_instance_file_names(self):
+        source_state, image_state, _ = _states()
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path, manifest = callbacks._publish_template_match_export_impl(
+                {
+                    "_publish_segmentation_zip": (
+                        lambda export_dir, zip_name, session_id=None:
+                        export_dir / zip_name
+                    ),
+                    "runtime_export_dir": Path(tmp),
+                },
+                Image.new("RGB", (8, 6), "white"),
+                _grouped_workflow(),
+                source_state,
+                image_state,
+            )
+            export_dir = Path(zip_path).parent
+            self.assertTrue((export_dir / "masks" / "pvs_0001_seed.png").is_file())
+            self.assertTrue((export_dir / "masks" / "pvs_0001_match_0001.png").is_file())
+            self.assertTrue((export_dir / "masks" / "pvs_0002_seed.png").is_file())
+            self.assertTrue((export_dir / "masks" / "pvs_0002_match_0001.png").is_file())
+            self.assertEqual(
+                manifest["groups"][0]["matches"][0]["mask_file"],
+                "masks/pvs_0001_match_0001.png",
+            )
+            self.assertEqual(
+                manifest["groups"][1]["matches"][0]["mask_file"],
+                "masks/pvs_0002_match_0001.png",
+            )
 
     def test_export_rejects_mismatched_or_unsafe_session_without_write(self):
         source_state, image_state, _ = _states()
@@ -229,7 +314,7 @@ class SessionTemplateArtifactTests(unittest.TestCase):
         self.assertEqual(result[0]["session_id"], "a" * 32)
         self.assertIn("pvs_state session_id is missing", result[3])
 
-    def test_template_instance_preview_is_independent_from_active_editor_instance(self):
+    def test_template_instance_preview_supports_multiple_sources(self):
         source_state, image_state, pvs_state = _states()
         first = np.zeros((6, 8), dtype=bool)
         first[1:3, 1:3] = True
@@ -254,35 +339,130 @@ class SessionTemplateArtifactTests(unittest.TestCase):
             source_state,
             image_state,
             pvs_state,
-            "2",
+            ["1", "2"],
         )
 
         next_pvs, template_state, preview, download, status = result
         self.assertEqual(next_pvs["active_instance_id"], 1)
-        self.assertEqual(next_pvs["template_match_instance_id"], 2)
-        self.assertEqual(template_state["active_instance_id"], 2)
+        self.assertEqual(next_pvs["template_match_instance_ids"], [1, 2])
+        self.assertNotIn("template_match_instance_id", next_pvs)
+        self.assertEqual(template_state["selected_instance_ids"], [1, 2])
         self.assertIsInstance(preview, Image.Image)
         self.assertIsNone(download)
+        self.assertIn("PVS #1", status)
         self.assertIn("PVS #2", status)
 
-    def test_export_selected_matches_rebuilds_only_requested_masks(self):
+    def test_run_builds_one_independent_group_per_selected_pvs(self):
         source_state, image_state, pvs_state = _states()
-        seed = np.zeros((6, 8), dtype=bool)
-        seed[1:3, 1:3] = True
+        first = np.zeros((6, 8), dtype=bool)
+        first[1:3, 1:3] = True
+        second = np.zeros((6, 8), dtype=bool)
+        second[1:3, 4:6] = True
         pvs_state["instances"] = {
-            1: {"id": 1, "status": "draft", "mask_fullres_bool": seed},
+            1: {"id": 1, "mask_fullres_bool": first},
+            2: {"id": 2, "mask_fullres_bool": second},
+        }
+        pvs_state["template_match_instance_ids"] = [1, 2]
+        calls = []
+
+        def run_workflow(source, crop_bbox, state, *, active_instance_id, **params):
+            calls.append(active_instance_id)
+            seed = first if active_instance_id == 1 else second
+            translation = [4, 0] if active_instance_id == 1 else [0, 3]
+            match = callbacks._template_matching.translate_source_mask(
+                seed,
+                *translation,
+            )
+            return {
+                "result": {
+                    "seed": {"instance_id": active_instance_id},
+                    "blockers": {"instance_ids": []},
+                    "matches": [
+                        {
+                            "match_id": 1,
+                            "score": 0.9,
+                            "translation_xy": translation,
+                        }
+                    ],
+                },
+                "seed_mask_fullres_bool": seed,
+                "match_masks_fullres_bool": [match],
+            }
+
+        published = []
+        with mock.patch.object(
+            callbacks._template_matching,
+            "run_template_match_workflow",
+            side_effect=run_workflow,
+        ):
+            result = callbacks._run_template_matching_impl(
+                {
+                    "_clear_template_match_outputs": lambda state, status: (
+                        dict(state or {}), None, None, status
+                    ),
+                    "_is_pvs_pool_mode": lambda mode: True,
+                    "_publish_template_match_export": (
+                        lambda source, workflow, source_state_arg, image_state_arg:
+                        (published.append(workflow) or Path("all-groups.zip"), workflow["result"])
+                    ),
+                    "_source_image_cache_get": lambda state: Image.new("RGB", (8, 6), "white"),
+                    "_workspace": lambda state: {},
+                },
+                source_state,
+                image_state,
+                pvs_state,
+                "PVS Manual",
+                0.7,
+                20,
+                0.3,
+            )
+
+        state, preview, download, status = result
+        self.assertEqual(calls, [1, 2])
+        self.assertEqual([group["group_label"] for group in state["result"]["groups"]], ["Ax", "Bx"])
+        self.assertEqual([group["source_instance_id"] for group in state["result"]["groups"]], [1, 2])
+        self.assertEqual(state["result"]["group_count"], 2)
+        self.assertEqual(state["result"]["match_count"], 2)
+        self.assertIsInstance(preview, Image.Image)
+        self.assertEqual(download, "all-groups.zip")
+        self.assertIn("2 个衍生组", status)
+        self.assertEqual(len(published), 1)
+
+    def test_export_selected_group_rebuilds_all_matches_for_that_source(self):
+        source_state, image_state, pvs_state = _states()
+        first = np.zeros((6, 8), dtype=bool)
+        first[1:3, 1:3] = True
+        second = np.zeros((6, 8), dtype=bool)
+        second[1:3, 4:6] = True
+        pvs_state["instances"] = {
+            1: {"id": 1, "mask_fullres_bool": first},
+            2: {"id": 2, "mask_fullres_bool": second},
         }
         template_state = {
             "session_id": "a" * 32,
             "source_image_id": "source-1",
             "workspace_image_id": "workspace-1",
-            "active_instance_id": 1,
             "result": {
-                "schema_version": 1,
+                "schema_version": 2,
+                "group_count": 2,
                 "match_count": 2,
-                "matches": [
-                    {"match_id": 1, "score": 0.91, "translation_xy": [4, 0]},
-                    {"match_id": 2, "score": 0.89, "translation_xy": [0, 3]},
+                "groups": [
+                    {
+                        "group_id": "PVS-1",
+                        "group_label": "Ax",
+                        "source_instance_id": 1,
+                        "matches": [
+                            {"match_id": 1, "score": 0.91, "translation_xy": [4, 0]},
+                        ],
+                    },
+                    {
+                        "group_id": "PVS-2",
+                        "group_label": "Bx",
+                        "source_instance_id": 2,
+                        "matches": [
+                            {"match_id": 1, "score": 0.89, "translation_xy": [0, 3]},
+                        ],
+                    },
                 ],
             },
         }
@@ -301,23 +481,26 @@ class SessionTemplateArtifactTests(unittest.TestCase):
             image_state,
             pvs_state,
             template_state,
-            "selected",
-            ["2"],
+            ["PVS-2"],
         )
 
         self.assertEqual(download, "selected.zip")
-        self.assertIn("1 个匹配实例", status)
+        self.assertIn("1 组", status)
         self.assertEqual(len(published), 1)
         workflow = published[0]
         self.assertEqual(workflow["result"]["match_count"], 1)
-        self.assertEqual(workflow["result"]["matches"][0]["match_id"], 2)
-        self.assertEqual(workflow["result"]["selection"]["selected_match_ids"], [2])
+        self.assertEqual(workflow["result"]["group_count"], 1)
+        self.assertEqual(workflow["result"]["groups"][0]["group_id"], "PVS-2")
+        self.assertEqual(
+            workflow["result"]["selection"]["selected_group_ids"],
+            ["PVS-2"],
+        )
         self.assertEqual(len(workflow["match_masks_fullres_bool"]), 1)
         expected = np.zeros((6, 8), dtype=bool)
-        expected[4:6, 1:3] = True
+        expected[4:6, 4:6] = True
         np.testing.assert_array_equal(workflow["match_masks_fullres_bool"][0], expected)
 
-    def test_export_selected_matches_rejects_unknown_match(self):
+    def test_export_selected_groups_rejects_unknown_group(self):
         source_state, image_state, pvs_state = _states()
         pvs_state["instances"][1].update(
             {
@@ -343,11 +526,10 @@ class SessionTemplateArtifactTests(unittest.TestCase):
             image_state,
             pvs_state,
             template_state,
-            "selected",
-            ["99"],
+            ["PVS-99"],
         )
         self.assertIsNone(download)
-        self.assertIn("M99", status)
+        self.assertIn("PVS-99", status)
 
 
 if __name__ == "__main__":

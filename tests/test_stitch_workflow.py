@@ -278,6 +278,101 @@ class StitchWorkflowTest(unittest.TestCase):
         self.assertEqual(workflow.empty_canvas_payload()["drag_gain"], 1.0)
         self.assertEqual(workflow.canvas_payload([image], [(0, 0)])["drag_gain"], 1.0)
 
+    def test_rotation_normalization_and_indexed_canvas_roundtrip(self):
+        image = _rgb(_texture(20, 30, 61))
+        payload = workflow.canvas_payload(
+            [image, image],
+            [(0, 0), (30, 0)],
+            rotations=[540, -181],
+        )
+        self.assertEqual(
+            [tile["rotation_deg"] for tile in payload["tiles"]],
+            [180.0, 179.0],
+        )
+        reordered = {
+            "tiles": [
+                {"index": 1, "rotation_deg": -10.25},
+                {"index": 0, "rotation_deg": 3.5},
+            ]
+        }
+        self.assertEqual(
+            workflow.rotations_from_canvas_payload(reordered, [0.0, 0.0]),
+            [3.5, -10.25],
+        )
+
+    def test_canvas_rotation_rejects_partial_or_nonfinite_payload(self):
+        fallback = [1.0, 2.0]
+        invalid_payloads = [
+            {"tiles": [{"index": 0, "rotation_deg": 5.0}]},
+            {
+                "tiles": [
+                    {"index": 0, "rotation_deg": float("nan")},
+                    {"index": 1, "rotation_deg": 2.0},
+                ]
+            },
+        ]
+        for payload in invalid_payloads:
+            self.assertEqual(
+                workflow.rotations_from_canvas_payload(payload, fallback),
+                fallback,
+            )
+
+    def test_zero_rotation_keeps_existing_export_bitwise_identical(self):
+        images = [
+            _rgb(_texture(25, 31, 62)),
+            _rgb(_texture(25, 31, 63)),
+        ]
+        shifts = [(0, 0), (21, 0)]
+        baseline, _ = export_mosaic(images, shifts, blend=True)
+        rotated_api, _ = export_mosaic(
+            images,
+            shifts,
+            blend=True,
+            rotations=[0.0, 360.0],
+        )
+        np.testing.assert_array_equal(np.asarray(rotated_api), np.asarray(baseline))
+
+    def test_rotated_export_expands_around_tile_center_without_white_corners(self):
+        source = np.zeros((10, 20, 3), dtype=np.uint8)
+        source[2:8, 3:17] = (220, 40, 20)
+        image = Image.fromarray(source, mode="RGB")
+        mosaic, warnings = export_mosaic(
+            [image],
+            [(0, 0)],
+            blend=False,
+            rotations=[45.0],
+        )
+        self.assertGreater(mosaic.width, image.width)
+        self.assertGreater(mosaic.height, image.height)
+        array = np.asarray(mosaic)
+        self.assertEqual(tuple(array[0, 0]), (0, 0, 0))
+        self.assertGreater(int(array[..., 0].max()), 150)
+        self.assertEqual(warnings, [])
+
+    def test_positive_rotation_matches_layout_clockwise_convention(self):
+        source = np.zeros((5, 9, 3), dtype=np.uint8)
+        source[0:2, 0:3] = (255, 30, 10)
+        image = Image.fromarray(source, mode="RGB")
+        mosaic, _ = export_mosaic(
+            [image],
+            [(0, 0)],
+            blend=False,
+            rotations=[90.0],
+        )
+        expected_rgba = image.convert("RGBA").rotate(
+            -90.0,
+            resample=Image.Resampling.BICUBIC,
+            expand=True,
+            fillcolor=(0, 0, 0, 0),
+        )
+        expected = Image.new("RGB", expected_rgba.size, (0, 0, 0))
+        expected.paste(
+            expected_rgba.convert("RGB"),
+            (0, 0),
+            expected_rgba.getchannel("A"),
+        )
+        np.testing.assert_array_equal(np.asarray(mosaic), np.asarray(expected))
+
     def test_canvas_shifts_reject_invalid_indexed_payload(self):
         fallback = [(0, 0), (20, 0)]
         invalid_payloads = [

@@ -24,6 +24,32 @@ STITCH_LAYOUTS = {
 LAYOUT_KEYS = ("horizontal", "vertical", "grid_2x2", "grid_2xn")
 
 Shift = Tuple[int, int]
+Rotation = float
+
+
+def normalize_rotation_deg(value: float | int) -> float:
+    """Normalize a finite angle to ``(-180, 180]`` degrees."""
+
+    try:
+        angle = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(angle):
+        return 0.0
+    angle = (angle + 180.0) % 360.0 - 180.0
+    if angle == -180.0:
+        angle = 180.0
+    return 0.0 if abs(angle) < 1e-9 else angle
+
+
+def normalize_rotations(
+    rotations: Sequence[float] | None,
+    count: int,
+) -> List[Rotation]:
+    values = list(rotations or [])
+    if len(values) != max(0, int(count)):
+        return [0.0] * max(0, int(count))
+    return [normalize_rotation_deg(value) for value in values]
 
 
 def normalize_layout(layout: str) -> str:
@@ -625,6 +651,141 @@ def _validate_output_extent(
         )
 
 
+def _rotated_tile(
+    image: Image.Image,
+    shift: Shift,
+    rotation_deg: float,
+) -> Tuple[Image.Image, Shift, np.ndarray]:
+    """Rotate one tile about its center and return RGBA, origin, and edge weights."""
+
+    rgb = image.convert("RGB")
+    angle = normalize_rotation_deg(rotation_deg)
+    rgba = rgb.convert("RGBA")
+    edge = Image.fromarray(
+        np.clip(_edge_weight_map(rgb.height, rgb.width) * 255.0, 0, 255).astype(
+            np.uint8
+        ),
+        mode="L",
+    )
+    if angle:
+        # Match the existing layout-transform convention: y-down,
+        # clockwise-positive.  Pillow's positive angle is counter-clockwise.
+        rgba = rgba.rotate(
+            -angle,
+            resample=Image.Resampling.BICUBIC,
+            expand=True,
+            fillcolor=(0, 0, 0, 0),
+        )
+        edge = edge.rotate(
+            -angle,
+            resample=Image.Resampling.BILINEAR,
+            expand=True,
+            fillcolor=0,
+        )
+    left = int(round(float(shift[0]) + (rgb.width - rgba.width) / 2.0))
+    top = int(round(float(shift[1]) + (rgb.height - rgba.height) / 2.0))
+    alpha = np.asarray(rgba.getchannel("A"), dtype=np.float32) / 255.0
+    weight = np.asarray(edge, dtype=np.float32) / 255.0
+    return rgba, (left, top), weight * alpha
+
+
+def _rotated_pieces(
+    images: Sequence[Image.Image],
+    shifts: Sequence[Shift],
+    rotations: Sequence[float],
+) -> List[Tuple[Image.Image, Shift, np.ndarray]]:
+    if not images:
+        raise ValueError("images 为空")
+    if len(shifts) != len(images) or len(rotations) != len(images):
+        raise ValueError("分块几何数量与图片不一致")
+    pieces = [
+        _rotated_tile(image, shift, rotation)
+        for image, shift, rotation in zip(images, shifts, rotations)
+    ]
+    min_x = min(origin[0] for _image, origin, _weight in pieces)
+    min_y = min(origin[1] for _image, origin, _weight in pieces)
+    local = [
+        (image, (origin[0] - min_x, origin[1] - min_y), weight)
+        for image, origin, weight in pieces
+    ]
+    canvas_w = max(origin[0] + image.width for image, origin, _weight in local)
+    canvas_h = max(origin[1] + image.height for image, origin, _weight in local)
+    total_w = sum(max(1, image.width) for image in images)
+    total_h = sum(max(1, image.height) for image in images)
+    total_pixels = sum(max(1, image.width * image.height) for image in images)
+    if (
+        canvas_w > 3 * total_w
+        or canvas_h > 3 * total_h
+        or canvas_w * canvas_h > 6 * total_pixels
+    ):
+        raise ValueError(
+            f"分块间距过大，旋转后输出画布将达到 {canvas_w}×{canvas_h}px；请先缩小坐标偏移"
+        )
+    return local
+
+
+def stitch_images_rotated(
+    images: Sequence[Image.Image],
+    shifts: Sequence[Shift],
+    rotations: Sequence[float],
+    *,
+    blend: bool,
+    bg_color: Tuple[int, int, int] = (0, 0, 0),
+) -> Image.Image:
+    """Composite rotated tiles while keeping transparent rotated corners empty."""
+
+    pieces = _rotated_pieces(images, shifts, rotations)
+    canvas_w = max(origin[0] + image.width for image, origin, _weight in pieces)
+    canvas_h = max(origin[1] + image.height for image, origin, _weight in pieces)
+    if not blend:
+        canvas = Image.new("RGB", (max(1, canvas_w), max(1, canvas_h)), bg_color)
+        for image, origin, _weight in pieces:
+            canvas.paste(image.convert("RGB"), origin, image.getchannel("A"))
+        return canvas
+
+    acc = np.zeros((canvas_h, canvas_w, 3), dtype=np.float32)
+    wsum = np.zeros((canvas_h, canvas_w), dtype=np.float32)
+    coverage = np.zeros((canvas_h, canvas_w), dtype=np.uint16)
+    sources: List[Tuple[np.ndarray, np.ndarray, Shift]] = []
+    for i, (image, (x0, y0), weight) in enumerate(pieces):
+        source = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        alpha = np.asarray(image.getchannel("A"), dtype=np.uint8) > 0
+        h, w = source.shape[:2]
+        x1, y1 = x0 + w, y0 + h
+        roi_acc = acc[y0:y1, x0:x1]
+        roi_w = wsum[y0:y1, x0:x1]
+        tile = source.astype(np.float32)
+        overlap = (roi_w > 1e-6) & alpha
+        if i > 0 and overlap.any():
+            dst = np.zeros_like(tile)
+            dst[overlap] = roi_acc[overlap] / np.maximum(
+                roi_w[overlap][:, None], 1e-6
+            )
+            gain = np.clip(
+                dst[overlap].mean(axis=0)
+                / np.maximum(tile[overlap].mean(axis=0), 1.0),
+                0.75,
+                1.35,
+            )
+            tile = tile.copy()
+            tile[overlap] = np.clip(tile[overlap] * gain, 0, 255)
+        roi_acc += tile * weight[..., None]
+        roi_w += weight
+        coverage[y0:y1, x0:x1] += alpha.astype(np.uint16)
+        sources.append((source, alpha, (x0, y0)))
+
+    valid = wsum > 1e-6
+    out = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    out[valid] = np.clip(acc[valid] / wsum[valid, None], 0, 255).astype(np.uint8)
+    for source, alpha, (x0, y0) in sources:
+        h, w = source.shape[:2]
+        single = (coverage[y0:y0 + h, x0:x0 + w] == 1) & alpha
+        if single.any():
+            output = out[y0:y0 + h, x0:x0 + w]
+            output[single] = source[single]
+    return Image.fromarray(out, mode="RGB")
+
+
 def _intersect_paste(img: Image.Image, origin: Shift, cell: Tuple[int, int, int, int]):
     ix, iy = origin
     iw, ih = img.size
@@ -1005,11 +1166,20 @@ def export_mosaic(
     layout: str = "horizontal",
     blend: bool = True,
     crop_periodic: bool = False,
+    rotations: Sequence[float] | None = None,
 ) -> Tuple[Image.Image, List[str]]:
     if not images:
         raise ValueError("该组没有图片")
     warn: List[str] = []
-    if blend:
+    normalized_rotations = normalize_rotations(rotations, len(images))
+    if any(normalized_rotations):
+        mosaic = stitch_images_rotated(
+            images,
+            shifts,
+            normalized_rotations,
+            blend=blend,
+        )
+    elif blend:
         mosaic = stitch_images_blend(images, shifts)
     else:
         mosaic = stitch_images_2d(images, shifts, layout, warn=warn)
@@ -1056,6 +1226,7 @@ def canvas_payload(
     images: Sequence[Image.Image],
     shifts: Sequence[Shift],
     *,
+    rotations: Sequence[float] | None = None,
     selected: int = 0,
     nudge_step: int = 1,
     diff_mode: bool = False,
@@ -1063,7 +1234,10 @@ def canvas_payload(
     status: str = "",
 ) -> dict:
     tiles = []
-    for i, (img, (x, y)) in enumerate(zip(images, shifts)):
+    normalized_rotations = normalize_rotations(rotations, len(images))
+    for i, (img, (x, y), rotation) in enumerate(
+        zip(images, shifts, normalized_rotations)
+    ):
         rgb = pil_rgb(img)
         if rgb is None:
             continue
@@ -1076,6 +1250,7 @@ def canvas_payload(
                 "y": int(y),
                 "width": int(w),
                 "height": int(h),
+                "rotation_deg": rotation,
             }
         )
     if not tiles:
@@ -1133,6 +1308,44 @@ def shifts_from_canvas_payload(payload: dict | None, fallback: Sequence[Shift] |
     # Without a fallback, only a complete zero-based index set is meaningful;
     # otherwise there is no safe way to infer which image a coordinate belongs
     # to.  This path is primarily defensive because callbacks pass a fallback.
+    if not indexed or set(indexed) != set(range(max(indexed) + 1)):
+        return []
+    return [indexed[i] for i in range(max(indexed) + 1)]
+
+
+def rotations_from_canvas_payload(
+    payload: dict | None,
+    fallback: Sequence[float] | None = None,
+) -> List[Rotation]:
+    fallback_rotations = list(fallback or [])
+    if not isinstance(payload, dict):
+        return fallback_rotations
+    tiles = payload.get("tiles")
+    if not isinstance(tiles, list) or not tiles:
+        return fallback_rotations
+    expected_count = len(fallback_rotations)
+    indexed: dict[int, Rotation] = {}
+    for item in tiles:
+        if not isinstance(item, dict):
+            return fallback_rotations
+        index = item.get("index")
+        value = item.get("rotation_deg")
+        if isinstance(index, bool) or not isinstance(index, (int, np.integer)):
+            return fallback_rotations
+        index = int(index)
+        if index < 0 or (expected_count and index >= expected_count) or index in indexed:
+            return fallback_rotations
+        if isinstance(value, bool) or not isinstance(
+            value, (int, float, np.integer, np.floating)
+        ):
+            return fallback_rotations
+        if not math.isfinite(float(value)):
+            return fallback_rotations
+        indexed[index] = normalize_rotation_deg(float(value))
+    if expected_count:
+        if len(indexed) != expected_count or set(indexed) != set(range(expected_count)):
+            return fallback_rotations
+        return [indexed[i] for i in range(expected_count)]
     if not indexed or set(indexed) != set(range(max(indexed) + 1)):
         return []
     return [indexed[i] for i in range(max(indexed) + 1)]

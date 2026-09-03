@@ -716,6 +716,12 @@ def _delete_active_pvs_impl(_deps, image_state, pcs_state, pvs_state, mode):
         pvs_state["active_instance_id"] = next_active
         if str(pvs_state.get("template_match_instance_id")) == str(active_id):
             pvs_state["template_match_instance_id"] = next_active
+        if "template_match_instance_ids" in pvs_state:
+            pvs_state["template_match_instance_ids"] = [
+                int(instance_id)
+                for instance_id in pvs_state.get("template_match_instance_ids") or []
+                if str(instance_id) != str(active_id)
+            ]
         info = f"已删除当前 PVS 实例 #{active_id}"
     except Exception as exc:
         info = f"删除当前实例失败: {exc}"
@@ -732,6 +738,7 @@ def _clear_pvs_impl(_deps, image_state, pcs_state, pvs_state, mode):
         pvs_state["instances"] = {}
         pvs_state["active_instance_id"] = None
         pvs_state.pop("template_match_instance_id", None)
+        pvs_state.pop("template_match_instance_ids", None)
         info = f"已清空 {len(items)} 个 PVS 实例；待生成 bbox 不受影响"
     except Exception as exc:
         info = f"清空实例失败: {exc}"

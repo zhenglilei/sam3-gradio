@@ -331,6 +331,7 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         }
         pvs_state["active_instance_id"] = 1
         pvs_state["template_match_instance_id"] = 1
+        pvs_state["template_match_instance_ids"] = [1, 2]
         pvs_state["next_instance_id"] = 3
 
         with mock.patch.object(demo_module, "_view", return_value=(None,) * 8):
@@ -343,6 +344,7 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         self.assertEqual(list(pvs_state["instances"]), [2])
         self.assertEqual(pvs_state["active_instance_id"], 2)
         self.assertEqual(pvs_state["template_match_instance_id"], 2)
+        self.assertEqual(pvs_state["template_match_instance_ids"], [2])
         self.assertEqual(pvs_state["next_instance_id"], 3)
         self.assertNotIn("status", pvs_state["instances"][2])
         summary = demo_module._pvs_summary(pvs_state)
@@ -359,6 +361,7 @@ class WorkspaceTransactionsTest(unittest.TestCase):
         self.assertEqual(pvs_state["instances"], {})
         self.assertIsNone(pvs_state["active_instance_id"])
         self.assertNotIn("template_match_instance_id", pvs_state)
+        self.assertNotIn("template_match_instance_ids", pvs_state)
         self.assertEqual(pvs_state["next_instance_id"], 3)
 
 

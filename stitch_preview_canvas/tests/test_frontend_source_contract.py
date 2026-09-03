@@ -22,7 +22,7 @@ class StitchPreviewCanvasFrontendContractTests(unittest.TestCase):
 
     def test_loupe_uses_world_space_center_after_pan_and_zoom(self) -> None:
         loupe = self.source[
-            self.source.index("function drawLoupe") : self.source.index("function drawHud")
+            self.source.index("function drawLoupe") : self.source.index("function drawSelectionOverlay")
         ]
         self.assertIn('const centerWorld = screenToWorld(cx, cy);', loupe)
         scale = loupe.index('ctx.scale(LOUPE_SCALE * viewZoom, LOUPE_SCALE * viewZoom);')
@@ -63,6 +63,75 @@ class StitchPreviewCanvasFrontendContractTests(unittest.TestCase):
             self.source.index("function onKeyDown") : self.source.index("function onKeyUp")
         ]
         self.assertIn('cancelPointerInteraction("已取消拖动");', keydown)
+
+    def test_rotation_handle_is_connected_to_pointer_lifecycle(self) -> None:
+        pointer_down = self.source[
+            self.source.index("function onPointerDown") :
+            self.source.index("function onPointerMove")
+        ]
+        pointer_move = self.source[
+            self.source.index("function onPointerMove") :
+            self.source.index("function onPointerUp")
+        ]
+        pointer_up = self.source[
+            self.source.index("function onPointerUp") :
+            self.source.index("function onPointerCancel")
+        ]
+        self.assertIn("const rotateHit = hitRotateHandle(world.x, world.y);", pointer_down)
+        self.assertIn("rotateStartAngle =", pointer_down)
+        self.assertIn("if (pointerIdActive === evt.pointerId && rotateTileIndex >= 0)", pointer_move)
+        self.assertIn("runtime.tile.rotation_deg = normalizeRotation(", pointer_move)
+        self.assertIn("publishClientValue(statusText);", pointer_move)
+        self.assertNotIn('gradio.dispatch("change")', pointer_move)
+        self.assertIn("if (pointerIdActive === evt.pointerId && rotateTileIndex >= 0)", pointer_up)
+        self.assertIn("syncValue(", pointer_up)
+
+    def test_rotation_uses_center_clockwise_geometry_everywhere(self) -> None:
+        self.assertIn("function tileCenter(", self.source)
+        self.assertIn("function tileCorners(", self.source)
+        self.assertIn("ctx.rotate((tile.rotation_deg * Math.PI) / 180);", self.source)
+        self.assertIn("pointInTile(tile", self.source)
+        self.assertIn("rotationHandleForTile(tile)", self.source)
+
+    def test_debug_hud_is_not_rendered(self) -> None:
+        self.assertNotIn("function drawHud", self.source)
+        self.assertNotIn('ctx.fillRect(10, 10, boxW, boxH);', self.source)
+        self.assertIn("function drawSelectionOverlay", self.source)
+
+    def test_left_drag_on_background_pans_without_syncing_tile_value(self) -> None:
+        pointer_down = self.source[
+            self.source.index("function onPointerDown") :
+            self.source.index("function onPointerMove")
+        ]
+        background_branch = pointer_down[pointer_down.index("} else {") :]
+        self.assertIn("panning = true;", background_branch)
+        self.assertIn("pointerIdActive = evt.pointerId;", background_branch)
+        self.assertIn('cursorStyle = "grabbing";', background_branch)
+        self.assertIn("canvasEl.setPointerCapture(evt.pointerId);", background_branch)
+
+        pointer_up = self.source[
+            self.source.index("function onPointerUp") :
+            self.source.index("function onPointerCancel")
+        ]
+        pan_branch = pointer_up[: pointer_up.index("if (pointerIdActive === evt.pointerId")]
+        self.assertIn("if (panning)", pan_branch)
+        self.assertNotIn("syncValue(", pan_branch)
+        self.assertNotIn("publishClientValue(", pan_branch)
+
+    def test_rotation_is_undoable_and_cancel_restores_origin(self) -> None:
+        self.assertIn(
+            "tiles: { index: number; x: number; y: number; rotation_deg: number }[];",
+            self.source,
+        )
+        cancel = self.source[
+            self.source.index("function cancelPointerInteraction") :
+            self.source.index("function onWindowBlur")
+        ]
+        self.assertIn("rotateRuntime.tile.rotation_deg = rotateOrigin;", cancel)
+        self.assertIn(
+            "runtime.tile.rotation_deg = normalizeRotation(item.rotation_deg);",
+            self.source,
+        )
 
 
 if __name__ == "__main__":

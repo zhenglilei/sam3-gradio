@@ -30,6 +30,7 @@ def build_image_tab(
                     label="完整原图",
                     show_label=False,
                     sources=["upload", "clipboard"],
+                    interactive=False,
                     elem_id="source_input_image",
                     elem_classes="aligned-prepost-preview",
                     height=320,
@@ -50,15 +51,15 @@ def build_image_tab(
                         visible=False,
                     )
                 with gr.Row():
-                    apply_crop_btn = gr.Button("应用裁剪", variant="primary")
-                    use_full_image_btn = gr.Button("使用整图", variant="secondary")
-                source_crop_status = gr.Markdown("请上传完整原图；默认直接使用整图。")
+                    apply_crop_btn = gr.Button("应用裁剪", variant="primary", interactive=False)
+                    use_full_image_btn = gr.Button("使用整图", variant="secondary", interactive=False)
+                source_crop_status = gr.Markdown("页面初始化中，请稍候…")
                 with gr.Group(elem_classes="template-instance-card"):
                     gr.Markdown("#### 选择模板实例")
-                    template_instance_selector = gr.Dropdown(
+                    template_instance_selector = gr.CheckboxGroup(
                         choices=[],
-                        label="用于模板匹配的 PVS 实例",
-                        info="选择后，右侧会用黄色轮廓高亮当前模板。",
+                        label="用于模板匹配的 PVS 实例（可多选）",
+                        info="每个选中的 PVS 实例都会生成独立的衍生结果组。",
                         elem_id="template_instance_selector",
                     )
                     refresh_template_instances_btn = gr.Button(
@@ -86,21 +87,14 @@ def build_image_tab(
                 template_match_status = gr.Markdown("请先完成智能分割并选择当前 PVS 实例")
                 template_match_selection = gr.CheckboxGroup(
                     choices=[],
-                    label="匹配结果实例",
-                    info="运行后默认全选；取消勾选可只导出部分实例。",
+                    label="保存衍生结果组",
+                    info="每个 PVS 实例对应一个结果组，可选择 Ax、Bx 或同时选择多个组。",
                     elem_id="template_match_selection",
                 )
-                with gr.Row():
-                    template_export_scope = gr.Radio(
-                        choices=[("保存全部", "all"), ("保存所选", "selected")],
-                        value="all",
-                        label="保存范围",
-                        elem_id="template_export_scope",
-                    )
-                    export_template_selection_btn = gr.Button(
-                        "生成下载包",
-                        variant="secondary",
-                    )
+                export_template_selection_btn = gr.Button(
+                    "生成所选衍生组下载包",
+                    variant="secondary",
+                )
                 template_match_file = gr.File(label="下载模板匹配结果包", interactive=False)
         mode = gr.Radio(
             choices=[("PCS Auto 自动概念分割", "PCS Auto"), ("PVS Manual 手动实例分割", "PVS Manual"), ("版图 mask 提示分割", "Layout Mask")],
@@ -296,7 +290,6 @@ def build_image_tab(
         run_template_match_btn=run_template_match_btn,
         template_match_status=template_match_status,
         template_match_selection=template_match_selection,
-        template_export_scope=template_export_scope,
         export_template_selection_btn=export_template_selection_btn,
         template_match_file=template_match_file,
         mode=mode,

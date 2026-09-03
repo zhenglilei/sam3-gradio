@@ -256,6 +256,48 @@ class SessionIntegrationTests(unittest.TestCase):
         session_component = demo.blocks[dependency["outputs"][0]]
         self.assertEqual(session_component.time_to_live, float("inf"))
 
+    def test_source_controls_enable_only_after_successful_bootstrap(self):
+        demo = app.create_demo()
+        config = demo.config
+        components = {item["id"]: item for item in config["components"]}
+        source_image = next(
+            item
+            for item in config["components"]
+            if item.get("props", {}).get("elem_id") == "source_input_image"
+        )
+        apply_crop = next(
+            item
+            for item in config["components"]
+            if item.get("props", {}).get("value") == "应用裁剪"
+        )
+        use_full = next(
+            item
+            for item in config["components"]
+            if item.get("props", {}).get("value") == "使用整图"
+        )
+        status = next(
+            item
+            for item in config["components"]
+            if item.get("props", {}).get("value") == "页面初始化中，请稍候…"
+        )
+        self.assertFalse(source_image["props"]["interactive"])
+        self.assertFalse(apply_crop["props"]["interactive"])
+        self.assertFalse(use_full["props"]["interactive"])
+
+        enable_dependency = next(
+            item
+            for item in config["dependencies"]
+            if item.get("api_name") == "_enable_source_controls"
+        )
+        self.assertEqual(
+            enable_dependency["outputs"],
+            [source_image["id"], apply_crop["id"], use_full["id"], status["id"]],
+        )
+        self.assertFalse(enable_dependency["queue"])
+        self.assertTrue(enable_dependency["trigger_only_on_success"])
+        self.assertEqual(enable_dependency["api_visibility"], "private")
+        self.assertTrue(all(output in components for output in enable_dependency["outputs"]))
+
     def test_unload_request_does_not_close_or_rebind_session(self):
         browser_hash = "browser-unload-" + uuid.uuid4().hex
         bundle = self._bootstrap(browser_hash)

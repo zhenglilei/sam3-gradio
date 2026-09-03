@@ -20,8 +20,21 @@
 		baseY: number;
 	}
 
+	interface Point {
+		x: number;
+		y: number;
+	}
+
+	interface RotationHandle {
+		corner: Point;
+		center: Point;
+		x: number;
+		y: number;
+		radius: number;
+	}
+
 	interface UndoSnapshot {
-		tiles: { index: number; x: number; y: number }[];
+		tiles: { index: number; x: number; y: number; rotation_deg: number }[];
 		selected: number;
 	}
 
@@ -33,6 +46,9 @@
 	const WHEEL_ZOOM_SPEED = 0.001;
 	const DEFAULT_DRAG_GAIN = 1.0;
 	const PRECISE_DRAG_GAIN = 0.25;
+	const ROTATE_HANDLE_OFFSET_PX = 28;
+	const ROTATE_HANDLE_RADIUS_PX = 9;
+	const ROTATION_EPSILON = 0.01;
 	const gradio = new Gradio<StitchPreviewCanvasEvents, StitchPreviewCanvasProps>(props);
 
 	let canvasEl: HTMLCanvasElement;
@@ -49,8 +65,14 @@
 	let panning = $state(false);
 	let dragging = $state(false);
 	let dragTileIndex = $state(-1);
+	let rotating = $state(false);
+	let rotateTileIndex = $state(-1);
 	let dragOriginX = 0;
 	let dragOriginY = 0;
+	let rotateOrigin = 0;
+	let rotateCenter: Point = { x: 0, y: 0 };
+	let rotateStartAngle = 0;
+	let rotateMoved = false;
 	let dragGhostX = 0;
 	let dragGhostY = 0;
 	let pointerDownX = 0;
@@ -84,6 +106,12 @@
 		return Math.max(lo, Math.min(hi, value));
 	}
 
+	function normalizeRotation(value: number): number {
+		let angle = ((value + 180) % 360 + 360) % 360 - 180;
+		if (angle === -180) angle = 180;
+		return Math.abs(angle) < ROTATION_EPSILON ? 0 : angle;
+	}
+
 	function cloneValue(value: StitchPreviewValue | null | undefined): StitchPreviewValue {
 		return JSON.parse(JSON.stringify(value || { tiles: [], selected: 0 }));
 	}
@@ -96,6 +124,7 @@
 			y: finiteNumber(tile.y, 0),
 			width: Math.max(1, finiteNumber(tile.width, 1)),
 			height: Math.max(1, finiteNumber(tile.height, 1)),
+			rotation_deg: normalizeRotation(finiteNumber(tile.rotation_deg, 0)),
 		};
 	}
 
@@ -171,6 +200,88 @@
 		};
 	}
 
+	function rotatePoint(point: Point, center: Point, rotationDeg: number): Point {
+		const angle = (rotationDeg * Math.PI) / 180;
+		const cos = Math.cos(angle);
+		const sin = Math.sin(angle);
+		const dx = point.x - center.x;
+		const dy = point.y - center.y;
+		return {
+			x: center.x + dx * cos - dy * sin,
+			y: center.y + dx * sin + dy * cos,
+		};
+	}
+
+	function tileCenter(tile: StitchTile, x = tile.x, y = tile.y): Point {
+		return { x: x + tile.width / 2, y: y + tile.height / 2 };
+	}
+
+	function tileCorners(tile: StitchTile, x = tile.x, y = tile.y): Point[] {
+		const center = tileCenter(tile, x, y);
+		return [
+			{ x, y },
+			{ x: x + tile.width, y },
+			{ x: x + tile.width, y: y + tile.height },
+			{ x, y: y + tile.height },
+		].map((point) => rotatePoint(point, center, tile.rotation_deg));
+	}
+
+	function tileBounds(tile: StitchTile, x = tile.x, y = tile.y): {
+		minX: number;
+		minY: number;
+		maxX: number;
+		maxY: number;
+	} {
+		const corners = tileCorners(tile, x, y);
+		return {
+			minX: Math.min(...corners.map((point) => point.x)),
+			minY: Math.min(...corners.map((point) => point.y)),
+			maxX: Math.max(...corners.map((point) => point.x)),
+			maxY: Math.max(...corners.map((point) => point.y)),
+		};
+	}
+
+	function pointInTile(tile: StitchTile, point: Point): boolean {
+		const local = rotatePoint(point, tileCenter(tile), -tile.rotation_deg);
+		return (
+			local.x >= tile.x &&
+			local.x <= tile.x + tile.width &&
+			local.y >= tile.y &&
+			local.y <= tile.y + tile.height
+		);
+	}
+
+	function rotationHandleForTile(tile: StitchTile): RotationHandle {
+		const corners = tileCorners(tile);
+		const corner = corners.reduce(
+			(best, point) =>
+				point.y < best.y ||
+				(Math.abs(point.y - best.y) < 1e-6 && point.x > best.x)
+					? point
+					: best,
+			corners[0],
+		);
+		const center = tileCenter(tile);
+		const dx = corner.x - center.x;
+		const dy = corner.y - center.y;
+		const length = Math.max(1, Math.hypot(dx, dy));
+		const offset = ROTATE_HANDLE_OFFSET_PX / Math.max(viewZoom, 0.05);
+		return {
+			corner,
+			center,
+			x: corner.x + (dx / length) * offset,
+			y: corner.y + (dy / length) * offset,
+			radius: ROTATE_HANDLE_RADIUS_PX / Math.max(viewZoom, 0.05),
+		};
+	}
+
+	function hitRotateHandle(worldX: number, worldY: number): number {
+		const tile = selectedTile();
+		if (!tile) return -1;
+		const handle = rotationHandleForTile(tile);
+		return Math.hypot(worldX - handle.x, worldY - handle.y) <= handle.radius ? tile.index : -1;
+	}
+
 	function eventToScreen(evt: MouseEvent | PointerEvent | WheelEvent): { x: number; y: number } {
 		const rect = canvasEl.getBoundingClientRect();
 		return {
@@ -217,6 +328,7 @@
 				index: runtime.tile.index,
 				x: runtime.tile.x,
 				y: runtime.tile.y,
+				rotation_deg: runtime.tile.rotation_deg,
 			})),
 			selected: selectedIndex(),
 		};
@@ -229,9 +341,10 @@
 			a.tiles.every((tile, i) => {
 				const other = b.tiles[i];
 				return (
-					tile.index === other.index &&
+				tile.index === other.index &&
 					Math.abs(tile.x - other.x) < 0.01 &&
-					Math.abs(tile.y - other.y) < 0.01
+					Math.abs(tile.y - other.y) < 0.01 &&
+					Math.abs(tile.rotation_deg - other.rotation_deg) < ROTATION_EPSILON
 				);
 			})
 		);
@@ -261,6 +374,7 @@
 			if (runtime) {
 				runtime.tile.x = item.x;
 				runtime.tile.y = item.y;
+				runtime.tile.rotation_deg = normalizeRotation(item.rotation_deg);
 			}
 		}
 		localValue = { ...localValue, selected: snap.selected };
@@ -279,11 +393,11 @@
 		let maxX = -Infinity;
 		let maxY = -Infinity;
 		for (const runtime of tileRuntimes) {
-			const tile = runtime.tile;
-			minX = Math.min(minX, tile.x);
-			minY = Math.min(minY, tile.y);
-			maxX = Math.max(maxX, tile.x + tile.width);
-			maxY = Math.max(maxY, tile.y + tile.height);
+			const bounds = tileBounds(runtime.tile);
+			minX = Math.min(minX, bounds.minX);
+			minY = Math.min(minY, bounds.minY);
+			maxX = Math.max(maxX, bounds.maxX);
+			maxY = Math.max(maxY, bounds.maxY);
 		}
 		const pad = 40;
 		const worldW = Math.max(1, maxX - minX);
@@ -325,6 +439,8 @@
 		};
 		dragging = false;
 		dragTileIndex = -1;
+		rotating = false;
+		rotateTileIndex = -1;
 		panning = false;
 		undoStack = [];
 		undoIndex = -1;
@@ -405,12 +521,7 @@
 	function hitTile(worldX: number, worldY: number): number {
 		for (let i = tileRuntimes.length - 1; i >= 0; i--) {
 			const tile = tileRuntimes[i].tile;
-			if (
-				worldX >= tile.x &&
-				worldX <= tile.x + tile.width &&
-				worldY >= tile.y &&
-				worldY <= tile.y + tile.height
-			) {
+			if (pointInTile(tile, { x: worldX, y: worldY })) {
 				return tile.index;
 			}
 		}
@@ -457,7 +568,7 @@
 	}
 
 	function cancelPointerInteraction(status = "已取消拖动"): void {
-		const hadInteraction = panning || pointerIdActive >= 0 || dragTileIndex >= 0;
+		const hadInteraction = panning || pointerIdActive >= 0 || dragTileIndex >= 0 || rotateTileIndex >= 0;
 		const activePointerId = pointerIdActive;
 		const runtime = tileRuntimes.find((entry) => entry.tile.index === dragTileIndex);
 		if (runtime && (dragging || dragMoved)) {
@@ -465,11 +576,19 @@
 			runtime.tile.y = dragOriginY;
 			tileRuntimes = [...tileRuntimes];
 		}
+		const rotateRuntime = tileRuntimes.find((entry) => entry.tile.index === rotateTileIndex);
+		if (rotateRuntime && (rotating || rotateMoved)) {
+			rotateRuntime.tile.rotation_deg = rotateOrigin;
+			tileRuntimes = [...tileRuntimes];
+		}
 		if (hadInteraction) clearQueuedSync();
 		localValue = { ...localValue, selected: pointerDownSelected };
 		dragging = false;
 		dragTileIndex = -1;
+		rotating = false;
+		rotateTileIndex = -1;
 		dragMoved = false;
+		rotateMoved = false;
 		panning = false;
 		pointerIdActive = -1;
 		dragShift = false;
@@ -483,6 +602,22 @@
 
 	function onWindowBlur(): void {
 		cancelPointerInteraction("窗口失焦，已取消拖动");
+	}
+
+	function drawTileImage(
+		ctx: CanvasRenderingContext2D,
+		runtime: TileRuntime,
+		x = runtime.tile.x,
+		y = runtime.tile.y,
+	): void {
+		if (!runtime.image) return;
+		const tile = runtime.tile;
+		const center = tileCenter(tile, x, y);
+		ctx.save();
+		ctx.translate(center.x, center.y);
+		ctx.rotate((tile.rotation_deg * Math.PI) / 180);
+		ctx.drawImage(runtime.image, -tile.width / 2, -tile.height / 2, tile.width, tile.height);
+		ctx.restore();
 	}
 
 	function drawLoupe(ctx: CanvasRenderingContext2D): void {
@@ -509,7 +644,7 @@
 			ctx.globalAlpha = tileAlpha(tile.index, activeDrag);
 			if (diffMode() && tile.index !== 0) ctx.globalCompositeOperation = "difference";
 			else ctx.globalCompositeOperation = "source-over";
-			ctx.drawImage(runtime.image, tile.x, tile.y, tile.width, tile.height);
+			drawTileImage(ctx, runtime);
 		}
 		ctx.restore();
 		ctx.save();
@@ -529,32 +664,41 @@
 		ctx.restore();
 	}
 
-	function drawHud(ctx: CanvasRenderingContext2D): void {
+	function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
 		const tile = selectedTile();
-		const offset = selectedOffset();
-		const lines = [
-			"选中 #" + String(selectedIndex()),
-			"dx " + String(offset.dx) + "  dy " + String(offset.dy),
-			"zoom " + viewZoom.toFixed(2) + "  gain " + currentDragGain().toFixed(2),
-		];
 		ctx.save();
-		ctx.font = "600 12px ui-monospace, SFMono-Regular, Menlo, monospace";
-		const pad = 8;
-		const lineHeight = 16;
-		const boxW = Math.max(...lines.map((line) => ctx.measureText(line).width)) + pad * 2;
-		const boxH = lines.length * lineHeight + pad;
-		ctx.fillStyle = "rgba(15,23,42,0.82)";
-		ctx.fillRect(10, 10, boxW, boxH);
-		ctx.fillStyle = "#e2e8f0";
-		lines.forEach((line, i) => {
-			ctx.fillText(line, 10 + pad, 10 + pad + (i + 1) * lineHeight - 4);
-		});
 		if (tile) {
-			const tl = worldToScreen(tile.x, tile.y);
-			const br = worldToScreen(tile.x + tile.width, tile.y + tile.height);
+			const corners = tileCorners(tile).map((point) => worldToScreen(point.x, point.y));
 			ctx.strokeStyle = "#22d3ee";
 			ctx.lineWidth = 2;
-			ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+			ctx.beginPath();
+			ctx.moveTo(corners[0].x, corners[0].y);
+			for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
+			ctx.closePath();
+			ctx.stroke();
+
+			const handle = rotationHandleForTile(tile);
+			const corner = worldToScreen(handle.corner.x, handle.corner.y);
+			const center = worldToScreen(handle.x, handle.y);
+			ctx.strokeStyle = "rgba(226,232,240,0.9)";
+			ctx.lineWidth = 1.5;
+			ctx.beginPath();
+			ctx.moveTo(corner.x, corner.y);
+			ctx.lineTo(center.x, center.y);
+			ctx.stroke();
+			ctx.beginPath();
+			ctx.arc(
+				center.x,
+				center.y,
+				ROTATE_HANDLE_RADIUS_PX,
+				0,
+				Math.PI * 2,
+			);
+			ctx.fillStyle = rotating ? "#f59e0b" : "#f8fafc";
+			ctx.fill();
+			ctx.strokeStyle = "#22d3ee";
+			ctx.lineWidth = 2;
+			ctx.stroke();
 		}
 		ctx.restore();
 	}
@@ -589,28 +733,30 @@
 			ctx.globalAlpha = tileAlpha(tile.index, activeDrag);
 			if (diffMode() && tile.index !== 0) ctx.globalCompositeOperation = "difference";
 			else ctx.globalCompositeOperation = "source-over";
-			ctx.drawImage(runtime.image, tile.x, tile.y, tile.width, tile.height);
+			drawTileImage(ctx, runtime);
 		}
 		ctx.restore();
 
 		if (dragging && dragTileIndex >= 0) {
 			const runtime = tileRuntimes.find((entry) => entry.tile.index === dragTileIndex);
 			if (runtime) {
-				const tl = worldToScreen(dragGhostX, dragGhostY);
-				const br = worldToScreen(
-					dragGhostX + runtime.tile.width,
-					dragGhostY + runtime.tile.height,
+				const corners = tileCorners(runtime.tile, dragGhostX, dragGhostY).map((point) =>
+					worldToScreen(point.x, point.y),
 				);
 				ctx.save();
 				ctx.setLineDash([6, 4]);
 				ctx.strokeStyle = "rgba(250,204,21,0.95)";
 				ctx.lineWidth = 2;
-				ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+				ctx.beginPath();
+				ctx.moveTo(corners[0].x, corners[0].y);
+				for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
+				ctx.closePath();
+				ctx.stroke();
 				ctx.restore();
 			}
 		}
 
-		drawHud(ctx);
+		drawSelectionOverlay(ctx);
 		drawLoupe(ctx);
 	}
 
@@ -662,7 +808,7 @@
 			return;
 		}
 		if (key === "Escape") {
-			if (dragging || panning || pointerIdActive >= 0) {
+			if (dragging || rotating || panning || pointerIdActive >= 0) {
 				cancelPointerInteraction("已取消拖动");
 			}
 			return;
@@ -730,6 +876,25 @@
 		if (evt.button !== 0) return;
 
 		const world = screenToWorld(screen.x, screen.y);
+		const rotateHit = hitRotateHandle(world.x, world.y);
+		if (rotateHit >= 0) {
+			const runtime = tileRuntimes.find((entry) => entry.tile.index === rotateHit);
+			if (runtime) {
+				const tile = runtime.tile;
+				rotateTileIndex = rotateHit;
+				rotateOrigin = tile.rotation_deg;
+				rotateCenter = tileCenter(tile);
+				rotateStartAngle =
+					(Math.atan2(world.y - rotateCenter.y, world.x - rotateCenter.x) * 180) / Math.PI;
+				rotating = true;
+				rotateMoved = false;
+				pointerIdActive = evt.pointerId;
+				cursorStyle = "grabbing";
+				canvasEl.setPointerCapture(evt.pointerId);
+				draw();
+				return;
+			}
+		}
 		const hit = hitTile(world.x, world.y);
 		if (hit >= 0) {
 			setSelected(hit);
@@ -747,6 +912,10 @@
 			}
 		} else {
 			dragTileIndex = -1;
+			panning = true;
+			pointerIdActive = evt.pointerId;
+			cursorStyle = "grabbing";
+			canvasEl.setPointerCapture(evt.pointerId);
 		}
 		draw();
 	}
@@ -763,6 +932,38 @@
 			pointerLastX = screen.x;
 			pointerLastY = screen.y;
 			cursorStyle = "grabbing";
+			draw();
+			return;
+		}
+
+		if (pointerIdActive === evt.pointerId && rotateTileIndex >= 0) {
+			const runtime = tileRuntimes.find((entry) => entry.tile.index === rotateTileIndex);
+			if (!runtime) return;
+			const world = screenToWorld(screen.x, screen.y);
+			const dist = Math.hypot(screen.x - pointerDownX, screen.y - pointerDownY);
+			if (!rotateMoved && dist >= DEADZONE_PX) {
+				rotateMoved = true;
+				beginMutation();
+				cursorStyle = "grabbing";
+			}
+			if (rotateMoved) {
+				const angle =
+					(Math.atan2(world.y - rotateCenter.y, world.x - rotateCenter.x) * 180) / Math.PI;
+				runtime.tile.rotation_deg = normalizeRotation(
+					rotateOrigin + angle - rotateStartAngle,
+				);
+				tileRuntimes = [...tileRuntimes];
+				statusText =
+					"旋转 tile " +
+					String(rotateTileIndex) +
+					"  " +
+					runtime.tile.rotation_deg.toFixed(1) +
+					"°";
+				localValue = { ...localValue, status: statusText };
+				publishClientValue(statusText);
+			}
+			pointerLastX = screen.x;
+			pointerLastY = screen.y;
 			draw();
 			return;
 		}
@@ -817,6 +1018,29 @@
 			return;
 		}
 
+		if (pointerIdActive === evt.pointerId && rotateTileIndex >= 0) {
+			const rotateIndex = rotateTileIndex;
+			if (rotateMoved) {
+				endMutation();
+				const tile = tileRuntimes.find((entry) => entry.tile.index === rotateIndex)?.tile;
+				syncValue(
+					"tile " +
+						String(rotateIndex) +
+						" 旋转=" +
+						(tile ? tile.rotation_deg.toFixed(1) : "0.0") +
+						"°",
+				);
+			}
+			rotating = false;
+			rotateTileIndex = -1;
+			rotateMoved = false;
+			pointerIdActive = -1;
+			releasePointerCapture(evt.pointerId);
+			cursorStyle = spaceDown ? "grab" : "crosshair";
+			draw();
+			return;
+		}
+
 		if (pointerIdActive === evt.pointerId && dragTileIndex >= 0) {
 			const screen = eventToScreen(evt);
 			const dist = Math.hypot(screen.x - pointerDownX, screen.y - pointerDownY);
@@ -846,7 +1070,7 @@
 
 	function onPointerLeave(): void {
 		showLoupePointer = false;
-		if (!panning && !dragging) cursorStyle = spaceDown ? "grab" : "crosshair";
+		if (!panning && !dragging && !rotating) cursorStyle = spaceDown ? "grab" : "crosshair";
 		draw();
 	}
 
@@ -899,7 +1123,7 @@
 			></canvas>
 		</div>
 		<div class="shortcut-bar">
-			↑↓←→ / WASD 步进 · Shift 10x · 普通拖动 1×原图倍率 · Shift+拖精准 0.25× · Space平移 · +/-缩放 · Esc取消 · Ctrl+Z撤销
+			↑↓←→ / WASD 步进 · 右上角圆柄旋转 · 旋转角度数值框微调 · Shift 10x · 普通拖动 1×原图倍率 · Shift+拖精准 0.25× · 背景拖动/Space平移 · +/-缩放 · Esc取消 · Ctrl+Z撤销
 		</div>
 		<div class="status">{statusText}</div>
 	</div>

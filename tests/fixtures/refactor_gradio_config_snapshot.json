@@ -1,5 +1,5 @@
 {
-  "component_count": 324,
+  "component_count": 323,
   "components": [
     {
       "props": {
@@ -199,6 +199,7 @@
       "props": {
         "elem_id": "source_input_image",
         "height": 320,
+        "interactive": false,
         "label": "完整原图",
         "show_label": false,
         "sources": [
@@ -240,7 +241,7 @@
     },
     {
       "props": {
-        "interactive": true,
+        "interactive": false,
         "value": "应用裁剪",
         "visible": true
       },
@@ -248,7 +249,7 @@
     },
     {
       "props": {
-        "interactive": true,
+        "interactive": false,
         "value": "使用整图",
         "visible": true
       },
@@ -257,7 +258,7 @@
     {
       "props": {
         "show_label": false,
-        "value": "请上传完整原图；默认直接使用整图。",
+        "value": "页面初始化中，请稍候…",
         "visible": true
       },
       "type": "markdown"
@@ -280,11 +281,12 @@
       "props": {
         "choices": [],
         "elem_id": "template_instance_selector",
-        "label": "用于模板匹配的 PVS 实例",
+        "label": "用于模板匹配的 PVS 实例（可多选）",
         "show_label": true,
+        "value": [],
         "visible": true
       },
-      "type": "dropdown"
+      "type": "checkboxgroup"
     },
     {
       "props": {
@@ -403,7 +405,7 @@
       "props": {
         "choices": [],
         "elem_id": "template_match_selection",
-        "label": "匹配结果实例",
+        "label": "保存衍生结果组",
         "show_label": true,
         "value": [],
         "visible": true
@@ -412,41 +414,11 @@
     },
     {
       "props": {
-        "visible": true
-      },
-      "type": "row"
-    },
-    {
-      "props": {
-        "choices": [
-          [
-            "保存全部",
-            "all"
-          ],
-          [
-            "保存所选",
-            "selected"
-          ]
-        ],
-        "elem_id": "template_export_scope",
-        "label": "保存范围",
-        "show_label": true,
-        "value": "all",
-        "visible": true
-      },
-      "type": "radio"
-    },
-    {
-      "props": {
         "interactive": true,
-        "value": "生成下载包",
+        "value": "生成所选衍生组下载包",
         "visible": true
       },
       "type": "button"
-    },
-    {
-      "props": {},
-      "type": "form"
     },
     {
       "props": {
@@ -2452,6 +2424,15 @@
     },
     {
       "props": {
+        "label": "加载时自动去黑边",
+        "show_label": true,
+        "value": true,
+        "visible": true
+      },
+      "type": "checkbox"
+    },
+    {
+      "props": {
         "interactive": true,
         "value": "加载到拼接画布",
         "visible": true
@@ -2511,13 +2492,25 @@
       "type": "number"
     },
     {
+      "props": {
+        "label": "选中块旋转（°）",
+        "maximum": 180,
+        "minimum": -180,
+        "show_label": true,
+        "step": 0.1,
+        "value": 0,
+        "visible": true
+      },
+      "type": "number"
+    },
+    {
       "props": {},
       "type": "form"
     },
     {
       "props": {
         "interactive": true,
-        "value": "应用坐标",
+        "value": "应用位置与旋转",
         "visible": true
       },
       "type": "button"
@@ -2674,7 +2667,7 @@
     {
       "props": {
         "show_label": false,
-        "value": "单击选择分块；拖动或使用方向键调整位置。拖动期间只在浏览器本地更新。",
+        "value": "单击选择分块；拖动或使用方向键调整位置；拖动选中框右上角圆形手柄可绕中心旋转。交互期间只在浏览器本地更新。",
         "visible": true
       },
       "type": "markdown"
@@ -2843,28 +2836,28 @@
       "cancels": [],
       "inputs": [
         12,
-        205,
-        186
+        202,
+        183
       ],
       "max_batch_size": 4,
       "outputs": [
         22,
+        182,
         185,
-        188,
-        197,
-        198,
-        199,
+        194,
         195,
+        196,
+        192,
+        184,
         187,
-        190,
-        191
+        188
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "hidden",
       "targets": [
         [
-          205,
+          202,
           "change"
         ]
       ],
@@ -2879,38 +2872,38 @@
       "inputs": [
         12,
         22,
-        205,
+        202,
+        182,
+        183,
+        184,
         185,
-        186,
-        187,
-        188,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "max_batch_size": 4,
       "outputs": [
         22,
-        188,
-        197,
-        198,
-        199,
-        195,
         185,
+        194,
+        195,
+        196,
+        192,
+        182,
+        184,
         187,
-        190,
-        191,
+        188,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2932,12 +2925,12 @@
       "inputs": [
         12,
         22,
-        205
+        202
       ],
       "max_batch_size": 4,
       "outputs": [
-        230,
-        233
+        227,
+        230
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -2957,23 +2950,23 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        188,
-        190
+        185,
+        187
       ],
       "max_batch_size": 4,
       "outputs": [
-        188,
+        185,
+        184,
         187,
-        190,
-        195,
-        191
+        192,
+        188
       ],
       "queue": false,
       "scroll_to_output": false,
       "show_progress": "hidden",
       "targets": [
         [
-          191,
+          188,
           "click"
         ]
       ],
@@ -2988,38 +2981,38 @@
       "inputs": [
         12,
         22,
-        205,
+        202,
+        182,
+        183,
+        184,
         185,
-        186,
-        187,
-        188,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "max_batch_size": 4,
       "outputs": [
         22,
-        188,
-        197,
-        198,
-        199,
-        195,
         185,
+        194,
+        195,
+        196,
+        192,
+        182,
+        184,
         187,
-        190,
-        191,
+        188,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3041,12 +3034,12 @@
       "inputs": [
         12,
         22,
-        205
+        202
       ],
       "max_batch_size": 4,
       "outputs": [
-        230,
-        233
+        227,
+        230
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3066,23 +3059,23 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        188,
-        190
+        185,
+        187
       ],
       "max_batch_size": 4,
       "outputs": [
-        188,
+        185,
+        184,
         187,
-        190,
-        195,
-        191
+        192,
+        188
       ],
       "queue": false,
       "scroll_to_output": false,
       "show_progress": "hidden",
       "targets": [
         [
-          190,
+          187,
           "submit"
         ]
       ],
@@ -3097,38 +3090,38 @@
       "inputs": [
         12,
         22,
-        205,
+        202,
+        182,
+        183,
+        184,
         185,
-        186,
-        187,
-        188,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "max_batch_size": 4,
       "outputs": [
         22,
-        188,
-        197,
-        198,
-        199,
-        195,
         185,
+        194,
+        195,
+        196,
+        192,
+        182,
+        184,
         187,
-        190,
-        191,
+        188,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3150,12 +3143,12 @@
       "inputs": [
         12,
         22,
-        205
+        202
       ],
       "max_batch_size": 4,
       "outputs": [
-        230,
-        233
+        227,
+        230
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3175,23 +3168,23 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        188,
-        193
+        185,
+        190
       ],
       "max_batch_size": 4,
       "outputs": [
-        188,
+        185,
+        184,
         187,
-        190,
-        195,
-        191
+        192,
+        188
       ],
       "queue": false,
       "scroll_to_output": false,
       "show_progress": "hidden",
       "targets": [
         [
-          194,
+          191,
           "click"
         ]
       ],
@@ -3206,38 +3199,38 @@
       "inputs": [
         12,
         22,
-        205,
+        202,
+        182,
+        183,
+        184,
         185,
-        186,
-        187,
-        188,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "max_batch_size": 4,
       "outputs": [
         22,
-        188,
-        197,
-        198,
-        199,
-        195,
         185,
+        194,
+        195,
+        196,
+        192,
+        182,
+        184,
         187,
-        190,
-        191,
+        188,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3259,12 +3252,12 @@
       "inputs": [
         12,
         22,
-        205
+        202
       ],
       "max_batch_size": 4,
       "outputs": [
-        230,
-        233
+        227,
+        230
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3286,32 +3279,32 @@
       "inputs": [
         12,
         13,
-        205,
+        202,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        226,
+        142,
+        223,
+        227,
         230,
-        233,
-        220,
-        221,
-        218
+        217,
+        218,
+        215
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          215,
+          212,
           "click"
         ]
       ],
@@ -3326,19 +3319,19 @@
       "inputs": [
         22,
         19,
+        203,
+        204,
         206,
         207,
-        209,
         210,
-        213,
-        214,
-        212
+        211,
+        209
       ],
       "max_batch_size": 4,
       "outputs": [
         22,
-        199,
-        195
+        196,
+        192
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3363,12 +3356,12 @@
       "max_batch_size": 4,
       "outputs": [
         20,
+        235,
+        236,
         238,
+        237,
         239,
-        241,
-        240,
-        242,
-        243
+        240
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3394,8 +3387,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3419,16 +3412,16 @@
       ],
       "max_batch_size": 4,
       "outputs": [
-        220,
-        221,
-        218
+        217,
+        218,
+        215
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          216,
+          213,
           "click"
         ]
       ],
@@ -3447,20 +3440,20 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        226,
+        142,
+        223,
+        227,
         230,
-        233,
-        220,
-        221,
-        218
+        217,
+        218,
+        215
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          217,
+          214,
           "click"
         ]
       ],
@@ -3478,12 +3471,12 @@
       "max_batch_size": 4,
       "outputs": [
         20,
+        235,
+        236,
         238,
+        237,
         239,
-        241,
-        240,
-        242,
-        243
+        240
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3509,8 +3502,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3532,21 +3525,21 @@
       "inputs": [
         19,
         20,
-        238
+        235
       ],
       "max_batch_size": 4,
       "outputs": [
         20,
-        238,
-        240,
-        243
+        235,
+        237,
+        240
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          238,
+          235,
           "input"
         ]
       ],
@@ -3561,25 +3554,25 @@
       "inputs": [
         19,
         20,
-        238,
-        239
+        235,
+        236
       ],
       "max_batch_size": 4,
       "outputs": [
         20,
+        235,
+        236,
         238,
+        237,
         239,
-        241,
-        240,
-        242,
-        243
+        240
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          240,
+          237,
           "click"
         ]
       ],
@@ -3598,8 +3591,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3621,22 +3614,22 @@
       "inputs": [
         19,
         20,
-        241
+        238
       ],
       "max_batch_size": 4,
       "outputs": [
         20,
-        238,
-        240,
-        242,
-        243
+        235,
+        237,
+        239,
+        240
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          241,
+          238,
           "input"
         ]
       ],
@@ -3651,25 +3644,25 @@
       "inputs": [
         19,
         20,
-        238,
-        241
+        235,
+        238
       ],
       "max_batch_size": 4,
       "outputs": [
         20,
+        235,
+        236,
         238,
+        237,
         239,
-        241,
-        240,
-        242,
-        243
+        240
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          242,
+          239,
           "click"
         ]
       ],
@@ -3688,8 +3681,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3714,15 +3707,15 @@
       ],
       "max_batch_size": 4,
       "outputs": [
-        245,
-        243
+        242,
+        240
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          244,
+          241,
           "click"
         ]
       ],
@@ -3741,15 +3734,15 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        161
+        142,
+        158
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          124,
+          121,
           "click"
         ]
       ],
@@ -3768,9 +3761,9 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126,
-        161
+        142,
+        123,
+        158
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3792,21 +3785,21 @@
       "inputs": [
         12,
         13,
-        128,
-        214
+        125,
+        211
       ],
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        161
+        142,
+        158
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          125,
+          122,
           "click"
         ]
       ],
@@ -3825,8 +3818,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -3848,27 +3841,27 @@
       "inputs": [
         13,
         19,
-        126
+        123
       ],
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126,
-        161,
+        142,
+        123,
+        158,
+        143,
         146,
-        149,
+        147,
         150,
-        153,
-        154,
-        156
+        151,
+        153
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          126,
+          123,
           "input"
         ]
       ],
@@ -3884,35 +3877,35 @@
         13,
         15,
         16,
-        59,
+        56,
         19,
+        143,
         146,
-        149,
+        147,
         150,
+        151,
         153,
-        154,
-        156,
-        145
+        142
       ],
       "max_batch_size": 4,
       "outputs": [
         19,
-        63,
-        145,
+        60,
+        142,
+        143,
         146,
-        149,
+        147,
         150,
+        151,
         153,
-        154,
-        156,
-        161
+        158
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          159,
+          156,
           "click"
         ]
       ],
@@ -3926,25 +3919,25 @@
       "cancels": [],
       "inputs": [
         19,
-        145
+        142
       ],
       "max_batch_size": 4,
       "outputs": [
         19,
+        143,
         146,
-        149,
+        147,
         150,
+        151,
         153,
-        154,
-        156,
-        161
+        158
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          145,
+          142,
           "change"
         ]
       ],
@@ -3963,21 +3956,21 @@
       "max_batch_size": 4,
       "outputs": [
         19,
+        143,
         146,
-        149,
+        147,
         150,
+        151,
         153,
-        154,
-        156,
-        145,
-        161
+        142,
+        158
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          158,
+          155,
           "click"
         ]
       ],
@@ -3993,38 +3986,38 @@
         13,
         15,
         16,
-        59,
+        56,
         19,
+        143,
         146,
-        149,
+        147,
         150,
+        151,
         153,
-        154,
-        156,
-        145,
-        126
+        142,
+        123
       ],
       "max_batch_size": 4,
       "outputs": [
         16,
         19,
-        145,
-        161,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        142,
+        158,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          160,
+          157,
           "click"
         ]
       ],
@@ -4043,7 +4036,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -4065,7 +4058,7 @@
       "cancels": [],
       "inputs": [
         30,
-        59,
+        56,
         12,
         19
       ],
@@ -4078,18 +4071,18 @@
         15,
         16,
         18,
-        70,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97,
-        173,
-        145
+        67,
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94,
+        170,
+        142
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4110,7 +4103,7 @@
       "cancels": [],
       "inputs": [
         30,
-        59,
+        56,
         12,
         19
       ],
@@ -4123,18 +4116,18 @@
         15,
         16,
         18,
-        70,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97,
-        173,
-        145
+        67,
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94,
+        170,
+        142
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4182,7 +4175,7 @@
       "cancels": [],
       "inputs": [
         14,
-        59,
+        56,
         12,
         19
       ],
@@ -4195,18 +4188,18 @@
         15,
         16,
         18,
-        70,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97,
-        173,
-        145
+        67,
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94,
+        170,
+        142
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4227,7 +4220,7 @@
       "cancels": [],
       "inputs": [
         14,
-        59,
+        56,
         12,
         19
       ],
@@ -4240,18 +4233,18 @@
         15,
         16,
         18,
-        70,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97,
-        173,
-        145
+        67,
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94,
+        170,
+        142
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4322,8 +4315,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4344,12 +4337,12 @@
       "cancels": [],
       "inputs": [
         13,
-        59,
-        67
+        56,
+        64
       ],
       "max_batch_size": 4,
       "outputs": [
-        64
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4375,7 +4368,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -4447,8 +4440,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4469,12 +4462,12 @@
       "cancels": [],
       "inputs": [
         13,
-        59,
-        67
+        56,
+        64
       ],
       "max_batch_size": 4,
       "outputs": [
-        64
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4500,7 +4493,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -4572,8 +4565,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4594,12 +4587,12 @@
       "cancels": [],
       "inputs": [
         13,
-        59,
-        67
+        56,
+        64
       ],
       "max_batch_size": 4,
       "outputs": [
-        64
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4625,7 +4618,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -4697,8 +4690,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4719,12 +4712,12 @@
       "cancels": [],
       "inputs": [
         13,
-        59,
-        67
+        56,
+        64
       ],
       "max_batch_size": 4,
       "outputs": [
-        64
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4750,7 +4743,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -4774,11 +4767,11 @@
         13,
         15,
         16,
-        59,
-        67,
-        69,
+        56,
+        64,
+        66,
         18,
-        64
+        61
       ],
       "max_batch_size": 4,
       "outputs": [
@@ -4788,24 +4781,24 @@
         23,
         15,
         16,
-        70,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97,
-        64
+        67,
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94,
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          64,
+          61,
           "input"
         ]
       ],
@@ -4852,7 +4845,7 @@
         16,
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -4900,7 +4893,7 @@
         14,
         13,
         16,
-        59,
+        56,
         42,
         43,
         44
@@ -4909,7 +4902,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -4958,12 +4951,11 @@
         13,
         16,
         17,
-        54,
         52
       ],
       "max_batch_size": 4,
       "outputs": [
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -4971,7 +4963,7 @@
       "show_progress": "full",
       "targets": [
         [
-          55,
+          53,
           "click"
         ]
       ],
@@ -4990,7 +4982,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -5041,7 +5033,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -5092,7 +5084,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -5141,30 +5133,30 @@
         18,
         15,
         16,
-        59,
-        111,
-        114
+        56,
+        108,
+        111
       ],
       "max_batch_size": 4,
       "outputs": [
         18,
         23,
         16,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          112,
+          109,
           "click"
         ]
       ],
@@ -5180,7 +5172,7 @@
         13,
         15,
         16,
-        59
+        56
       ],
       "max_batch_size": 4,
       "outputs": [
@@ -5190,24 +5182,24 @@
         23,
         15,
         16,
-        70,
-        98,
-        84,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        67,
+        95,
+        81,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          74,
+          71,
           "click"
         ]
       ],
@@ -5220,7 +5212,7 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        59,
+        56,
         13,
         15,
         16,
@@ -5232,37 +5224,37 @@
         21,
         24,
         23,
-        67,
-        112,
-        68,
-        82,
-        93,
-        165,
-        140,
-        120,
-        143,
-        95,
-        104,
+        64,
         109,
-        70,
-        98,
-        77,
-        63,
-        139,
-        141,
+        65,
+        79,
         90,
-        118,
-        167,
-        75,
-        97,
-        145
+        162,
+        137,
+        117,
+        140,
+        92,
+        101,
+        106,
+        67,
+        95,
+        74,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94,
+        142
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          59,
+          56,
           "change"
         ]
       ],
@@ -5276,12 +5268,12 @@
       "cancels": [],
       "inputs": [
         13,
-        59,
-        67
+        56,
+        64
       ],
       "max_batch_size": 4,
       "outputs": [
-        64
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -5301,21 +5293,21 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        67,
-        59
+        64,
+        56
       ],
       "max_batch_size": 4,
       "outputs": [
-        95,
-        104,
-        109
+        92,
+        101,
+        106
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          67,
+          64,
           "change"
         ]
       ],
@@ -5329,12 +5321,12 @@
       "cancels": [],
       "inputs": [
         13,
-        59,
-        67
+        56,
+        64
       ],
       "max_batch_size": 4,
       "outputs": [
-        64
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -5357,28 +5349,28 @@
         13,
         15,
         16,
-        59,
-        70
+        56,
+        67
       ],
       "max_batch_size": 4,
       "outputs": [
         15,
-        70,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        67,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          71,
+          68,
           "click"
         ]
       ],
@@ -5394,26 +5386,26 @@
         13,
         15,
         16,
-        59
+        56
       ],
       "max_batch_size": 4,
       "outputs": [
         15,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          88,
+          85,
           "click"
         ]
       ],
@@ -5429,28 +5421,28 @@
         13,
         15,
         16,
-        59,
-        84,
-        85
+        56,
+        81,
+        82
       ],
       "max_batch_size": 4,
       "outputs": [
         15,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          86,
+          83,
           "click"
         ]
       ],
@@ -5466,27 +5458,27 @@
         13,
         15,
         16,
-        59
+        56
       ],
       "max_batch_size": 4,
       "outputs": [
         16,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          99,
+          96,
           "click"
         ]
       ],
@@ -5502,28 +5494,28 @@
         13,
         15,
         16,
-        59,
-        98
+        56,
+        95
       ],
       "max_batch_size": 4,
       "outputs": [
         16,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          101,
+          98,
           "click"
         ]
       ],
@@ -5539,27 +5531,27 @@
         13,
         15,
         16,
-        59
+        56
       ],
       "max_batch_size": 4,
       "outputs": [
         16,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          102,
+          99,
           "click"
         ]
       ],
@@ -5575,28 +5567,28 @@
         13,
         15,
         16,
-        59,
+        56,
         24,
-        106
+        103
       ],
       "max_batch_size": 4,
       "outputs": [
         16,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          107,
+          104,
           "click"
         ]
       ],
@@ -5612,9 +5604,9 @@
         13,
         15,
         16,
-        59,
+        56,
         24,
-        78,
+        75,
         18
       ],
       "max_batch_size": 4,
@@ -5622,21 +5614,21 @@
         18,
         24,
         16,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          79,
+          76,
           "click"
         ]
       ],
@@ -5652,27 +5644,27 @@
         13,
         15,
         16,
-        59,
-        167
+        56,
+        164
       ],
       "max_batch_size": 4,
       "outputs": [
         16,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          167,
+          164,
           "change"
         ]
       ],
@@ -5688,26 +5680,26 @@
         13,
         15,
         16,
-        59
+        56
       ],
       "max_batch_size": 4,
       "outputs": [
         16,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          169,
+          166,
           "click"
         ]
       ],
@@ -5723,26 +5715,26 @@
         13,
         15,
         16,
-        59
+        56
       ],
       "max_batch_size": 4,
       "outputs": [
         16,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          170,
+          167,
           "click"
         ]
       ],
@@ -5761,7 +5753,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -5836,7 +5828,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -5911,7 +5903,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -5986,7 +5978,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -6061,7 +6053,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -6136,7 +6128,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -6211,7 +6203,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -6286,7 +6278,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -6358,31 +6350,31 @@
         13,
         15,
         16,
-        59,
+        56,
+        128,
+        129,
+        130,
         131,
-        132,
-        133,
-        134,
-        135
+        132
       ],
       "max_batch_size": 4,
       "outputs": [
-        173,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        170,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          89,
+          86,
           "click"
         ]
       ],
@@ -6398,31 +6390,31 @@
         13,
         15,
         16,
-        59,
+        56,
+        128,
+        129,
+        130,
         131,
-        132,
-        133,
-        134,
-        135
+        132
       ],
       "max_batch_size": 4,
       "outputs": [
-        173,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        170,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          171,
+          168,
           "click"
         ]
       ],
@@ -6438,28 +6430,28 @@
         13,
         15,
         16,
-        59,
-        175,
-        176,
-        177
+        56,
+        172,
+        173,
+        174
       ],
       "max_batch_size": 4,
       "outputs": [
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          178,
+          175,
           "click"
         ]
       ],
@@ -6472,33 +6464,35 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        282,
-        283,
-        277,
-        294,
+        279,
+        280,
+        274,
+        293,
+        295,
         296,
-        297,
+        302,
         303,
-        304
+        281
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        314,
-        290,
-        291,
-        308,
-        317,
-        321,
+        274,
+        313,
+        288,
+        289,
         307,
-        309
+        316,
+        320,
+        306,
+        308,
+        290
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          284,
+          282,
           "click"
         ]
       ],
@@ -6511,28 +6505,29 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        283,
-        277
+        280,
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        283,
-        314,
-        290,
-        291,
-        308,
-        317,
-        321,
+        274,
+        280,
+        313,
+        288,
+        289,
         307,
-        309
+        316,
+        320,
+        306,
+        308,
+        290
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          283,
+          280,
           "input"
         ]
       ],
@@ -6545,30 +6540,31 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        277,
-        283,
-        294,
-        296,
-        297
+        274,
+        280,
+        293,
+        295,
+        296
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        314,
-        290,
-        291,
-        308,
-        317,
-        321,
+        274,
+        313,
+        288,
+        289,
         307,
-        309
+        316,
+        320,
+        306,
+        308,
+        290
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          288,
+          286,
           "click"
         ]
       ],
@@ -6581,26 +6577,27 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        314,
-        277
+        313,
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        290,
-        291,
-        308,
-        317,
-        321,
+        274,
+        288,
+        289,
         307,
-        309
+        316,
+        320,
+        306,
+        308,
+        290
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          314,
+          313,
           "change"
         ]
       ],
@@ -6613,28 +6610,30 @@
       "batch": false,
       "cancels": [],
       "inputs": [
+        288,
+        289,
         290,
-        291,
-        277
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        314,
-        290,
-        291,
-        308,
-        317,
-        321,
+        274,
+        313,
+        288,
+        289,
         307,
-        309
+        316,
+        320,
+        306,
+        308,
+        290
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          293,
+          292,
           "click"
         ]
       ],
@@ -6647,23 +6646,23 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        294,
+        293,
+        295,
         296,
-        297,
-        277
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        314,
-        308
+        274,
+        313,
+        307
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          294,
+          293,
           "change"
         ]
       ],
@@ -6676,16 +6675,45 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        294,
+        293,
+        295,
         296,
-        297,
-        277
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        314,
-        308
+        274,
+        313,
+        307
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          295,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_apply_stitch_options_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        293,
+        295,
+        296,
+        274
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        274,
+        313,
+        307
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -6700,20 +6728,22 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_apply_stitch_options_2",
+      "api_name": "_apply_stitch_export_options",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        294,
-        296,
-        297,
-        277
+        302,
+        303,
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        314,
+        274,
+        307,
+        316,
+        320,
+        306,
         308
       ],
       "queue": true,
@@ -6721,7 +6751,7 @@
       "show_progress": "full",
       "targets": [
         [
-          297,
+          302,
           "change"
         ]
       ],
@@ -6729,23 +6759,23 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_apply_stitch_export_options",
+      "api_name": "_apply_stitch_export_options_1",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
+        302,
         303,
-        304,
-        277
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        308,
-        317,
-        321,
+        274,
         307,
-        309
+        316,
+        320,
+        306,
+        308
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -6760,55 +6790,132 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_apply_stitch_export_options_1",
+      "api_name": "_generate_stitch_mosaic",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        303,
-        304,
-        277
+        274,
+        302,
+        303
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        308,
-        317,
-        321,
+        274,
+        316,
+        320,
         307,
-        309
+        306,
+        308,
+        317
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          304,
-          "change"
+          305,
+          "click"
         ]
       ],
       "trigger_after": null,
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_generate_stitch_mosaic",
+      "api_name": "_crop_stitch_mosaic",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        277,
-        303,
-        304
+        317,
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
-        277,
-        317,
-        321,
-        308,
+        274,
+        316,
+        320,
         307,
-        309,
+        306,
+        308,
+        317,
         318
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          317,
+          "input"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_restore_stitch_mosaic",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        274
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        274,
+        316,
+        320,
+        307,
+        306,
+        308,
+        317,
+        318
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          318,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_handoff_stitch_mosaic",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        274,
+        56,
+        12,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        14,
+        31,
+        35,
+        13,
+        15,
+        16,
+        18,
+        67,
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94,
+        170,
+        142
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -6823,120 +6930,12 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_crop_stitch_mosaic",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        318,
-        277
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        277,
-        317,
-        321,
-        308,
-        307,
-        309,
-        318,
-        319
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          318,
-          "input"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_restore_stitch_mosaic",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        277
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        277,
-        317,
-        321,
-        308,
-        307,
-        309,
-        318,
-        319
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          319,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_handoff_stitch_mosaic",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        277,
-        59,
-        12,
-        19
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        14,
-        31,
-        35,
-        13,
-        15,
-        16,
-        18,
-        70,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97,
-        173,
-        145
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          307,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
       "api_name": "_stitch_handoff_source_image",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        277
+        274
       ],
       "max_batch_size": 4,
       "outputs": [
@@ -6964,7 +6963,7 @@
       ],
       "max_batch_size": 4,
       "outputs": [
-        309
+        308
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -7035,8 +7034,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -7057,12 +7056,12 @@
       "cancels": [],
       "inputs": [
         13,
-        59,
-        67
+        56,
+        64
       ],
       "max_batch_size": 4,
       "outputs": [
-        64
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -7088,7 +7087,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -7109,20 +7108,65 @@
       "batch": false,
       "cancels": [],
       "inputs": [
+        253,
+        255,
         256,
-        258,
-        259,
-        251
+        248
       ],
       "max_batch_size": 4,
       "outputs": [
-        251,
-        272,
-        274,
-        266,
-        267,
-        265,
-        268
+        248,
+        269,
+        271,
+        263,
+        264,
+        262,
+        265
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          259,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_handoff_template_stitch",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        248,
+        56,
+        12,
+        19
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        14,
+        31,
+        35,
+        13,
+        15,
+        16,
+        18,
+        67,
+        95,
+        60,
+        136,
+        138,
+        87,
+        115,
+        164,
+        72,
+        94,
+        170,
+        142
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -7137,57 +7181,12 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_handoff_template_stitch",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        251,
-        59,
-        12,
-        19
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        14,
-        31,
-        35,
-        13,
-        15,
-        16,
-        18,
-        70,
-        98,
-        63,
-        139,
-        141,
-        90,
-        118,
-        167,
-        75,
-        97,
-        173,
-        145
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          265,
-          "click"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
       "api_name": "_template_stitch_handoff_source_image",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        251
+        248
       ],
       "max_batch_size": 4,
       "outputs": [
@@ -7215,7 +7214,7 @@
       ],
       "max_batch_size": 4,
       "outputs": [
-        268
+        265
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -7286,8 +7285,8 @@
       "max_batch_size": 4,
       "outputs": [
         19,
-        145,
-        126
+        142,
+        123
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -7308,12 +7307,12 @@
       "cancels": [],
       "inputs": [
         13,
-        59,
-        67
+        56,
+        64
       ],
       "max_batch_size": 4,
       "outputs": [
-        64
+        61
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -7339,7 +7338,7 @@
       "outputs": [
         17,
         48,
-        57,
+        54,
         51
       ],
       "queue": true,
@@ -7372,8 +7371,8 @@
         19,
         20,
         22,
-        277,
-        251
+        274,
+        248
       ],
       "queue": false,
       "scroll_to_output": false,
@@ -7386,6 +7385,31 @@
       ],
       "trigger_after": null,
       "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_enable_source_controls",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [
+        30,
+        33,
+        34,
+        35
+      ],
+      "queue": false,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "success"
+        ]
+      ],
+      "trigger_after": 151,
+      "trigger_only_on_success": true
     },
     {
       "api_name": "_close_request_session",
@@ -7408,7 +7432,7 @@
       "trigger_only_on_success": false
     }
   ],
-  "dependency_count": 153,
+  "dependency_count": 154,
   "layout": {
     "children": [
       {
@@ -7496,7 +7520,7 @@
                 "component": 24
               }
             ],
-            "component": 322
+            "component": 321
           },
           {
             "component": 22
@@ -7596,26 +7620,13 @@
                                 "component": 52
                               }
                             ],
-                            "component": 58
+                            "component": 55
                           },
                           {
-                            "children": [
-                              {
-                                "children": [
-                                  {
-                                    "component": 54
-                                  }
-                                ],
-                                "component": 56
-                              },
-                              {
-                                "component": 55
-                              }
-                            ],
                             "component": 53
                           },
                           {
-                            "component": 57
+                            "component": 54
                           }
                         ],
                         "component": 46
@@ -7626,316 +7637,400 @@
                   {
                     "children": [
                       {
-                        "component": 59
+                        "component": 56
                       }
                     ],
-                    "component": 180
+                    "component": 177
                   },
                   {
                     "children": [
                       {
                         "children": [
                           {
-                            "component": 62
+                            "component": 59
                           },
                           {
-                            "component": 63
+                            "component": 60
                           },
                           {
-                            "component": 64
+                            "component": 61
                           },
                           {
                             "children": [
                               {
-                                "component": 66
+                                "component": 63
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 67
+                                    "component": 64
                                   }
                                 ],
-                                "component": 76
+                                "component": 73
                               },
                               {
                                 "children": [
                                   {
                                     "children": [
                                       {
-                                        "component": 69
+                                        "component": 66
                                       },
                                       {
-                                        "component": 70
+                                        "component": 67
                                       }
                                     ],
-                                    "component": 72
+                                    "component": 69
                                   },
+                                  {
+                                    "component": 68
+                                  }
+                                ],
+                                "component": 65
+                              },
+                              {
+                                "children": [
                                   {
                                     "component": 71
                                   }
                                 ],
-                                "component": 68
+                                "component": 70
                               },
                               {
-                                "children": [
-                                  {
-                                    "component": 74
-                                  }
-                                ],
-                                "component": 73
-                              },
-                              {
-                                "component": 75
+                                "component": 72
                               }
                             ],
-                            "component": 65
+                            "component": 62
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 78
+                                    "component": 75
                                   }
                                 ],
-                                "component": 80
+                                "component": 77
                               },
                               {
-                                "component": 79
+                                "component": 76
                               }
                             ],
-                            "component": 77
+                            "component": 74
                           },
                           {
                             "children": [
                               {
                                 "children": [
+                                  {
+                                    "component": 80
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 81
+                                      },
+                                      {
+                                        "component": 82
+                                      }
+                                    ],
+                                    "component": 88
+                                  },
                                   {
                                     "component": 83
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 84
-                                      },
-                                      {
                                         "component": 85
-                                      }
-                                    ],
-                                    "component": 91
-                                  },
-                                  {
-                                    "component": 86
-                                  },
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 88
                                       },
                                       {
-                                        "component": 89
+                                        "component": 86
                                       }
                                     ],
-                                    "component": 87
+                                    "component": 84
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 90
+                                        "component": 87
                                       }
                                     ],
-                                    "component": 92
+                                    "component": 89
                                   }
                                 ],
-                                "component": 82
+                                "component": 79
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 94
+                                    "component": 91
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 96
+                                        "component": 93
                                       },
                                       {
-                                        "component": 97
+                                        "component": 94
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "component": 95
+                                          }
+                                        ],
+                                        "component": 100
+                                      },
+                                      {
+                                        "component": 96
                                       },
                                       {
                                         "children": [
                                           {
                                             "component": 98
-                                          }
-                                        ],
-                                        "component": 103
-                                      },
-                                      {
-                                        "component": 99
-                                      },
-                                      {
-                                        "children": [
-                                          {
-                                            "component": 101
                                           },
                                           {
-                                            "component": 102
+                                            "component": 99
                                           }
                                         ],
-                                        "component": 100
+                                        "component": 97
                                       }
                                     ],
-                                    "component": 95
+                                    "component": 92
                                   },
                                   {
                                     "children": [
                                       {
+                                        "component": 102
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "component": 103
+                                          }
+                                        ],
                                         "component": 105
                                       },
                                       {
-                                        "children": [
-                                          {
-                                            "component": 106
-                                          }
-                                        ],
-                                        "component": 108
-                                      },
-                                      {
-                                        "component": 107
+                                        "component": 104
                                       }
                                     ],
-                                    "component": 104
+                                    "component": 101
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 110
+                                        "component": 107
                                       },
                                       {
                                         "children": [
                                           {
-                                            "component": 111
+                                            "component": 108
                                           }
                                         ],
-                                        "component": 117
+                                        "component": 114
                                       },
                                       {
-                                        "component": 112
+                                        "component": 109
                                       },
                                       {
                                         "children": [
                                           {
                                             "children": [
                                               {
-                                                "component": 114
+                                                "component": 111
                                               }
                                             ],
-                                            "component": 116
+                                            "component": 113
                                           },
                                           {
-                                            "component": 115
+                                            "component": 112
                                           }
                                         ],
-                                        "component": 113
+                                        "component": 110
                                       }
                                     ],
-                                    "component": 109
+                                    "component": 106
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 118
+                                        "component": 115
                                       }
                                     ],
-                                    "component": 119
+                                    "component": 116
                                   }
                                 ],
-                                "component": 93
+                                "component": 90
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 121
+                                    "component": 118
                                   },
                                   {
-                                    "component": 122
+                                    "component": 119
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 124
+                                        "component": 121
                                       },
                                       {
-                                        "component": 125
+                                        "component": 122
                                       }
                                     ],
-                                    "component": 123
+                                    "component": 120
                                   },
                                   {
                                     "children": [
                                       {
-                                        "component": 126
+                                        "component": 123
                                       }
                                     ],
-                                    "component": 129
+                                    "component": 126
                                   },
                                   {
-                                    "component": 127
+                                    "component": 124
                                   },
                                   {
-                                    "component": 128
+                                    "component": 125
                                   }
                                 ],
-                                "component": 120
+                                "component": 117
                               },
                               {
                                 "children": [
                                   {
                                     "children": [
+                                      {
+                                        "component": 128
+                                      },
+                                      {
+                                        "component": 129
+                                      },
+                                      {
+                                        "component": 130
+                                      },
                                       {
                                         "component": 131
-                                      },
-                                      {
-                                        "component": 132
-                                      },
-                                      {
-                                        "component": 133
-                                      },
-                                      {
-                                        "component": 134
                                       }
                                     ],
-                                    "component": 136
+                                    "component": 133
                                   },
                                   {
-                                    "component": 135
+                                    "component": 132
                                   }
                                 ],
-                                "component": 130
+                                "component": 127
                               }
                             ],
-                            "component": 81
+                            "component": 78
                           }
                         ],
-                        "component": 61
+                        "component": 58
                       },
                       {
                         "children": [
                           {
-                            "component": 138
+                            "component": 135
                           },
                           {
-                            "component": 139
+                            "component": 136
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 141
+                                    "component": 138
                                   }
                                 ],
+                                "component": 139
+                              }
+                            ],
+                            "component": 137
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 141
+                              },
+                              {
                                 "component": 142
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 143
+                                  }
+                                ],
+                                "component": 159
+                              },
+                              {
+                                "component": 144
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 146
+                                      },
+                                      {
+                                        "component": 147
+                                      }
+                                    ],
+                                    "component": 148
+                                  }
+                                ],
+                                "component": 145
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 150
+                                      },
+                                      {
+                                        "component": 151
+                                      }
+                                    ],
+                                    "component": 152
+                                  }
+                                ],
+                                "component": 149
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 153
+                                  }
+                                ],
+                                "component": 160
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 155
+                                  },
+                                  {
+                                    "component": 156
+                                  }
+                                ],
+                                "component": 154
+                              },
+                              {
+                                "component": 157
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 158
+                                  }
+                                ],
+                                "component": 161
                               }
                             ],
                             "component": 140
@@ -7943,147 +8038,63 @@
                           {
                             "children": [
                               {
-                                "component": 144
-                              },
-                              {
-                                "component": 145
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 146
-                                  }
-                                ],
-                                "component": 162
-                              },
-                              {
-                                "component": 147
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 149
-                                      },
-                                      {
-                                        "component": 150
-                                      }
-                                    ],
-                                    "component": 151
-                                  }
-                                ],
-                                "component": 148
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 153
-                                      },
-                                      {
-                                        "component": 154
-                                      }
-                                    ],
-                                    "component": 155
-                                  }
-                                ],
-                                "component": 152
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 156
-                                  }
-                                ],
                                 "component": 163
                               },
                               {
                                 "children": [
                                   {
-                                    "component": 158
+                                    "component": 164
+                                  }
+                                ],
+                                "component": 169
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 166
                                   },
-                                  {
-                                    "component": 159
-                                  }
-                                ],
-                                "component": 157
-                              },
-                              {
-                                "component": 160
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 161
-                                  }
-                                ],
-                                "component": 164
-                              }
-                            ],
-                            "component": 143
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 166
-                              },
-                              {
-                                "children": [
                                   {
                                     "component": 167
                                   }
                                 ],
-                                "component": 172
+                                "component": 165
                               },
                               {
-                                "children": [
-                                  {
-                                    "component": 169
-                                  },
-                                  {
-                                    "component": 170
-                                  }
-                                ],
                                 "component": 168
-                              },
-                              {
-                                "component": 171
                               }
                             ],
-                            "component": 165
+                            "component": 162
                           },
                           {
-                            "component": 173
+                            "component": 170
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 175
+                                    "component": 172
                                   },
                                   {
-                                    "component": 176
+                                    "component": 173
                                   },
                                   {
-                                    "component": 177
+                                    "component": 174
                                   }
                                 ],
-                                "component": 179
+                                "component": 176
                               },
                               {
-                                "component": 178
+                                "component": 175
                               }
                             ],
-                            "component": 174
+                            "component": 171
                           }
                         ],
-                        "component": 137
+                        "component": 134
                       }
                     ],
-                    "component": 60
+                    "component": 57
                   }
                 ],
                 "component": 26
@@ -8092,6 +8103,15 @@
                 "children": [
                   {
                     "children": [
+                      {
+                        "component": 180
+                      },
+                      {
+                        "component": 181
+                      },
+                      {
+                        "component": 182
+                      },
                       {
                         "component": 183
                       },
@@ -8102,154 +8122,156 @@
                         "component": 185
                       },
                       {
-                        "component": 186
-                      },
-                      {
-                        "component": 187
-                      },
-                      {
-                        "component": 188
-                      },
-                      {
                         "children": [
                           {
                             "children": [
                               {
-                                "component": 190
+                                "component": 187
                               }
                             ],
-                            "component": 192
+                            "component": 189
                           },
                           {
-                            "component": 191
+                            "component": 188
                           }
                         ],
-                        "component": 189
+                        "component": 186
                       },
                       {
-                        "component": 193
+                        "component": 190
                       },
                       {
-                        "component": 194
+                        "component": 191
                       },
                       {
-                        "component": 195
+                        "component": 192
                       },
                       {
                         "children": [
                           {
-                            "component": 197
+                            "component": 194
                           },
                           {
-                            "component": 198
+                            "component": 195
                           },
                           {
-                            "component": 199
+                            "component": 196
                           }
                         ],
-                        "component": 196
+                        "component": 193
                       }
                     ],
-                    "component": 182
+                    "component": 179
                   },
                   {
-                    "component": 200
+                    "component": 197
                   },
                   {
-                    "component": 201
+                    "component": 198
                   },
                   {
                     "children": [
                       {
                         "children": [
                           {
-                            "component": 204
+                            "component": 201
                           },
                           {
-                            "component": 205
+                            "component": 202
                           },
                           {
                             "children": [
                               {
-                                "component": 206
+                                "component": 203
                               },
                               {
-                                "component": 207
+                                "component": 204
                               }
                             ],
-                            "component": 222
+                            "component": 219
                           },
                           {
                             "children": [
                               {
                                 "children": [
                                   {
-                                    "component": 209
+                                    "component": 206
                                   },
                                   {
-                                    "component": 210
+                                    "component": 207
                                   }
                                 ],
+                                "component": 208
+                              }
+                            ],
+                            "component": 205
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 209
+                              },
+                              {
+                                "component": 210
+                              },
+                              {
                                 "component": 211
                               }
                             ],
-                            "component": 208
+                            "component": 220
+                          },
+                          {
+                            "component": 212
+                          },
+                          {
+                            "component": 213
+                          },
+                          {
+                            "component": 214
                           },
                           {
                             "children": [
                               {
-                                "component": 212
-                              },
-                              {
-                                "component": 213
-                              },
-                              {
-                                "component": 214
+                                "component": 215
                               }
                             ],
-                            "component": 223
-                          },
-                          {
-                            "component": 215
-                          },
-                          {
-                            "component": 216
-                          },
-                          {
-                            "component": 217
+                            "component": 221
                           },
                           {
                             "children": [
+                              {
+                                "component": 217
+                              },
                               {
                                 "component": 218
                               }
                             ],
+                            "component": 216
+                          }
+                        ],
+                        "component": 200
+                      },
+                      {
+                        "children": [
+                          {
+                            "component": 223
+                          },
+                          {
                             "component": 224
                           },
                           {
                             "children": [
                               {
-                                "component": 220
+                                "children": [
+                                  {
+                                    "component": 227
+                                  },
+                                  {
+                                    "component": 228
+                                  }
+                                ],
+                                "component": 226
                               },
-                              {
-                                "component": 221
-                              }
-                            ],
-                            "component": 219
-                          }
-                        ],
-                        "component": 203
-                      },
-                      {
-                        "children": [
-                          {
-                            "component": 226
-                          },
-                          {
-                            "component": 227
-                          },
-                          {
-                            "children": [
                               {
                                 "children": [
                                   {
@@ -8260,85 +8282,74 @@
                                   }
                                 ],
                                 "component": 229
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 233
-                                  },
-                                  {
-                                    "component": 234
-                                  }
-                                ],
-                                "component": 232
                               }
                             ],
-                            "component": 228
+                            "component": 225
+                          },
+                          {
+                            "component": 232
+                          },
+                          {
+                            "component": 233
+                          },
+                          {
+                            "component": 234
                           },
                           {
                             "component": 235
                           },
                           {
-                            "component": 236
+                            "children": [
+                              {
+                                "component": 236
+                              }
+                            ],
+                            "component": 243
                           },
                           {
                             "component": 237
                           },
                           {
-                            "component": 238
-                          },
-                          {
                             "children": [
                               {
-                                "component": 239
+                                "component": 238
                               }
                             ],
-                            "component": 246
-                          },
-                          {
-                            "component": 240
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 241
-                              }
-                            ],
-                            "component": 247
-                          },
-                          {
-                            "component": 242
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 243
-                              }
-                            ],
-                            "component": 248
-                          },
-                          {
                             "component": 244
                           },
                           {
+                            "component": 239
+                          },
+                          {
+                            "children": [
+                              {
+                                "component": 240
+                              }
+                            ],
                             "component": 245
+                          },
+                          {
+                            "component": 241
+                          },
+                          {
+                            "component": 242
                           }
                         ],
-                        "component": 225
+                        "component": 222
                       }
                     ],
-                    "component": 202
+                    "component": 199
                   }
                 ],
-                "component": 181
+                "component": 178
               },
               {
                 "children": [
                   {
-                    "component": 250
+                    "component": 247
                   },
                   {
-                    "component": 251
+                    "component": 248
                   },
                   {
                     "children": [
@@ -8347,96 +8358,96 @@
                           {
                             "children": [
                               {
-                                "component": 255
+                                "component": 252
                               },
                               {
-                                "component": 256
+                                "component": 253
                               },
                               {
                                 "children": [
                                   {
                                     "children": [
                                       {
-                                        "component": 258
+                                        "component": 255
                                       },
                                       {
-                                        "component": 259
+                                        "component": 256
                                       }
                                     ],
-                                    "component": 260
+                                    "component": 257
                                   }
                                 ],
-                                "component": 257
+                                "component": 254
                               },
+                              {
+                                "component": 258
+                              },
+                              {
+                                "component": 259
+                              }
+                            ],
+                            "component": 251
+                          },
+                          {
+                            "children": [
                               {
                                 "component": 261
                               },
                               {
                                 "component": 262
-                              }
-                            ],
-                            "component": 254
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 264
                               },
                               {
-                                "component": 265
-                              },
-                              {
-                                "component": 266
+                                "component": 263
                               }
                             ],
-                            "component": 263
+                            "component": 260
                           },
                           {
-                            "component": 267
+                            "component": 264
                           },
                           {
-                            "component": 268
+                            "component": 265
                           }
                         ],
-                        "component": 253
+                        "component": 250
                       },
                       {
                         "children": [
                           {
                             "children": [
                               {
-                                "component": 271
+                                "component": 268
                               },
                               {
-                                "component": 272
+                                "component": 269
                               }
                             ],
-                            "component": 270
+                            "component": 267
                           },
                           {
                             "children": [
                               {
-                                "component": 274
+                                "component": 271
                               }
                             ],
-                            "component": 273
+                            "component": 270
                           }
                         ],
-                        "component": 269
+                        "component": 266
                       }
                     ],
-                    "component": 252
+                    "component": 249
                   }
                 ],
-                "component": 249
+                "component": 246
               },
               {
                 "children": [
                   {
-                    "component": 276
+                    "component": 273
                   },
                   {
-                    "component": 277
+                    "component": 274
                   },
                   {
                     "children": [
@@ -8445,136 +8456,145 @@
                           {
                             "children": [
                               {
-                                "component": 281
+                                "component": 278
+                              },
+                              {
+                                "component": 279
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 280
+                                  },
+                                  {
+                                    "component": 281
+                                  }
+                                ],
+                                "component": 283
                               },
                               {
                                 "component": 282
-                              },
+                              }
+                            ],
+                            "component": 277
+                          },
+                          {
+                            "children": [
                               {
-                                "children": [
-                                  {
-                                    "component": 283
-                                  }
-                                ],
                                 "component": 285
                               },
                               {
-                                "component": 284
-                              }
-                            ],
-                            "component": 280
-                          },
-                          {
-                            "children": [
+                                "component": 286
+                              },
                               {
+                                "children": [
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 288
+                                      },
+                                      {
+                                        "component": 289
+                                      },
+                                      {
+                                        "component": 290
+                                      }
+                                    ],
+                                    "component": 291
+                                  }
+                                ],
                                 "component": 287
                               },
                               {
-                                "component": 288
+                                "component": 292
+                              },
+                              {
+                                "children": [
+                                  {
+                                    "component": 293
+                                  }
+                                ],
+                                "component": 298
                               },
                               {
                                 "children": [
                                   {
                                     "children": [
                                       {
-                                        "component": 290
+                                        "component": 295
                                       },
-                                      {
-                                        "component": 291
-                                      }
-                                    ],
-                                    "component": 292
-                                  }
-                                ],
-                                "component": 289
-                              },
-                              {
-                                "component": 293
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 294
-                                  }
-                                ],
-                                "component": 299
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "children": [
                                       {
                                         "component": 296
-                                      },
-                                      {
-                                        "component": 297
                                       }
                                     ],
-                                    "component": 298
+                                    "component": 297
                                   }
                                 ],
-                                "component": 295
+                                "component": 294
                               }
                             ],
-                            "component": 286
+                            "component": 284
                           },
                           {
                             "children": [
                               {
-                                "component": 301
+                                "component": 300
                               },
                               {
                                 "children": [
                                   {
                                     "children": [
                                       {
-                                        "component": 303
+                                        "component": 302
                                       },
                                       {
-                                        "component": 304
+                                        "component": 303
                                       }
                                     ],
-                                    "component": 305
+                                    "component": 304
                                   }
                                 ],
-                                "component": 302
+                                "component": 301
+                              },
+                              {
+                                "component": 305
                               },
                               {
                                 "component": 306
-                              },
-                              {
-                                "component": 307
                               }
                             ],
-                            "component": 300
+                            "component": 299
+                          },
+                          {
+                            "component": 307
                           },
                           {
                             "component": 308
-                          },
-                          {
-                            "component": 309
                           }
                         ],
-                        "component": 279
+                        "component": 276
                       },
                       {
                         "children": [
                           {
                             "children": [
                               {
+                                "component": 311
+                              },
+                              {
                                 "component": 312
                               },
                               {
                                 "component": 313
-                              },
-                              {
-                                "component": 314
                               }
                             ],
-                            "component": 311
+                            "component": 310
                           },
                           {
                             "children": [
+                              {
+                                "component": 315
+                              },
                               {
                                 "component": 316
                               },
@@ -8589,21 +8609,18 @@
                               },
                               {
                                 "component": 320
-                              },
-                              {
-                                "component": 321
                               }
                             ],
-                            "component": 315
+                            "component": 314
                           }
                         ],
-                        "component": 310
+                        "component": 309
                       }
                     ],
-                    "component": 278
+                    "component": 275
                   }
                 ],
-                "component": 275
+                "component": 272
               }
             ],
             "component": 25
@@ -8612,7 +8629,7 @@
         "component": 0
       },
       {
-        "component": 323
+        "component": 322
       }
     ],
     "component": "root"

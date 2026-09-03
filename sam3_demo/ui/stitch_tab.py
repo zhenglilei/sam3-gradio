@@ -39,6 +39,11 @@ def build_stitch_tab(
                         label="排列方式",
                         info="横/纵按文件顺序；网格按上排从左到右，再按下排从左到右。",
                     )
+                    stitch_remove_black_border = gr.Checkbox(
+                        value=True,
+                        label="加载时自动去黑边",
+                        info="仅裁除与图片四周连续相连的近黑边；不会删除画面内部黑线。修改后请重新加载。",
+                    )
                     stitch_load_btn = gr.Button("加载到拼接画布", variant="secondary")
 
                 with gr.Group(elem_classes="stitch-card"):
@@ -47,7 +52,15 @@ def build_stitch_tab(
                     with gr.Row():
                         stitch_dx = gr.Number(value=0, precision=0, label="选中块 x（px）")
                         stitch_dy = gr.Number(value=0, precision=0, label="选中块 y（px）")
-                    stitch_apply_xy_btn = gr.Button("应用坐标", size="sm")
+                        stitch_rotation = gr.Number(
+                            value=0,
+                            minimum=-180,
+                            maximum=180,
+                            step=0.1,
+                            precision=2,
+                            label="选中块旋转（°）",
+                        )
+                    stitch_apply_xy_btn = gr.Button("应用位置与旋转", size="sm")
                     stitch_nudge_step = gr.Radio(
                         choices=[("1 px", 1), ("5 px", 5), ("10 px", 10)],
                         value=1,
@@ -82,7 +95,7 @@ def build_stitch_tab(
                 with gr.Group(elem_classes="stitch-canvas-card"):
                     gr.Markdown("#### 拼接画布")
                     gr.Markdown(
-                        "单击选择分块；拖动或使用方向键调整位置。拖动期间只在浏览器本地更新。",
+                        "单击选择分块；拖动或使用方向键调整位置；拖动选中框右上角圆形手柄可绕中心旋转。交互期间只在浏览器本地更新。",
                         elem_classes="stitch-canvas-help",
                     )
                     if StitchPreviewCanvas is not None:
@@ -141,11 +154,13 @@ def build_stitch_tab(
         stitch_state=stitch_state,
         stitch_files=stitch_files,
         stitch_layout=stitch_layout,
+        stitch_remove_black_border=stitch_remove_black_border,
         stitch_load_btn=stitch_load_btn,
         stitch_align_btn=stitch_align_btn,
         stitch_nudge_step=stitch_nudge_step,
         stitch_dx=stitch_dx,
         stitch_dy=stitch_dy,
+        stitch_rotation=stitch_rotation,
         stitch_apply_xy_btn=stitch_apply_xy_btn,
         stitch_diff_mode=stitch_diff_mode,
         stitch_show_loupe=stitch_show_loupe,

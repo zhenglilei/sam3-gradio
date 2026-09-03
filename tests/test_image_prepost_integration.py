@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sam3_demo import app as demo
+from sam3_demo import image_prepost_callbacks as image_prepost
 
 
 class ImagePrepostIntegrationTest(unittest.TestCase):
@@ -283,10 +284,15 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
         run_workflow.assert_called_once()
         self.assertEqual(run_workflow.call_args.kwargs["expand_threshold"], 20)
         predict_inst.assert_not_called()
-        self.assertEqual(template_state["active_instance_id"], 1)
+        self.assertEqual(template_state["selected_instance_ids"], [1])
+        self.assertEqual(template_state["result"]["group_count"], 1)
+        self.assertEqual(
+            template_state["result"]["groups"][0]["source_instance_id"],
+            1,
+        )
         self.assertEqual(template_state["result"]["match_count"], 1)
         self.assertIsInstance(preview, Image.Image)
-        self.assertIn("1 matches", status)
+        self.assertIn("1 个衍生实例", status)
 
         archive_path = Path(zip_path)
         self.assertTrue(archive_path.is_file())
@@ -298,14 +304,15 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
                     "seed_mask.png",
                     "template_match_overlay.png",
                     "matches.json",
-                    "masks/match_0001.png",
+                    "masks/pvs_0001_seed.png",
+                    "masks/pvs_0001_match_0001.png",
                 }.issubset(names)
             )
             manifest = json.loads(archive.read("matches.json").decode("utf-8"))
         self.assertEqual(manifest["match_count"], 1)
         self.assertEqual(
-            manifest["matches"][0]["mask_file"],
-            "masks/match_0001.png",
+            manifest["groups"][0]["matches"][0]["mask_file"],
+            "masks/pvs_0001_match_0001.png",
         )
         self.assertEqual(
             manifest["source_image"]["image_id"],
@@ -336,6 +343,99 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
             "prompt_history",
         ):
             self.assertEqual(current_instance[key], previous_instance[key])
+
+    def test_cross_group_template_dedup_keeps_scores_and_alignment(self):
+        def rectangle(y1, x1, y2, x2):
+            mask = np.zeros((12, 16), dtype=bool)
+            mask[y1:y2, x1:x2] = True
+            return mask
+
+        a_high = rectangle(0, 0, 4, 4)
+        a_same_group_one = rectangle(0, 5, 4, 9)
+        a_same_group_two = rectangle(0, 5, 4, 9)
+        a_equal_threshold = rectangle(0, 10, 2, 13)
+        a_low_overlap = rectangle(4, 10, 6, 13)
+        a_tie = rectangle(8, 0, 10, 4)
+        b_high = rectangle(0, 0, 4, 4)
+        b_equal_threshold = rectangle(0, 11, 2, 14)
+        b_low_overlap = rectangle(4, 12, 6, 15)
+        b_tie = rectangle(8, 0, 10, 4)
+
+        groups = [
+            {
+                "group_id": "PVS-1",
+                "matches": [
+                    {"match_id": 101, "score": 0.80},
+                    {"match_id": 102, "score": 0.70},
+                    {"match_id": 103, "score": 0.60},
+                    {"match_id": 104, "score": 0.65},
+                    {"match_id": 105, "score": 0.40},
+                    {"match_id": 106, "score": 0.50},
+                ],
+                "match_count": 6,
+            },
+            {
+                "group_id": "PVS-2",
+                "matches": [
+                    {"match_id": 201, "score": 0.90},
+                    {"match_id": 202, "score": 0.55},
+                    {"match_id": 203, "score": 0.45},
+                    {"match_id": 204, "score": 0.50},
+                ],
+                "match_count": 4,
+            },
+        ]
+        group_masks = [
+            {
+                "group_id": "PVS-1",
+                "seed_mask_fullres_bool": np.zeros((12, 16), dtype=bool),
+                "match_masks_fullres_bool": [
+                    a_high,
+                    a_same_group_one,
+                    a_same_group_two,
+                    a_equal_threshold,
+                    a_low_overlap,
+                    a_tie,
+                ],
+            },
+            {
+                "group_id": "PVS-2",
+                "seed_mask_fullres_bool": np.zeros((12, 16), dtype=bool),
+                "match_masks_fullres_bool": [
+                    b_high,
+                    b_equal_threshold,
+                    b_low_overlap,
+                    b_tie,
+                ],
+            },
+        ]
+
+        filtered_groups, filtered_group_masks, flat_matches, flat_masks = (
+            image_prepost._deduplicate_template_groups(groups, group_masks, 0.5)
+        )
+
+        self.assertEqual(image_prepost._template_mask_iou(a_equal_threshold, b_equal_threshold), 0.5)
+        self.assertEqual(
+            [match["match_id"] for match in filtered_groups[0]["matches"]],
+            [102, 103, 104, 105, 106],
+        )
+        self.assertEqual(
+            [match["match_id"] for match in filtered_groups[1]["matches"]],
+            [201, 202, 203],
+        )
+        self.assertEqual(filtered_groups[0]["match_count"], 5)
+        self.assertEqual(filtered_groups[1]["match_count"], 3)
+        self.assertEqual(len(flat_matches), 8)
+        self.assertEqual(len(flat_masks), 8)
+        for group, group_mask in zip(filtered_groups, filtered_group_masks):
+            self.assertEqual(
+                group["match_count"],
+                len(group["matches"]),
+            )
+            self.assertEqual(
+                len(group["matches"]),
+                len(group_mask["match_masks_fullres_bool"]),
+            )
 
     def test_create_demo_exposes_image_prepost_and_removes_video(self):
         app = demo.create_demo()
