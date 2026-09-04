@@ -10,7 +10,7 @@ def build_overlap_prediction_tab(
     authoring_builder=None,
     authoring_kwargs=None,
 ):
-    with gr.TabItem("叠层预测", id="tab_overlap_prediction"):
+    with gr.TabItem("叠层预测", id="tab_overlap_prediction") as tab_item:
         gr.Markdown(
             "### 叠层预测\n"
             "选择已制作的 O3 整体版图和当前工艺层，查看下一层的预测位置与两层交叠区域。",
@@ -69,6 +69,7 @@ def build_overlap_prediction_tab(
             authoring_refs = authoring_builder(**(authoring_kwargs or {}))
 
     return ComponentRefs(
+        tab=tab_item,
         layout_selector=layout_selector,
         layer_selector=layer_selector,
         refresh_btn=refresh_btn,

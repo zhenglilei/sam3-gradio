@@ -100,7 +100,7 @@ def bind_overlap_prediction_events(*, demo: gr.Blocks, refs: Any) -> None:
         "concurrency_id": "overlap-read-view",
         "api_visibility": "private",
     }
-    demo.load(
+    refs.tab.select(
         fn=refresh_overlap_view,
         inputs=[refs.layout_selector],
         outputs=[

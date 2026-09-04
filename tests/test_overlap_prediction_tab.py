@@ -54,6 +54,13 @@ class OverlapPredictionTabTests(unittest.TestCase):
         )
         self.assertTrue(all(fn.concurrency_limit == 2 for fn in functions))
         self.assertTrue(all(fn.queue is True for fn in functions))
+        self.assertFalse(
+            any(
+                any(target[1] == "load" for target in dep.get("targets") or [])
+                and dep.get("api_name", "").startswith("refresh_overlap_view")
+                for dep in demo.config["dependencies"]
+            )
+        )
 
 
 if __name__ == "__main__":
