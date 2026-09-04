@@ -20,6 +20,8 @@ runtime_feedback_dir = runtime_dir / "feedback"
 runtime_layout_dir = runtime_dir / "layout_masks"
 runtime_layout_agent_golden_dir = runtime_dir / "layout_agent_goldens"
 runtime_layout_region_dir = runtime_dir / "layout_regions"
+runtime_overlap_dir = runtime_dir / "overlap_prediction"
+overlap_layout_db_path = runtime_overlap_dir / "layouts.sqlite3"
 runtime_log_dir = runtime_dir / "logs"
 public_download_dir = current_dir / "public_downloads"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
@@ -107,6 +109,7 @@ for path in (
     runtime_layout_dir,
     runtime_layout_region_dir,
     runtime_layout_agent_golden_dir,
+    runtime_overlap_dir,
     runtime_log_dir,
     public_download_dir,
     current_dir / ".gradio",
