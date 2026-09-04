@@ -5,17 +5,16 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from gradio.blocks import Block
 from gradio.components.base import Component
 from gradio.components.json_component import JsonData
-from gradio.events import Events
+from gradio.events import Dependency, Events
 from gradio.i18n import I18nData
 
 if TYPE_CHECKING:
     from gradio.components import Timer
-
-from gradio.events import Dependency
 
 class ImageGestureOverlay(Component):
     """Overlay that emits sanitized click or drag intent without image pixels."""
@@ -129,13 +128,6 @@ class ImageGestureOverlay(Component):
             },
             "client_intent": {},
         }
-    from typing import Callable, Literal, Sequence, Any, TYPE_CHECKING
-    from gradio.blocks import Block
-    if TYPE_CHECKING:
-        from gradio.components import Timer
-        from gradio.components.base import Component
-
-    
     def input(self,
         fn: Callable[..., Any] | None = None,
         inputs: Block | Sequence[Block] | set[Block] | None = None,
@@ -159,8 +151,7 @@ class ImageGestureOverlay(Component):
         key: int | str | tuple[int | str, ...] | None = None,
         api_description: str | None | Literal[False] = None,
         validator: Callable[..., Any] | None = None,
-    
-        ) -> Dependency:
+    ) -> Dependency:
         """
         Parameters:
             fn: the function to call when this event is triggered. Often a machine learning model's prediction function. Each parameter of the function corresponds to one input component, and the function should return a single value or a tuple of values, with each element in the tuple corresponding to one output component.
@@ -185,6 +176,5 @@ class ImageGestureOverlay(Component):
             key: A unique key for this event listener to be used in @gr.render(). If set, this value identifies an event as identical across re-renders when the key is identical.
             api_description: Description of the API endpoint. Can be a string, None, or False. If set to a string, the endpoint will be exposed in the API docs with the given description. If None, the function's docstring will be used as the API endpoint description. If False, then no description will be displayed in the API docs.
             validator: Optional validation function to run before the main function. If provided, this function will be executed first with queue=False, and only if it completes successfully will the main function be called. The validator receives the same inputs as the main function.
-        
         """
         ...

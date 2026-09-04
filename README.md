@@ -268,10 +268,10 @@ python sam3_gradio_demo.py
 #### PVS 实例管理
 
 - `当前 PVS 实例`：选择要操作的实例。
-- `撤销上一个实例`：删除最近创建的 PVS 实例。
-- `清空实例`：清空当前 PVS 实例。
-- `确认`：将当前实例标记为 accepted。
-- `导出 PVS`：导出有效 PVS 实例。
+- PVS 实例生成成功后立即生效，不再区分草稿与确认状态。
+- `删除当前实例`：删除当前下拉框选中的 PVS 实例。
+- `清空所有实例`：清空当前图像的全部 PVS 实例。
+- `导出 PVS`：导出所有未删除的 PVS 实例。
 
 ### 完整原图模板匹配
 
@@ -279,7 +279,7 @@ python sam3_gradio_demo.py
 2. 点击顶部“开始模板匹配”；默认参数为 matchThreshold=0.7、expandThreshold=20 px、nmsThreshold=0.3。
 3. 结果在完整原图坐标中独立预览和导出，不写入 PVS instance pool，也不再次调用 SAM3。
 
-Blocker 固定为：seed 始终排除自身，其他 accepted PVS 阻止重复匹配，draft/deleted 不阻止候选。导出包包含完整原图、seed mask、overlay、matches JSON 及每个结果独立的 0/255 PNG mask。
+Blocker 固定为：seed 始终排除自身，其他所有未删除的 PVS 实例阻止重复匹配，已删除实例不阻止候选。导出包包含完整原图、seed mask、overlay、matches JSON 及每个结果独立的 0/255 PNG mask。
 
 
 ### 版图 mask 提示分割流程

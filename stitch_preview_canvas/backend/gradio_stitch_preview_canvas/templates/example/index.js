@@ -187,8 +187,7 @@ function we(s, e, t = !1) {
     }), i || n(-1, null);
   }, a);
 }
-const C = [...` 	
-\r\f \v\uFEFF`];
+const C = [..." \t\n\r\f \v\uFEFF"];
 function ye(s, e, t) {
   var r = "" + s;
   if (t) {

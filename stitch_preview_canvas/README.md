@@ -1,6 +1,6 @@
 
 # `gradio_stitch_preview_canvas`
-<img alt="Static Badge" src="https://img.shields.io/badge/version%20-%200.0.1%20-%20orange">  
+<img alt="Static Badge" src="https://img.shields.io/badge/version%20-%200.0.1%20-%20orange">
 
 Gradio canvas for human tile-stitch alignment preview
 
@@ -280,4 +280,3 @@ The code snippet below is accurate in cases where the component is used as both 
  ) -> dict| list| str| None:
      return value
  ```
- 

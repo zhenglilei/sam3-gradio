@@ -21,7 +21,7 @@ with gr.Blocks(
 # `gradio_stitch_preview_canvas`
 
 <div style="display: flex; gap: 7px;">
-<img alt="Static Badge" src="https://img.shields.io/badge/version%20-%200.0.1%20-%20orange">  
+<img alt="Static Badge" src="https://img.shields.io/badge/version%20-%200.0.1%20-%20orange">
 </div>
 
 Gradio canvas for human tile-stitch alignment preview
