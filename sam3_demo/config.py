@@ -22,6 +22,15 @@ runtime_layout_agent_golden_dir = runtime_dir / "layout_agent_goldens"
 runtime_layout_region_dir = runtime_dir / "layout_regions"
 runtime_overlap_dir = runtime_dir / "overlap_prediction"
 overlap_layout_db_path = runtime_overlap_dir / "layouts.sqlite3"
+_overlap_authoring_raw = os.environ.get(
+    "SAM3_OVERLAP_AUTHORING_ENABLED", "0"
+).strip().lower()
+if _overlap_authoring_raw not in {"0", "1", "false", "true", "no", "yes", "off", "on"}:
+    raise ValueError(
+        "SAM3_OVERLAP_AUTHORING_ENABLED must be a boolean value"
+    )
+overlap_authoring_enabled = _overlap_authoring_raw in {"1", "true", "yes", "on"}
+del _overlap_authoring_raw
 runtime_log_dir = runtime_dir / "logs"
 public_download_dir = current_dir / "public_downloads"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")

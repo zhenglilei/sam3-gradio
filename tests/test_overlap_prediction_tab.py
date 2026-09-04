@@ -13,6 +13,7 @@ class OverlapPredictionTabTests(unittest.TestCase):
         with gr.Blocks() as demo:
             refs = build_overlap_prediction_tab()
             bind_overlap_prediction_events(demo=demo, refs=refs)
+        self.assertIsNone(refs.authoring)
 
         tab_ids = {
             component.get("props", {}).get("id")

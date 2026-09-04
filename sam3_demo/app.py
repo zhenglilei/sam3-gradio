@@ -52,6 +52,7 @@ from sam3_demo.config import (
     ge1_coco_dir,
     logger,
     o3_coco_dir,
+    overlap_authoring_enabled,
     public_download_dir,
     qiyuan_cache_dir,
     runtime_dir,
@@ -87,6 +88,26 @@ from sam3_demo.model_supervisor import SUPERVISOR
 from sam3_demo import stitch_callbacks as _stitch_cb
 from sam3_demo import template_stitch_callbacks as _template_stitch_cb
 from sam3_demo.overlap_view_callbacks import bind_overlap_prediction_events
+
+if overlap_authoring_enabled:
+    try:
+        from sam3_demo.ui.overlap_authoring_panel import (
+            bind_overlap_authoring_events,
+            build_overlap_authoring_panel,
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            "sam3_demo.overlap_authoring",
+            "sam3_demo.overlap_authoring_callbacks",
+            "sam3_demo.ui.overlap_authoring_panel",
+        }:
+            raise
+        logger.warning("叠层制作模块不可用，继续启动只读展示：%s", exc)
+        bind_overlap_authoring_events = None
+        build_overlap_authoring_panel = None
+else:
+    bind_overlap_authoring_events = None
+    build_overlap_authoring_panel = None
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, request_identity
@@ -4308,7 +4329,13 @@ def create_demo():
                     coco_eval_scope_overlap=coco_eval_scope_overlap,
                     coco_eval_scope_full=coco_eval_scope_full,
                 )
-                overlap_ui = build_overlap_prediction_tab()
+                overlap_ui = build_overlap_prediction_tab(
+                    authoring_builder=build_overlap_authoring_panel,
+                    authoring_kwargs={
+                        "LayoutTransformEditor": LayoutTransformEditor,
+                        "import_error": _layout_editor_import_error,
+                    },
+                )
                 layout_ui = build_layout_mask_tab(
                     LayoutRegionAnnotator=LayoutRegionAnnotator,
                     _layout_region_annotator_import_error=_layout_region_annotator_import_error,
@@ -4350,6 +4377,15 @@ def create_demo():
                 callbacks=_session_callback_registry(),
             )
             bind_overlap_prediction_events(demo=demo, refs=overlap_ui)
+            if (
+                overlap_ui.authoring is not None
+                and bind_overlap_authoring_events is not None
+            ):
+                bind_overlap_authoring_events(
+                    demo=demo,
+                    refs=overlap_ui.authoring,
+                    viewer_refs=overlap_ui,
+                )
             bootstrap_event = demo.load(
                 fn=_bootstrap_session,
                 inputs=None,

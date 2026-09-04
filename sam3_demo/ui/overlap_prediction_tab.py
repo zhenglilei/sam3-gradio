@@ -5,7 +5,11 @@ import gradio as gr
 from .refs import ComponentRefs
 
 
-def build_overlap_prediction_tab():
+def build_overlap_prediction_tab(
+    *,
+    authoring_builder=None,
+    authoring_kwargs=None,
+):
     with gr.TabItem("叠层预测", id="tab_overlap_prediction"):
         gr.Markdown(
             "### 叠层预测\n"
@@ -60,12 +64,17 @@ def build_overlap_prediction_tab():
                         elem_id="overlap_prediction_preview",
                     )
 
+        authoring_refs = None
+        if authoring_builder is not None:
+            authoring_refs = authoring_builder(**(authoring_kwargs or {}))
+
     return ComponentRefs(
         layout_selector=layout_selector,
         layer_selector=layer_selector,
         refresh_btn=refresh_btn,
         preview=preview,
         report=report,
+        authoring=authoring_refs,
     )
 
 
