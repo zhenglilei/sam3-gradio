@@ -135,6 +135,18 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
             self.assertEqual(result[0], draft)
             self.assertIn("失败", result[-2])
 
+    def test_corrupt_layer_still_returns_recoverable_runtime_error(self):
+        draft = self._draft_with_layers()
+        draft["layers"] = [None]
+        with patch(
+            "sam3_demo.overlap_authoring_callbacks.overlap_runtime.get_overlap_authoring_service",
+            side_effect=OverlapStoreError("runtime unavailable"),
+        ):
+            result = set_authoring_name("next", draft)
+        self.assertEqual(result[0], draft)
+        self.assertFalse(result[4]["enabled"])
+        self.assertIn("失败", result[-1])
+
     def test_editor_intent_reorder_and_save_update(self):
         draft = self._draft_with_layers()
         first, second = [layer["id"] for layer in draft["layers"]]

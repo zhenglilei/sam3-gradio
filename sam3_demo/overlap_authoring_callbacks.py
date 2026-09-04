@@ -89,6 +89,8 @@ def _base_image(draft: Mapping[str, Any]) -> Image.Image | None:
 def _layer_choices(draft: Mapping[str, Any]) -> list[tuple[str, str]]:
     choices: list[tuple[str, str]] = []
     for ordinal, layer in enumerate(draft.get("layers") or []):
+        if not isinstance(layer, Mapping):
+            raise OverlapAuthoringError("制作草稿层数据无效")
         layer_id = layer.get("id")
         if not isinstance(layer_id, str) or not layer_id:
             raise OverlapAuthoringError("制作草稿层 ID 无效")
