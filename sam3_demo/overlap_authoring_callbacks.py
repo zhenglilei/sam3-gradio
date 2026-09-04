@@ -324,13 +324,21 @@ def load_authoring_layout(
         )
 
 
-def save_authoring_layout(draft: Any) -> tuple[Any, ...]:
+def save_authoring_layout(
+    draft: Any,
+    layout_name: Any = None,
+) -> tuple[Any, ...]:
     """Create/update a layout and return the latest shared selector update."""
 
     service: OverlapAuthoringService | None = None
     try:
         service = _service()
-        saved = service.save(draft)
+        current = (
+            service.set_name(draft, layout_name)
+            if layout_name is not None
+            else draft
+        )
+        saved = service.save(current)
         view = draft_to_view(saved, service=service)
         view = _with_status(view, f"版图已保存：{view[1]}。")
         return (*view, _layout_choices_update(saved.get("layout_id")))

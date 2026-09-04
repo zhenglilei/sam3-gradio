@@ -203,7 +203,7 @@ def bind_overlap_authoring_events(
         outputs=view_outputs,
         **event_kwargs,
     )
-    refs.base_image.upload(
+    refs.base_image.input(
         fn=callbacks.set_authoring_base_image,
         inputs=[refs.base_image, refs.draft_state],
         outputs=view_outputs,
@@ -240,7 +240,7 @@ def bind_overlap_authoring_events(
     )
     save_event = refs.save_btn.click(
         fn=callbacks.save_authoring_layout,
-        inputs=[refs.draft_state],
+        inputs=[refs.draft_state, refs.layout_name],
         outputs=persist_outputs,
         **event_kwargs,
     )

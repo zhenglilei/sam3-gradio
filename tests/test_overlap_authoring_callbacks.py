@@ -152,6 +152,13 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
         self.assertEqual(saved[0]["layout_id"], saved[6]["value"])
         self.assertEqual(len(self.store.list_layouts()), 1)
 
+    def test_save_uses_current_name_without_waiting_for_blur(self):
+        draft = self._draft_with_layers()
+        draft = self.authoring.set_name(draft, "stale name")
+        saved = save_authoring_layout(draft, "current field name")
+        self.assertEqual(saved[0]["name"], "current field name")
+        self.assertEqual(self.store.list_layouts()[0]["name"], "current field name")
+
     def test_load_delete_refresh_and_store_error(self):
         saved = save_authoring_layout(self._draft_with_layers())
         layout_id = saved[0]["layout_id"]

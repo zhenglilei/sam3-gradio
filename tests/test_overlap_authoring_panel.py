@@ -67,6 +67,20 @@ class OverlapAuthoringPanelTests(unittest.TestCase):
             )
         )
 
+        dependencies = demo.config["dependencies"]
+        base_input = next(
+            dep
+            for dep in dependencies
+            if dep.get("api_name") == "set_authoring_base_image"
+        )
+        self.assertEqual(base_input["targets"][0][1], "input")
+        save = next(
+            dep
+            for dep in dependencies
+            if dep.get("api_name") == "save_authoring_layout"
+        )
+        self.assertEqual(len(save["inputs"]), 2)
+
     def test_read_only_tab_needs_no_authoring_builder(self):
         with gr.Blocks() as demo:
             refs = build_overlap_prediction_tab()
