@@ -23,9 +23,16 @@ class OverlapRuntimeTests(unittest.TestCase):
                 first_service = overlap_runtime.get_overlap_service()
                 self.assertIs(first_service, overlap_runtime.get_overlap_service())
                 self.assertIs(first_service._store, first_store)
+                first_authoring = overlap_runtime.get_overlap_authoring_service()
+                self.assertIs(
+                    first_authoring,
+                    overlap_runtime.get_overlap_authoring_service(),
+                )
+                self.assertIs(first_authoring._store, first_store)
                 overlap_runtime.close_overlap_runtime()
                 second_store = overlap_runtime.get_overlap_store()
                 self.assertIsNot(second_store, first_store)
+                self.assertIsNone(overlap_runtime._AUTHORING_SERVICE)
                 self.assertTrue(db_path.exists())
 
 

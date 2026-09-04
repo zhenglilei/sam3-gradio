@@ -13,6 +13,7 @@ from sam3_demo.overlap_store import OverlapLayoutStore
 _LOCK = threading.RLock()
 _STORE: OverlapLayoutStore | None = None
 _SERVICE: OverlapPredictionService | None = None
+_AUTHORING_SERVICE = None
 
 
 def get_overlap_store() -> OverlapLayoutStore:
@@ -31,10 +32,22 @@ def get_overlap_service() -> OverlapPredictionService:
         return _SERVICE
 
 
+def get_overlap_authoring_service():
+    """Load the optional authoring backend only when its UI is enabled."""
+    global _AUTHORING_SERVICE
+    with _LOCK:
+        if _AUTHORING_SERVICE is None:
+            from sam3_demo.overlap_authoring import OverlapAuthoringService
+
+            _AUTHORING_SERVICE = OverlapAuthoringService(get_overlap_store())
+        return _AUTHORING_SERVICE
+
+
 def close_overlap_runtime() -> None:
-    global _SERVICE, _STORE
+    global _AUTHORING_SERVICE, _SERVICE, _STORE
     with _LOCK:
         store = _STORE
+        _AUTHORING_SERVICE = None
         _SERVICE = None
         _STORE = None
         if store is not None:
@@ -46,6 +59,7 @@ atexit.register(close_overlap_runtime)
 
 __all__ = [
     "close_overlap_runtime",
+    "get_overlap_authoring_service",
     "get_overlap_service",
     "get_overlap_store",
 ]
