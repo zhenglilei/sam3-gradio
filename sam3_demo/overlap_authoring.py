@@ -244,12 +244,19 @@ class OverlapAuthoringService:
             "mask_sha256": hashlib.sha256(mask_png).hexdigest(),
             "transform": {},
         }
+        if mask_image.size == (out["width"], out["height"]):
+            x1, y1, x2, y2 = foreground_bbox_xyxy(mask_array)
+            initial_center_x = (x1 + x2) / 2.0
+            initial_center_y = (y1 + y2) / 2.0
+        else:
+            initial_center_x = out["width"] / 2.0
+            initial_center_y = out["height"] / 2.0
         layer["transform"] = _layer_transform(
             out,
             layer,
             mask_array,
-            center_x=out["width"] / 2.0,
-            center_y=out["height"] / 2.0,
+            center_x=initial_center_x,
+            center_y=initial_center_y,
             scale=1.0,
             rotation_deg=0.0,
             preview_alpha=0.35,

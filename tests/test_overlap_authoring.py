@@ -7,6 +7,7 @@ import unittest
 
 import numpy as np
 from PIL import Image
+from layout_transform_utils import build_layout_affine_matrix
 
 from sam3_demo.overlap_authoring import (
     OverlapAuthoringError,
@@ -60,6 +61,22 @@ class OverlapAuthoringTests(unittest.TestCase):
         self.assertEqual(layer["transform"]["center_y"], 5.0)
         self.assertEqual(layer["transform"]["scale"], 1.0)
         self.assertEqual(layered["active_layer_id"], layer["id"])
+
+    def test_full_canvas_mask_keeps_its_original_pixel_position(self):
+        draft = self.service.set_base_image(self.service.new_draft(), _base())
+        full_mask = Image.new("L", (12, 10), 0)
+        array = np.asarray(full_mask).copy()
+        array[1:3, 1:4] = 255
+        draft = self.service.add_layer(
+            draft, Image.fromarray(array, mode="L"), "ACT"
+        )
+        transform = draft["layers"][0]["transform"]
+        self.assertEqual(transform["center_x"], transform["pivot_x"])
+        self.assertEqual(transform["center_y"], transform["pivot_y"])
+        self.assertEqual(
+            build_layout_affine_matrix(transform).tolist(),
+            [[1.0, -0.0, 0.0], [0.0, 1.0, 0.0]],
+        )
 
     def test_reorder_remove_and_active_fallback(self):
         draft = self._draft_with_layers()
