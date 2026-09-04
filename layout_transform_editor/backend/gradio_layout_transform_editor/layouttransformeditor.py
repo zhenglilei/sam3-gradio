@@ -144,6 +144,15 @@ class LayoutTransformEditor(Component):
                 and not isinstance(value, bool)
                 and value != ""
             ]
+        ordered_group_ids = intent.get("ordered_group_ids")
+        if isinstance(ordered_group_ids, list):
+            sanitized_intent["ordered_group_ids"] = [
+                value
+                for value in ordered_group_ids
+                if isinstance(value, (str, int))
+                and not isinstance(value, bool)
+                and value != ""
+            ]
         result["group_intent"] = sanitized_intent
         return result
 

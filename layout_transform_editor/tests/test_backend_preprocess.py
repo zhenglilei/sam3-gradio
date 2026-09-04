@@ -26,6 +26,7 @@ class LayoutTransformEditorPreprocessTests(unittest.TestCase):
             "source_height": 600,
             "foreground_bbox_xyxy": [1, 2, 3, 4],
             "status": "forged status",
+            "allow_reorder": True,
             "transform_mode": "label_groups",
             "transform": {
                 "session_id": "session-1",
@@ -42,6 +43,7 @@ class LayoutTransformEditorPreprocessTests(unittest.TestCase):
             },
             "group_view": {
                 "selection_signature": "server-only",
+                "allow_reorder": True,
                 "regions_revision": 7,
                 "groups": [
                     {
@@ -72,6 +74,8 @@ class LayoutTransformEditorPreprocessTests(unittest.TestCase):
                     "",
                     {"forged": "group"},
                 ],
+                "allow_reorder": True,
+                "ordered_group_ids": ["region_1", 2, None, True, "", {"forged": "group"}, 2, "region_1"],
                 "server_only": "drop-me",
                 "transforms": [
                     {
@@ -113,6 +117,7 @@ class LayoutTransformEditorPreprocessTests(unittest.TestCase):
         self.assertEqual(sanitized["transform_mode"], "label_groups")
         self.assertEqual(sanitized["transform"]["preview_alpha"], 0.0)
         self.assertNotIn("matrix_2x3", sanitized["transform"])
+        self.assertNotIn("allow_reorder", sanitized)
         self.assertNotIn("base_image", sanitized)
         self.assertNotIn("mask_image", sanitized)
         self.assertNotIn("group_view", sanitized)
@@ -129,6 +134,7 @@ class LayoutTransformEditorPreprocessTests(unittest.TestCase):
                 "transform_set_revision",
                 "active_group_id",
                 "changed_group_ids",
+                "ordered_group_ids",
                 "transforms",
             },
         )
@@ -136,6 +142,8 @@ class LayoutTransformEditorPreprocessTests(unittest.TestCase):
             intent["changed_group_ids"],
             ["region_1", 2],
         )
+        self.assertEqual(intent["ordered_group_ids"], ["region_1", 2, 2, "region_1"])
+        self.assertNotIn("allow_reorder", intent)
         self.assertEqual(len(intent["transforms"]), 1)
         group_transform = intent["transforms"][0]["transform"]
         self.assertEqual(group_transform["group_id"], "region_1")

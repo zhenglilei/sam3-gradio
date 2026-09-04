@@ -40,6 +40,8 @@ class LayoutTransformEditorGroupContractTests(unittest.TestCase):
             "transform_set_revision: number",
             "active_group_id: LayoutTransformGroupId | null",
             "changed_group_ids?: LayoutTransformGroupId[]",
+            "allow_reorder?: boolean",
+            "ordered_group_ids?: LayoutTransformGroupId[]",
         ):
             self.assertIn(field, self.types_source)
 
@@ -63,6 +65,31 @@ class LayoutTransformEditorGroupContractTests(unittest.TestCase):
         self.assertIn("group_intent:", assigned_body)
         self.assertNotIn("group_view:", assigned_body)
         self.assertNotIn("transform:", assigned_body.split("group_intent:", 1)[0])
+
+    def test_group_reorder_preserves_maps_and_publishes_order_once(self) -> None:
+        publish_body = _function_body(self.index_source, "publishGroupIntent")
+        self.assertIn("ordered_group_ids", publish_body)
+        self.assertIn("canReorderGroups()", publish_body)
+        self.assertIn("groupViews().map", publish_body)
+        self.assertEqual(publish_body.count('gradio.dispatch("change")'), 1)
+
+        drop_body = _function_body(self.index_source, "onGroupDrop")
+        self.assertEqual(drop_body.count('publishGroupIntent("reorder_groups"'), 1)
+        self.assertIn("false, true", drop_body)
+
+        reorder_body = _function_body(self.index_source, "reorderGroupViews")
+        for forbidden in (
+            "dirtyGroupKeys =",
+            "dirtyGroupKeys.clear",
+            "groupTransformByKey = new Map",
+            "groupRuntimeByKey = new Map",
+        ):
+            self.assertNotIn(forbidden, reorder_body)
+
+        ingest_body = _function_body(self.index_source, "ingestGroupValue")
+        self.assertIn("restoreGroupOrder", ingest_body)
+        self.assertIn("ordered_group_ids", ingest_body)
+        self.assertIn("allow_reorder === true", ingest_body)
 
     def test_dirty_groups_survive_active_switch_and_debounced_wheels(self) -> None:
         bump_body = _function_body(

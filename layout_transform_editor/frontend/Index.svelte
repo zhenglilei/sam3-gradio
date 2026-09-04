@@ -58,6 +58,10 @@
 	let rotateStart = { angle: 0, rotation: 0 };
 	let changeSyncTimer: ReturnType<typeof setTimeout> | null = null;
 	let dirtyGroupKeys = new Set<string>();
+	let draggedGroupKey = $state("");
+	let dragOverGroupKey = $state("");
+	let dragOverPosition = $state<"before" | "after">("before");
+	let suppressGroupClick = $state(false);
 
 	function defaultTransform(): LayoutTransform {
 		return {
@@ -119,6 +123,10 @@
 	function groupViews(): LayoutTransformGroupView[] {
 		if (!isGroupMode()) return [];
 		return Array.isArray(localValue.group_view?.groups) ? localValue.group_view.groups : [];
+	}
+
+	function canReorderGroups(): boolean {
+		return isGroupMode() && localValue.group_view?.allow_reorder === true;
 	}
 
 	function isGroupMode(): boolean {
@@ -252,11 +260,43 @@
 		}
 	}
 
+	function restoreGroupOrder(
+		groups: LayoutTransformGroupView[],
+		orderedGroupIds: LayoutTransformGroupId[] | undefined,
+	): LayoutTransformGroupView[] {
+		if (!Array.isArray(orderedGroupIds) || orderedGroupIds.length !== groups.length) return groups;
+		const groupsByKey = new Map<string, LayoutTransformGroupView>();
+		for (const group of groups) {
+			if (!group || group.group_id === undefined || group.group_id === null) return groups;
+			const key = groupKey(group.group_id);
+			if (groupsByKey.has(key)) return groups;
+			groupsByKey.set(key, group);
+		}
+		const orderedGroups: LayoutTransformGroupView[] = [];
+		const seen = new Set<string>();
+		for (const groupId of orderedGroupIds) {
+			if (typeof groupId !== "string" && typeof groupId !== "number") return groups;
+			const key = groupKey(groupId);
+			const group = groupsByKey.get(key);
+			if (!group || seen.has(key)) return groups;
+			seen.add(key);
+			orderedGroups.push(group);
+		}
+		return orderedGroups.length === groups.length ? orderedGroups : groups;
+	}
+
+
 	function ingestGroupValue(generation: number): void {
 		const view = localValue.group_view;
-		const groups = Array.isArray(view?.groups) ? view.groups : [];
+		const serverGroups = Array.isArray(view?.groups) ? view.groups : [];
 		const intent = localValue.group_intent;
 		const intentMatches = !!view && !!intent && String(intent.selection_signature || "") === String(view.selection_signature || "");
+		const groups = view?.allow_reorder === true && intentMatches
+			? restoreGroupOrder(serverGroups, intent?.ordered_group_ids)
+			: serverGroups;
+		if (groups !== serverGroups && view) {
+			localValue = { ...localValue, group_view: { ...view, groups } };
+		}
 		const incomingByKey = new Map<string, LayoutTransform>();
 		if (intentMatches && Array.isArray(intent?.transforms)) {
 			for (const item of intent.transforms) {
@@ -526,6 +566,7 @@
 				transform_set_revision: priorRevision + 1,
 				active_group_id: activeView?.group_id ?? null,
 				changed_group_ids: changedGroupIds,
+				...(canReorderGroups() ? { ordered_group_ids: groupViews().map((group) => group.group_id) } : {}),
 				transforms: serializeGroupTransforms(),
 			},
 		};
@@ -702,6 +743,86 @@
 		statusText = "当前 Label：" + activeGroupLabel();
 		draw();
 		return true;
+	}
+
+	function clearGroupDragState(): void {
+		draggedGroupKey = "";
+		dragOverGroupKey = "";
+		dragOverPosition = "before";
+	}
+
+	function onGroupDragStart(evt: DragEvent, key: string): void {
+		if (!canReorderGroups()) return;
+		draggedGroupKey = key;
+		dragOverGroupKey = "";
+		dragOverPosition = "before";
+		suppressGroupClick = false;
+		if (evt.dataTransfer) {
+			evt.dataTransfer.effectAllowed = "move";
+			evt.dataTransfer.setData("text/plain", key);
+		}
+	}
+
+	function onGroupDragOver(evt: DragEvent, key: string): void {
+		if (!canReorderGroups() || !draggedGroupKey) return;
+		evt.preventDefault();
+		if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
+		const target = evt.currentTarget as HTMLElement;
+		const rect = target.getBoundingClientRect();
+		dragOverGroupKey = key;
+		dragOverPosition = evt.clientY < rect.top + rect.height / 2 ? "before" : "after";
+	}
+
+	function onGroupDrop(evt: DragEvent, key: string): void {
+		if (!canReorderGroups()) return;
+		evt.preventDefault();
+		const sourceKey = draggedGroupKey || evt.dataTransfer?.getData("text/plain") || "";
+		const position = dragOverGroupKey === key ? dragOverPosition : "before";
+		const changed = reorderGroupViews(sourceKey, key, position);
+		clearGroupDragState();
+		if (changed) {
+			suppressGroupClick = true;
+			publishGroupIntent("reorder_groups", "已调整叠层顺序；拖动调整叠层顺序", false, true);
+			setTimeout(() => {
+				suppressGroupClick = false;
+			}, 0);
+		}
+	}
+
+	function onGroupDragEnd(): void {
+		clearGroupDragState();
+	}
+
+	function reorderGroupViews(sourceKey: string, targetKey: string, position: "before" | "after"): boolean {
+		if (!canReorderGroups() || sourceKey === targetKey) return false;
+		const view = localValue.group_view;
+		const groups = groupViews();
+		const sourceIndex = groups.findIndex((group) => groupKey(group.group_id) === sourceKey);
+		const targetIndex = groups.findIndex((group) => groupKey(group.group_id) === targetKey);
+		if (!view || sourceIndex < 0 || targetIndex < 0) return false;
+		const nextGroups = groups.slice();
+		const [moving] = nextGroups.splice(sourceIndex, 1);
+		if (!moving) return false;
+		const nextTargetIndex = nextGroups.findIndex((group) => groupKey(group.group_id) === targetKey);
+		if (nextTargetIndex < 0) return false;
+		const insertAt = nextTargetIndex + (position === "after" ? 1 : 0);
+		nextGroups.splice(insertAt, 0, moving);
+		const changed = nextGroups.some((group, index) => groupKey(group.group_id) !== groupKey(groups[index].group_id));
+		if (!changed) return false;
+		localValue = { ...localValue, group_view: { ...view, groups: nextGroups } };
+		return true;
+	}
+
+	function onGroupRowClick(evt: MouseEvent, key: string): void {
+		if (suppressGroupClick) {
+			suppressGroupClick = false;
+			return;
+		}
+		const target = evt.target as HTMLElement | null;
+		if (target?.closest(".group-drag-handle")) return;
+		if (setActiveGroupLocal(key)) {
+			publishGroupIntent("select_group", "已选择 Label：" + activeGroupLabel(), false, true);
+		}
 	}
 
 	function onActiveSelect(evt: Event): void {
@@ -917,6 +1038,36 @@
 						</option>
 					{/each}
 				</select>
+				{#if canReorderGroups()}
+					<div class="group-reorder" aria-label="调整 Label 叠层顺序">
+						<div class="group-reorder-hint">拖动调整叠层顺序</div>
+						<div class="group-reorder-list">
+							{#each groupViews() as group, index}
+								<button
+									type="button"
+									class="group-reorder-item"
+									class:active={groupKey(group.group_id) === activeGroupKey}
+									class:drop-before={dragOverGroupKey === groupKey(group.group_id) && dragOverPosition === "before"}
+									class:drop-after={dragOverGroupKey === groupKey(group.group_id) && dragOverPosition === "after"}
+									on:click={(evt) => onGroupRowClick(evt, groupKey(group.group_id))}
+									on:dragover={(evt) => onGroupDragOver(evt, groupKey(group.group_id))}
+									on:drop={(evt) => onGroupDrop(evt, groupKey(group.group_id))}
+								>
+									<span
+										class="group-drag-handle"
+										draggable={true}
+										title="拖动调整叠层顺序"
+										aria-label="拖动调整叠层顺序"
+										on:dragstart={(evt) => onGroupDragStart(evt, groupKey(group.group_id))}
+										on:dragend={onGroupDragEnd}
+									>⠿</span>
+									<span class="group-order">{index + 1}</span>
+									<span class="group-reorder-label">{group.label || "Label " + String(group.group_id)}</span>
+								</button>
+							{/each}
+						</div>
+					</div>
+				{/if}
 			</div>
 		{/if}
 		<div class="toolbar">
@@ -967,6 +1118,76 @@
 		background: #ffffff;
 		color: #0f172a;
 		padding: 7px 9px;
+	}
+	.group-reorder {
+		grid-column: 1 / -1;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-width: 0;
+	}
+	.group-reorder-hint {
+		font-size: 11px;
+		color: #64748b;
+	}
+	.group-reorder-list {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.group-reorder-item {
+		display: grid;
+		grid-template-columns: auto auto minmax(0, 1fr);
+		align-items: center;
+		gap: 5px;
+		min-width: 120px;
+		max-width: 100%;
+		border: 1px solid #cbd5e1;
+		border-radius: 6px;
+		background: #ffffff;
+		color: #0f172a;
+		padding: 5px 8px 5px 6px;
+		text-align: left;
+		font: inherit;
+		cursor: pointer;
+		user-select: none;
+	}
+
+	.group-reorder-item.active {
+		background: #e0f2fe;
+		border-color: #0284c7;
+		color: #0c4a6e;
+	}
+
+	.group-reorder-item.drop-before {
+		box-shadow: inset 3px 0 #2563eb;
+	}
+	.group-reorder-item.drop-after {
+		box-shadow: inset -3px 0 #2563eb;
+	}
+
+	.group-drag-handle {
+		font-size: 16px;
+		cursor: grab;
+		user-select: none;
+		touch-action: none;
+	}
+	.group-drag-handle:active {
+		cursor: grabbing;
+	}
+
+	.group-order {
+		font-size: 11px;
+		font-weight: 700;
+		color: #64748b;
+		min-width: 16px;
+		text-align: center;
+	}
+
+	.group-reorder-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.toolbar {
 		display: grid;

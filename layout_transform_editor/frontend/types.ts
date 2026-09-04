@@ -32,6 +32,7 @@ export interface LayoutTransformGroupView {
 export interface LayoutTransformGroupServerView {
 	selection_signature: string;
 	regions_revision: number;
+	allow_reorder?: boolean;
 	groups: LayoutTransformGroupView[];
 }
 
@@ -45,6 +46,7 @@ export interface LayoutTransformGroupIntent {
 	transform_set_revision: number;
 	active_group_id: LayoutTransformGroupId | null;
 	changed_group_ids?: LayoutTransformGroupId[];
+	ordered_group_ids?: LayoutTransformGroupId[];
 	transforms: LayoutTransformGroupIntentEntry[];
 }
 
