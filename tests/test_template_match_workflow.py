@@ -450,6 +450,165 @@ class TemplateMatchWorkflowTest(unittest.TestCase):
         legacy_overlay = render_template_overlay(image, seed, [match])
         self.assertEqual(legacy_overlay.shape, image.shape)
 
+    def test_orientation_gate_switches_on_strong_consistent_evidence(self):
+        context = {"extents": [8, 8], "prototype_cache": {}}
+        centers = {0: [20, 20], 1: [20, 20]}
+
+        def score(_context, group_index, _center, _patch_size, _band):
+            combined = 0.50 if group_index == 0 else 0.72
+            return {
+                "combined": combined,
+                "appearance": combined,
+                "edge": combined,
+                "coverage": 0.95,
+            }
+
+        with mock.patch.object(
+            workflow_module,
+            "_orientation_patch_sizes",
+            return_value=((51, 53, 55), 2),
+        ), mock.patch.object(
+            workflow_module,
+            "_score_template_orientation",
+            side_effect=score,
+        ) as score_mock:
+            decision = workflow_module.choose_template_orientation_group(
+                context,
+                [0, 1],
+                centers,
+                0,
+            )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["selected_group_index"], 1)
+        self.assertEqual(decision["mode"], "strong")
+        self.assertGreaterEqual(decision["improvement"], 0.18)
+        self.assertEqual(score_mock.call_count, 6)
+
+    def test_orientation_gate_requires_three_scale_consensus_for_midrange_gain(self):
+        context = {"extents": [8, 8], "prototype_cache": {}}
+        centers = {0: [20, 20], 1: [20, 20]}
+
+        def consistent_score(_context, group_index, _center, _patch_size, _band):
+            combined = 0.60 if group_index == 0 else 0.76
+            return {
+                "combined": combined,
+                "appearance": combined,
+                "edge": combined,
+                "coverage": 0.95,
+            }
+
+        with mock.patch.object(
+            workflow_module,
+            "_orientation_patch_sizes",
+            return_value=((51, 53, 55), 2),
+        ), mock.patch.object(
+            workflow_module,
+            "_score_template_orientation",
+            side_effect=consistent_score,
+        ) as score_mock:
+            accepted = workflow_module.choose_template_orientation_group(
+                context,
+                [0, 1],
+                centers,
+                0,
+            )
+
+        self.assertIsNotNone(accepted)
+        self.assertEqual(accepted["selected_group_index"], 1)
+        self.assertEqual(accepted["mode"], "multiscale_consensus")
+        self.assertAlmostEqual(accepted["improvement"], 0.16)
+        self.assertEqual(score_mock.call_count, 6)
+
+        def disagreeing_score(_context, group_index, _center, patch_size, _band):
+            if patch_size == 55:
+                combined = 0.76 if group_index == 0 else 0.60
+            else:
+                combined = 0.60 if group_index == 0 else 0.76
+            return {
+                "combined": combined,
+                "appearance": combined,
+                "edge": combined,
+                "coverage": 0.95,
+            }
+
+        with mock.patch.object(
+            workflow_module,
+            "_orientation_patch_sizes",
+            return_value=((51, 53, 55), 2),
+        ), mock.patch.object(
+            workflow_module,
+            "_score_template_orientation",
+            side_effect=disagreeing_score,
+        ):
+            rejected = workflow_module.choose_template_orientation_group(
+                context,
+                [0, 1],
+                centers,
+                0,
+            )
+
+        self.assertIsNone(rejected)
+
+    def test_orientation_gate_selects_the_best_of_three_template_groups(self):
+        context = {"extents": [8, 8, 8], "prototype_cache": {}}
+        centers = {0: [20, 20], 1: [20, 20], 2: [20, 20]}
+        values = {0: 0.50, 1: 0.68, 2: 0.76}
+
+        def score(_context, group_index, _center, _patch_size, _band):
+            combined = values[group_index]
+            return {
+                "combined": combined,
+                "appearance": combined,
+                "edge": combined,
+                "coverage": 0.95,
+            }
+
+        with mock.patch.object(
+            workflow_module,
+            "_orientation_patch_sizes",
+            return_value=((51, 53, 55), 2),
+        ), mock.patch.object(
+            workflow_module,
+            "_score_template_orientation",
+            side_effect=score,
+        ) as score_mock:
+            decision = workflow_module.choose_template_orientation_group(
+                context,
+                [0, 1, 2],
+                centers,
+                0,
+            )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["selected_group_index"], 2)
+        self.assertEqual(decision["mode"], "strong")
+        self.assertAlmostEqual(decision["margin"], 0.08)
+        self.assertEqual(score_mock.call_count, 9)
+
+    def test_orientation_gate_safely_rejects_empty_and_tiny_templates(self):
+        source = np.zeros((64, 64, 3), dtype=np.uint8)
+        empty = np.zeros((64, 64), dtype=bool)
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            workflow_module.prepare_template_orientation_context(
+                source,
+                [empty],
+            )
+
+        tiny = np.zeros((64, 64), dtype=bool)
+        tiny[8, 8] = True
+        context = workflow_module.prepare_template_orientation_context(
+            source,
+            [tiny, tiny],
+        )
+        decision = workflow_module.choose_template_orientation_group(
+            context,
+            [0, 1],
+            {0: [8, 8], 1: [8, 8]},
+            0,
+        )
+        self.assertIsNone(decision)
+
 
 if __name__ == "__main__":
     unittest.main()

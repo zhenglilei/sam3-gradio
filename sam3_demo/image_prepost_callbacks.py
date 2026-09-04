@@ -405,14 +405,59 @@ def _template_mask_iou(
     return float(intersection / union) if union else 0.0
 
 
-def _deduplicate_template_groups(groups, group_masks, iou_threshold):
+def _template_conflict_components(candidates, iou_threshold):
+    """Return connected components of cross-group overlapping candidates."""
+
+    parent = list(range(len(candidates)))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for left_index, left in enumerate(candidates):
+        for right_index in range(left_index + 1, len(candidates)):
+            right = candidates[right_index]
+            if left["group_index"] == right["group_index"]:
+                continue
+            if _template_mask_iou(
+                left["mask"],
+                right["mask"],
+                left_area=left["area"],
+                right_area=right["area"],
+                left_bbox=left["bbox"],
+                right_bbox=right["bbox"],
+            ) > iou_threshold:
+                union(left_index, right_index)
+
+    components = {}
+    for index in range(len(candidates)):
+        components.setdefault(find(index), []).append(index)
+    return [component for component in components.values() if len(component) > 1]
+
+
+def _deduplicate_template_groups(
+    groups,
+    group_masks,
+    iou_threshold,
+    *,
+    source_rgb=None,
+):
     """Remove only cross-group duplicate matches with score-ordered NMS.
 
     Candidates are compared only when their source groups differ.  A higher
     ``match['score']`` wins an overlap strictly above ``iou_threshold``;
     equal scores retain the candidate that appeared first in the original
-    group/match order.  The returned groups, group masks, and flattened lists
-    are rebuilt together so their positional correspondence is preserved.
+    group/match order.  When source_rgb is supplied, object-centred appearance
+    and contour evidence may safely promote a different template group before
+    NMS.  Returned groups, masks, and flattened lists remain positionally
+    aligned.
     """
     if len(groups) != len(group_masks):
         raise ValueError("template groups and group masks must be aligned")
@@ -453,13 +498,107 @@ def _deduplicate_template_groups(groups, group_masks, iou_threshold):
                     "mask": mask_array,
                     "area": int(len(xs)),
                     "bbox": mask_bbox,
+                    "center": (
+                        np.array([float(xs.mean()), float(ys.mean())])
+                        if len(xs)
+                        else None
+                    ),
+                }
+            )
+
+    if source_rgb is not None and len(groups) > 1 and candidates:
+        conflict_components = _template_conflict_components(candidates, threshold)
+    else:
+        conflict_components = []
+    orientation_components = [
+        component
+        for component in conflict_components
+        if len(
+            {
+                candidates[index]["group_index"]
+                for index in component
+            }
+        )
+        == len(component)
+    ]
+    if orientation_components:
+        orientation_context = (
+            _template_matching.prepare_template_orientation_context(
+                source_rgb,
+                [
+                    group_mask.get("seed_mask_fullres_bool")
+                    for group_mask in group_masks
+                ],
+            )
+        )
+        for component in orientation_components:
+            component_candidates = [candidates[index] for index in component]
+            baseline = min(
+                component_candidates,
+                key=lambda item: (-item["score"], item["original_order"]),
+            )
+            if baseline["center"] is None:
+                continue
+            group_indices = sorted(
+                {item["group_index"] for item in component_candidates}
+            )
+            representative_by_group = {}
+            for group_index in group_indices:
+                representative_by_group[group_index] = min(
+                    (
+                        item
+                        for item in component_candidates
+                        if item["group_index"] == group_index
+                        and item["center"] is not None
+                    ),
+                    key=lambda item: (
+                        float(np.linalg.norm(item["center"] - baseline["center"])),
+                        -item["score"],
+                        item["original_order"],
+                    ),
+                    default=None,
+                )
+            if any(
+                representative is None
+                for representative in representative_by_group.values()
+            ):
+                continue
+            decision = _template_matching.choose_template_orientation_group(
+                orientation_context,
+                group_indices,
+                {
+                    group_index: representative["center"]
+                    for group_index, representative in representative_by_group.items()
+                },
+                baseline["group_index"],
+            )
+            if decision is None:
+                continue
+            selected_group_index = int(decision["selected_group_index"])
+            preferred = representative_by_group[selected_group_index]
+            preferred["orientation_preferred"] = True
+            preferred["match"].update(
+                {
+                    "orientation_reranked": True,
+                    "orientation_rerank_from_group": str(
+                        groups[baseline["group_index"]].get("group_id")
+                    ),
+                    "orientation_rerank_mode": decision["mode"],
+                    "orientation_rerank_patch_sizes": decision["patch_sizes"],
+                    "orientation_rerank_improvement": decision["improvement"],
+                    "orientation_rerank_margin": decision["margin"],
+                    "orientation_rerank_coverage": decision["coverage"],
                 }
             )
 
     retained = []
     for candidate in sorted(
         candidates,
-        key=lambda item: (-item["score"], item["original_order"]),
+        key=lambda item: (
+            0 if item.get("orientation_preferred") else 1,
+            -item["score"],
+            item["original_order"],
+        ),
     ):
         if any(
             candidate["group_index"] != previous["group_index"]
@@ -983,6 +1122,7 @@ def _run_template_matching_impl(_deps, source_state, image_state, pvs_state, mod
             groups,
             group_masks,
             resolved_nms_threshold,
+            source_rgb=source_rgb,
         )
         result = {
             "schema_version": 2,

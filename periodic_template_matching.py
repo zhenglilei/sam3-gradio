@@ -361,7 +361,9 @@ def match_periodic_instances(
             {
                 "segmentation": matched_points.tolist(),
                 "label": str(label),
-                "matchScore": round(score, 2),
+                # Keep full precision for cross-template conflict resolution.
+                # The overlay formats this value to two decimals for display.
+                "matchScore": float(score),
             }
         )
     return matches

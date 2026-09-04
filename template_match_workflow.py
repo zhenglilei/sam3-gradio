@@ -22,6 +22,13 @@ _EDGE_REFINE_MAX_RADIUS = 10
 _EDGE_REFINE_MIN_GAIN = 0.03
 _EDGE_REFINE_MIN_TEMPLATE_COVERAGE = 0.80
 _EDGE_REFINE_MIN_MASK_VISIBLE_RATIO = 0.90
+_ORIENTATION_APPEARANCE_WEIGHT = 0.72
+_ORIENTATION_EDGE_WEIGHT = 0.28
+_ORIENTATION_MIN_COVERAGE = 0.85
+_ORIENTATION_MIN_EDGE_SCORE = 0.42
+_ORIENTATION_MIN_MARGIN = 0.02
+_ORIENTATION_STRONG_IMPROVEMENT = 0.18
+_ORIENTATION_CONSENSUS_IMPROVEMENT = 0.15
 
 
 def _binary_mask(
@@ -201,6 +208,306 @@ def _grayscale_u8(source_image: np.ndarray) -> np.ndarray:
     if source_image.ndim == 2:
         return np.clip(source_image, 0, 255).astype(np.uint8, copy=False)
     return cv2.cvtColor(_source_rgb(source_image), cv2.COLOR_RGB2GRAY)
+
+
+def _centered_patch(
+    array: np.ndarray,
+    center_xy: Sequence[float],
+    size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract one square patch and mark pixels backed by the source image."""
+
+    size = int(size)
+    if size <= 0 or size % 2 == 0:
+        raise ValueError("orientation patch size must be a positive odd integer")
+    center = np.rint(np.asarray(center_xy, dtype=np.float64)).astype(int)
+    if center.shape != (2,):
+        raise ValueError("orientation center must contain x and y")
+    half = size // 2
+    x1, y1 = int(center[0]) - half, int(center[1]) - half
+    x2, y2 = x1 + size, y1 + size
+    patch = np.zeros((size, size) + array.shape[2:], dtype=array.dtype)
+    valid = np.zeros((size, size), dtype=bool)
+    source_x1, source_y1 = max(0, x1), max(0, y1)
+    source_x2 = min(array.shape[1], x2)
+    source_y2 = min(array.shape[0], y2)
+    if source_x1 >= source_x2 or source_y1 >= source_y2:
+        return patch, valid
+    target_x1, target_y1 = source_x1 - x1, source_y1 - y1
+    target_x2 = target_x1 + source_x2 - source_x1
+    target_y2 = target_y1 + source_y2 - source_y1
+    patch[target_y1:target_y2, target_x1:target_x2] = array[
+        source_y1:source_y2,
+        source_x1:source_x2,
+    ]
+    valid[target_y1:target_y2, target_x1:target_x2] = True
+    return patch, valid
+
+
+def _orientation_mask_geometry(mask: np.ndarray) -> tuple[np.ndarray, int]:
+    ys, xs = np.nonzero(mask)
+    if not len(xs):
+        raise ValueError("orientation seed mask must not be empty")
+    center = np.array([float(xs.mean()), float(ys.mean())], dtype=np.float64)
+    extent = max(
+        int(xs.max()) - int(xs.min()) + 1,
+        int(ys.max()) - int(ys.min()) + 1,
+    )
+    return center, extent
+
+
+def prepare_template_orientation_context(
+    source_image: np.ndarray,
+    seed_masks: Sequence[Any],
+) -> dict[str, Any]:
+    """Precompute image evidence used to resolve cross-template conflicts."""
+
+    source_rgb = _source_rgb(np.asarray(source_image))
+    source_shape = source_rgb.shape[:2]
+    masks = [
+        _binary_mask(mask, name=f"seed_masks[{index}]", expected_shape=source_shape)
+        for index, mask in enumerate(seed_masks)
+    ]
+    geometry = [_orientation_mask_geometry(mask) for mask in masks]
+    lab = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    blurred = cv2.GaussianBlur(lab, (0, 0), 0.8)
+    gradient_squared = np.zeros(source_shape, dtype=np.float32)
+    for channel in range(3):
+        gradient_x = cv2.Sobel(
+            blurred[:, :, channel], cv2.CV_32F, 1, 0, ksize=3
+        )
+        gradient_y = cv2.Sobel(
+            blurred[:, :, channel], cv2.CV_32F, 0, 1, ksize=3
+        )
+        gradient_squared += gradient_x * gradient_x + gradient_y * gradient_y
+    return {
+        "lab": lab,
+        "gradient": np.sqrt(gradient_squared),
+        "masks": masks,
+        "centers": [item[0] for item in geometry],
+        "extents": [item[1] for item in geometry],
+        "prototype_cache": {},
+    }
+
+
+def _orientation_patch_sizes(
+    context: Mapping[str, Any],
+    group_indices: Sequence[int],
+) -> tuple[tuple[int, ...], int]:
+    extent = max(int(context["extents"][index]) for index in group_indices)
+    band = max(2, min(8, int(round(extent * 0.085))))
+    base = extent + 2 * band
+    if base % 2 == 0:
+        base += 1
+    delta = max(2, int(round(base * 0.07)))
+    if delta % 2:
+        delta += 1
+    minimum = extent + 2
+    if minimum % 2 == 0:
+        minimum += 1
+    sizes = tuple(sorted({max(minimum, base - delta), base, base + delta}))
+    return sizes, band
+
+
+def _orientation_prototype(
+    context: dict[str, Any],
+    group_index: int,
+    patch_size: int,
+    band: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    cache = context["prototype_cache"]
+    key = (int(group_index), int(patch_size), int(band))
+    if key in cache:
+        return cache[key]
+    center = context["centers"][group_index]
+    image_patch, image_valid = _centered_patch(
+        context["lab"], center, patch_size
+    )
+    mask_patch, mask_valid = _centered_patch(
+        context["masks"][group_index].astype(np.uint8), center, patch_size
+    )
+    local_mask = mask_patch.astype(bool)
+    kernel = np.ones((2 * band + 1, 2 * band + 1), dtype=np.uint8)
+    weight = cv2.dilate(local_mask.astype(np.uint8), kernel) > 0
+    weight &= image_valid & mask_valid
+    cache[key] = (image_patch.astype(np.float32), local_mask, weight)
+    return cache[key]
+
+
+def _orientation_weighted_zncc(
+    first: np.ndarray,
+    second: np.ndarray,
+    weight: np.ndarray,
+) -> float | None:
+    if int(np.count_nonzero(weight)) < 300:
+        return None
+    channel_scores = []
+    for channel in range(first.shape[2]):
+        left = first[:, :, channel][weight].astype(np.float64)
+        right = second[:, :, channel][weight].astype(np.float64)
+        left -= left.mean()
+        right -= right.mean()
+        denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
+        if denominator > 1e-9:
+            channel_scores.append(float(np.dot(left, right) / denominator))
+    return float(np.mean(channel_scores)) if channel_scores else None
+
+
+def _orientation_edge_alignment(
+    gradient: np.ndarray,
+    mask: np.ndarray,
+    valid: np.ndarray,
+) -> float | None:
+    boundary = cv2.morphologyEx(
+        mask.astype(np.uint8),
+        cv2.MORPH_GRADIENT,
+        np.ones((3, 3), dtype=np.uint8),
+    ) > 0
+    boundary &= valid
+    if int(np.count_nonzero(boundary)) < 20 or not np.any(valid):
+        return None
+    normalizer = max(float(np.percentile(gradient[valid], 95)), 1e-6)
+    return float(np.clip(float(gradient[boundary].mean()) / normalizer, 0.0, 1.5))
+
+
+def _score_template_orientation(
+    context: dict[str, Any],
+    group_index: int,
+    center_xy: Sequence[float],
+    patch_size: int,
+    band: int,
+) -> dict[str, float] | None:
+    target, valid = _centered_patch(context["lab"], center_xy, patch_size)
+    gradient, gradient_valid = _centered_patch(
+        context["gradient"], center_xy, patch_size
+    )
+    prototype, prototype_mask, prototype_weight = _orientation_prototype(
+        context, group_index, patch_size, band
+    )
+    effective = prototype_weight & valid
+    appearance = _orientation_weighted_zncc(prototype, target, effective)
+    edge = _orientation_edge_alignment(
+        gradient, prototype_mask, gradient_valid
+    )
+    if appearance is None or edge is None:
+        return None
+    coverage = float(
+        np.count_nonzero(effective) / max(np.count_nonzero(prototype_weight), 1)
+    )
+    return {
+        "combined": (
+            _ORIENTATION_APPEARANCE_WEIGHT * appearance
+            + _ORIENTATION_EDGE_WEIGHT * edge
+        ),
+        "appearance": appearance,
+        "edge": edge,
+        "coverage": coverage,
+    }
+
+
+def choose_template_orientation_group(
+    context: dict[str, Any],
+    group_indices: Sequence[int],
+    centers_by_group: Mapping[int, Sequence[float]],
+    baseline_group_index: int,
+) -> dict[str, Any] | None:
+    """Select another seed shape only when independent evidence agrees."""
+
+    indices = tuple(dict.fromkeys(int(index) for index in group_indices))
+    baseline_group_index = int(baseline_group_index)
+    if (
+        len(indices) < 2
+        or baseline_group_index not in indices
+        or any(index not in centers_by_group for index in indices)
+    ):
+        return None
+    patch_sizes, band = _orientation_patch_sizes(context, indices)
+    scale_results = []
+    for patch_size in patch_sizes:
+        scores = {
+            index: _score_template_orientation(
+                context,
+                index,
+                centers_by_group[index],
+                patch_size,
+                band,
+            )
+            for index in indices
+        }
+        if any(value is None for value in scores.values()):
+            return None
+        best_index = max(indices, key=lambda index: scores[index]["combined"])
+        runner_up = max(
+            (index for index in indices if index != best_index),
+            key=lambda index: scores[index]["combined"],
+        )
+        appearance_winner = max(
+            indices, key=lambda index: scores[index]["appearance"]
+        )
+        edge_winner = max(indices, key=lambda index: scores[index]["edge"])
+        scale_results.append(
+            {
+                "patch_size": patch_size,
+                "scores": scores,
+                "best_index": best_index,
+                "margin": float(
+                    scores[best_index]["combined"]
+                    - scores[runner_up]["combined"]
+                ),
+                "improvement": float(
+                    scores[best_index]["combined"]
+                    - scores[baseline_group_index]["combined"]
+                ),
+                "evidence_agrees": (
+                    best_index == appearance_winner == edge_winner
+                ),
+            }
+        )
+
+    base = scale_results[len(scale_results) // 2]
+    selected_index = int(base["best_index"])
+    if selected_index == baseline_group_index:
+        return None
+    selected_scores = base["scores"][selected_index]
+    base_valid = (
+        base["evidence_agrees"]
+        and base["margin"] >= _ORIENTATION_MIN_MARGIN
+        and selected_scores["coverage"] >= _ORIENTATION_MIN_COVERAGE
+        and selected_scores["edge"] >= _ORIENTATION_MIN_EDGE_SCORE
+    )
+    strong = base_valid and base["improvement"] >= _ORIENTATION_STRONG_IMPROVEMENT
+    consensus = (
+        base_valid
+        and all(result["best_index"] == selected_index for result in scale_results)
+        and all(result["evidence_agrees"] for result in scale_results)
+        and min(result["margin"] for result in scale_results)
+        >= _ORIENTATION_MIN_MARGIN
+        and min(result["improvement"] for result in scale_results)
+        >= _ORIENTATION_CONSENSUS_IMPROVEMENT
+        and min(
+            result["scores"][selected_index]["coverage"]
+            for result in scale_results
+        )
+        >= _ORIENTATION_MIN_COVERAGE
+        and min(
+            result["scores"][selected_index]["edge"]
+            for result in scale_results
+        )
+        >= _ORIENTATION_MIN_EDGE_SCORE
+    )
+    if not (strong or consensus):
+        return None
+    return {
+        "selected_group_index": selected_index,
+        "baseline_group_index": baseline_group_index,
+        "mode": "strong" if strong else "multiscale_consensus",
+        "patch_sizes": list(patch_sizes),
+        "improvement": float(base["improvement"]),
+        "margin": float(base["margin"]),
+        "appearance": float(selected_scores["appearance"]),
+        "edge": float(selected_scores["edge"]),
+        "coverage": float(selected_scores["coverage"]),
+    }
 
 
 def _partial_ccoeff_at(

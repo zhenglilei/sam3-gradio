@@ -437,6 +437,262 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
                 len(group_mask["match_masks_fullres_bool"]),
             )
 
+    @staticmethod
+    def _orientation_dedup_fixture():
+        overlap = np.zeros((12, 16), dtype=bool)
+        overlap[3:8, 5:10] = True
+        groups = [
+            {
+                "group_id": "PVS-A",
+                "matches": [{"match_id": "Ax-1", "score": 0.95}],
+                "match_count": 1,
+            },
+            {
+                "group_id": "PVS-B",
+                "matches": [{"match_id": "Bx-1", "score": 0.70}],
+                "match_count": 1,
+            },
+        ]
+        group_masks = [
+            {
+                "group_id": "PVS-A",
+                "seed_mask_fullres_bool": overlap.copy(),
+                "match_masks_fullres_bool": [overlap.copy()],
+            },
+            {
+                "group_id": "PVS-B",
+                "seed_mask_fullres_bool": overlap.copy(),
+                "match_masks_fullres_bool": [overlap.copy()],
+            },
+        ]
+        source_rgb = np.zeros((12, 16, 3), dtype=np.uint8)
+        return groups, group_masks, source_rgb, overlap
+
+    def test_orientation_rerank_can_promote_lower_score_group_and_keep_alignment(self):
+        groups, group_masks, source_rgb, expected_mask = (
+            self._orientation_dedup_fixture()
+        )
+        decision = {
+            "selected_group_index": 1,
+            "mode": "multiscale_consensus",
+            "patch_sizes": [51, 53, 55],
+            "improvement": 0.16,
+            "margin": 0.03,
+            "coverage": 0.95,
+        }
+
+        with mock.patch.object(
+            image_prepost._template_matching,
+            "prepare_template_orientation_context",
+            return_value={"mock": True},
+        ) as prepare, mock.patch.object(
+            image_prepost._template_matching,
+            "choose_template_orientation_group",
+            return_value=decision,
+        ) as choose:
+            filtered_groups, filtered_group_masks, flat_matches, flat_masks = (
+                image_prepost._deduplicate_template_groups(
+                    groups,
+                    group_masks,
+                    0.5,
+                    source_rgb=source_rgb,
+                )
+            )
+
+        prepare.assert_called_once()
+        choose.assert_called_once()
+        self.assertEqual(
+            [match["match_id"] for match in filtered_groups[0]["matches"]],
+            [],
+        )
+        self.assertEqual(
+            [match["match_id"] for match in filtered_groups[1]["matches"]],
+            ["Bx-1"],
+        )
+        self.assertEqual(filtered_groups[0]["match_count"], 0)
+        self.assertEqual(filtered_groups[1]["match_count"], 1)
+        self.assertEqual([match["match_id"] for match in flat_matches], ["Bx-1"])
+        self.assertEqual(len(flat_masks), len(flat_matches))
+        np.testing.assert_array_equal(flat_masks[0], expected_mask)
+        self.assertEqual(
+            len(filtered_groups[1]["matches"]),
+            len(filtered_group_masks[1]["match_masks_fullres_bool"]),
+        )
+        reranked = filtered_groups[1]["matches"][0]
+        self.assertTrue(reranked["orientation_reranked"])
+        self.assertEqual(reranked["orientation_rerank_from_group"], "PVS-A")
+        self.assertEqual(reranked["orientation_rerank_mode"], "multiscale_consensus")
+        self.assertEqual(reranked["orientation_rerank_patch_sizes"], [51, 53, 55])
+        self.assertAlmostEqual(reranked["orientation_rerank_improvement"], 0.16)
+        self.assertAlmostEqual(reranked["orientation_rerank_margin"], 0.03)
+        self.assertAlmostEqual(reranked["orientation_rerank_coverage"], 0.95)
+
+    def test_template_dedup_without_source_rgb_keeps_raw_score_order(self):
+        groups, group_masks, _source_rgb, expected_mask = (
+            self._orientation_dedup_fixture()
+        )
+
+        filtered_groups, filtered_group_masks, flat_matches, flat_masks = (
+            image_prepost._deduplicate_template_groups(
+                groups,
+                group_masks,
+                0.5,
+            )
+        )
+
+        self.assertEqual(
+            [match["match_id"] for match in filtered_groups[0]["matches"]],
+            ["Ax-1"],
+        )
+        self.assertEqual(filtered_groups[1]["matches"], [])
+        self.assertEqual([match["match_id"] for match in flat_matches], ["Ax-1"])
+        self.assertEqual(len(flat_masks), len(flat_matches))
+        np.testing.assert_array_equal(flat_masks[0], expected_mask)
+        self.assertNotIn(
+            "orientation_reranked",
+            filtered_groups[0]["matches"][0],
+        )
+        for group, group_mask in zip(filtered_groups, filtered_group_masks):
+            self.assertEqual(
+                group["match_count"],
+                len(group["matches"]),
+            )
+            self.assertEqual(
+                len(group["matches"]),
+                len(group_mask["match_masks_fullres_bool"]),
+            )
+
+    def test_source_rgb_without_cross_group_conflicts_skips_orientation_gate(self):
+        shape = (12, 20)
+        left = np.zeros(shape, dtype=bool)
+        left[2:6, 2:6] = True
+        right = np.zeros(shape, dtype=bool)
+        right[2:6, 14:18] = True
+        groups = [
+            {
+                "group_id": "PVS-A",
+                "matches": [{"match_id": "A-1", "score": 0.80}],
+                "match_count": 1,
+            },
+            {
+                "group_id": "PVS-B",
+                "matches": [{"match_id": "B-1", "score": 0.70}],
+                "match_count": 1,
+            },
+        ]
+        group_masks = [
+            {
+                "group_id": "PVS-A",
+                "seed_mask_fullres_bool": np.zeros(shape, dtype=bool),
+                "match_masks_fullres_bool": [left],
+            },
+            {
+                "group_id": "PVS-B",
+                "seed_mask_fullres_bool": np.zeros(shape, dtype=bool),
+                "match_masks_fullres_bool": [right],
+            },
+        ]
+        source_rgb = np.zeros((*shape, 3), dtype=np.uint8)
+
+        with mock.patch.object(
+            image_prepost._template_matching,
+            "prepare_template_orientation_context",
+        ) as prepare, mock.patch.object(
+            image_prepost._template_matching,
+            "choose_template_orientation_group",
+        ) as choose:
+            filtered_groups, _filtered_masks, flat_matches, _flat_masks = (
+                image_prepost._deduplicate_template_groups(
+                    groups,
+                    group_masks,
+                    0.5,
+                    source_rgb=source_rgb,
+                )
+            )
+
+        prepare.assert_not_called()
+        choose.assert_not_called()
+        self.assertEqual(
+            [match["match_id"] for match in flat_matches],
+            ["A-1", "B-1"],
+        )
+        self.assertEqual(
+            [group["match_count"] for group in filtered_groups],
+            [1, 1],
+        )
+
+    def test_same_group_multiple_candidates_keep_score_nms_without_orientation_gate(self):
+        shape = (12, 20)
+        first = np.zeros(shape, dtype=bool)
+        first[2:8, 2:8] = True
+        second = np.zeros(shape, dtype=bool)
+        second[2:8, 8:14] = True
+        other = np.zeros(shape, dtype=bool)
+        other[2:8, 2:14] = True
+        groups = [
+            {
+                "group_id": "PVS-A",
+                "matches": [
+                    {"match_id": "A-1", "score": 0.95},
+                    {"match_id": "A-2", "score": 0.80},
+                ],
+                "match_count": 2,
+            },
+            {
+                "group_id": "PVS-B",
+                "matches": [{"match_id": "B-1", "score": 0.70}],
+                "match_count": 1,
+            },
+        ]
+        group_masks = [
+            {
+                "group_id": "PVS-A",
+                "seed_mask_fullres_bool": np.zeros(shape, dtype=bool),
+                "match_masks_fullres_bool": [first, second],
+            },
+            {
+                "group_id": "PVS-B",
+                "seed_mask_fullres_bool": np.zeros(shape, dtype=bool),
+                "match_masks_fullres_bool": [other],
+            },
+        ]
+        source_rgb = np.zeros((*shape, 3), dtype=np.uint8)
+
+        with mock.patch.object(
+            image_prepost._template_matching,
+            "prepare_template_orientation_context",
+        ) as prepare, mock.patch.object(
+            image_prepost._template_matching,
+            "choose_template_orientation_group",
+        ) as choose:
+            filtered_groups, filtered_masks, flat_matches, flat_masks = (
+                image_prepost._deduplicate_template_groups(
+                    groups,
+                    group_masks,
+                    0.49,
+                    source_rgb=source_rgb,
+                )
+            )
+
+        prepare.assert_not_called()
+        choose.assert_not_called()
+        self.assertEqual(
+            [match["match_id"] for match in filtered_groups[0]["matches"]],
+            ["A-1", "A-2"],
+        )
+        self.assertEqual(filtered_groups[1]["matches"], [])
+        self.assertEqual(
+            [match["match_id"] for match in flat_matches],
+            ["A-1", "A-2"],
+        )
+        self.assertEqual(len(flat_matches), len(flat_masks))
+        self.assertEqual(
+            [len(item["match_masks_fullres_bool"]) for item in filtered_masks],
+            [2, 0],
+        )
+        np.testing.assert_array_equal(flat_masks[0], first)
+        np.testing.assert_array_equal(flat_masks[1], second)
+
     def test_create_demo_exposes_image_prepost_and_removes_video(self):
         app = demo.create_demo()
         config = app.config
