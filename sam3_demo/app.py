@@ -78,6 +78,7 @@ from sam3_demo.ui.bindings import bind_demo_events
 from sam3_demo.ui.image_tab import build_image_tab
 from sam3_demo.ui.refs import ComponentRefs
 from sam3_demo.ui.layout_mask_tab import build_layout_mask_tab
+from sam3_demo.ui.overlap_prediction_tab import build_overlap_prediction_tab
 from sam3_demo.ui.stitch_tab import build_stitch_tab
 from sam3_demo.ui.template_stitch_tab import build_template_stitch_tab
 from sam3_demo.ui.styles import CUSTOM_CSS, build_theme
@@ -85,6 +86,7 @@ from sam3_demo.ui.top_bar import build_top_bar
 from sam3_demo.model_supervisor import SUPERVISOR
 from sam3_demo import stitch_callbacks as _stitch_cb
 from sam3_demo import template_stitch_callbacks as _template_stitch_cb
+from sam3_demo.overlap_view_callbacks import bind_overlap_prediction_events
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, request_identity
@@ -4306,6 +4308,7 @@ def create_demo():
                     coco_eval_scope_overlap=coco_eval_scope_overlap,
                     coco_eval_scope_full=coco_eval_scope_full,
                 )
+                overlap_ui = build_overlap_prediction_tab()
                 layout_ui = build_layout_mask_tab(
                     LayoutRegionAnnotator=LayoutRegionAnnotator,
                     _layout_region_annotator_import_error=_layout_region_annotator_import_error,
@@ -4346,6 +4349,7 @@ def create_demo():
                 template_stitch_refs=template_stitch_ui,
                 callbacks=_session_callback_registry(),
             )
+            bind_overlap_prediction_events(demo=demo, refs=overlap_ui)
             bootstrap_event = demo.load(
                 fn=_bootstrap_session,
                 inputs=None,
