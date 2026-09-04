@@ -18,6 +18,12 @@ import numpy as np
 from periodic_template_matching import match_periodic_instances
 
 
+_EDGE_REFINE_MAX_RADIUS = 10
+_EDGE_REFINE_MIN_GAIN = 0.03
+_EDGE_REFINE_MIN_TEMPLATE_COVERAGE = 0.80
+_EDGE_REFINE_MIN_MASK_VISIBLE_RATIO = 0.90
+
+
 def _binary_mask(
     mask: Any,
     *,
@@ -127,11 +133,21 @@ def _bbox_polygon(bbox_xyxy: Sequence[int]) -> list[list[int]]:
     ]
 
 
-def translate_source_mask(mask: Any, dx: int, dy: int) -> np.ndarray:
+def translate_source_mask(
+    mask: Any,
+    dx: int,
+    dy: int,
+    *,
+    allow_clip: bool = False,
+    min_visible_ratio: float = _EDGE_REFINE_MIN_MASK_VISIBLE_RATIO,
+) -> np.ndarray:
     """Translate a full-source mask without changing its internal geometry."""
 
     binary = _binary_mask(mask, name="mask")
     source_area = int(np.count_nonzero(binary))
+    min_visible_ratio = float(min_visible_ratio)
+    if not 0.0 <= min_visible_ratio <= 1.0:
+        raise ValueError("min_visible_ratio must be between 0 and 1")
     matrix = np.array([[1.0, 0.0, int(dx)], [0.0, 1.0, int(dy)]])
     translated = cv2.warpAffine(
         binary.astype(np.uint8),
@@ -142,8 +158,11 @@ def translate_source_mask(mask: Any, dx: int, dy: int) -> np.ndarray:
         borderValue=0,
     )
     result = translated.astype(bool)
-    if int(np.count_nonzero(result)) != source_area:
+    visible_area = int(np.count_nonzero(result))
+    if visible_area != source_area and not allow_clip:
         raise ValueError("translated mask would be clipped by source bounds")
+    if allow_clip and source_area and visible_area / source_area < min_visible_ratio:
+        raise ValueError("translated mask retains too little visible area")
     return result
 
 
@@ -176,6 +195,121 @@ def _source_rgb(source_image: np.ndarray) -> np.ndarray:
     if source_image.shape[2] not in (3, 4):
         raise ValueError("source_image must have 1, 3, or 4 channels")
     return np.clip(source_image[..., :3], 0, 255).astype(np.uint8).copy()
+
+
+def _grayscale_u8(source_image: np.ndarray) -> np.ndarray:
+    if source_image.ndim == 2:
+        return np.clip(source_image, 0, 255).astype(np.uint8, copy=False)
+    return cv2.cvtColor(_source_rgb(source_image), cv2.COLOR_RGB2GRAY)
+
+
+def _partial_ccoeff_at(
+    image_gray: np.ndarray,
+    template_gray: np.ndarray,
+    x: int,
+    y: int,
+    *,
+    min_coverage: float,
+) -> tuple[float, float]:
+    """Score one possibly clipped template placement using real pixels only."""
+
+    image_height, image_width = image_gray.shape
+    template_height, template_width = template_gray.shape
+    image_x1 = max(0, int(x))
+    image_y1 = max(0, int(y))
+    image_x2 = min(image_width, int(x) + template_width)
+    image_y2 = min(image_height, int(y) + template_height)
+    if image_x1 >= image_x2 or image_y1 >= image_y2:
+        return -1.0, 0.0
+
+    template_x1 = image_x1 - int(x)
+    template_y1 = image_y1 - int(y)
+    overlap_width = image_x2 - image_x1
+    overlap_height = image_y2 - image_y1
+    coverage = float(
+        overlap_width * overlap_height / (template_width * template_height)
+    )
+    if coverage < float(min_coverage):
+        return -1.0, coverage
+
+    image_patch = image_gray[image_y1:image_y2, image_x1:image_x2]
+    template_patch = template_gray[
+        template_y1 : template_y1 + overlap_height,
+        template_x1 : template_x1 + overlap_width,
+    ]
+    if (
+        float(np.std(image_patch)) < 1e-6
+        or float(np.std(template_patch)) < 1e-6
+    ):
+        return -1.0, coverage
+    score = float(
+        cv2.matchTemplate(
+            image_patch,
+            template_patch,
+            cv2.TM_CCOEFF_NORMED,
+        )[0, 0]
+    )
+    return (score if np.isfinite(score) else -1.0), coverage
+
+
+def _refine_horizontal_edge_translation(
+    image_gray: np.ndarray,
+    template_gray: np.ndarray,
+    candidate_bbox_xyxy: Sequence[int],
+    *,
+    edge_margin: int,
+    search_radius: int,
+    min_score_gain: float = _EDGE_REFINE_MIN_GAIN,
+    min_template_coverage: float = _EDGE_REFINE_MIN_TEMPLATE_COVERAGE,
+) -> dict[str, Any]:
+    """Refine only the x coordinate of candidates close to a vertical edge."""
+
+    x1, y1, x2, _ = (int(value) for value in candidate_bbox_xyxy)
+    image_width = int(image_gray.shape[1])
+    left_distance = x1
+    right_distance = image_width - x2
+    if min(left_distance, right_distance) > int(edge_margin):
+        return {"delta_x": 0, "score_gain": 0.0, "template_coverage": 1.0}
+
+    current_score, current_coverage = _partial_ccoeff_at(
+        image_gray,
+        template_gray,
+        x1,
+        y1,
+        min_coverage=min_template_coverage,
+    )
+    best_score = current_score
+    best_x = x1
+    best_coverage = current_coverage
+    for delta_x in range(-int(search_radius), int(search_radius) + 1):
+        candidate_x = x1 + delta_x
+        score, coverage = _partial_ccoeff_at(
+            image_gray,
+            template_gray,
+            candidate_x,
+            y1,
+            min_coverage=min_template_coverage,
+        )
+        if score > best_score + 1e-12 or (
+            abs(score - best_score) <= 1e-12
+            and abs(delta_x) < abs(best_x - x1)
+        ):
+            best_score = score
+            best_x = candidate_x
+            best_coverage = coverage
+
+    score_gain = best_score - current_score
+    if best_x == x1 or score_gain < float(min_score_gain):
+        return {
+            "delta_x": 0,
+            "score_gain": max(0.0, float(score_gain)),
+            "template_coverage": current_coverage,
+        }
+    return {
+        "delta_x": int(best_x - x1),
+        "score_gain": float(score_gain),
+        "template_coverage": float(best_coverage),
+    }
 
 
 def _draw_match_label(
@@ -325,8 +459,18 @@ def run_template_match_workflow(
         crop_bbox,
     )
     seed_bbox = mask_bbox_xyxy(seed_mask)
+    seed_area = int(np.count_nonzero(seed_mask))
     seed_polygon = _bbox_polygon(seed_bbox)
     seed_id = _instance_id(seed_instance, active_instance_id)
+    source_gray = _grayscale_u8(source_image)
+    seed_template_gray = source_gray[
+        seed_bbox[1] : seed_bbox[3],
+        seed_bbox[0] : seed_bbox[2],
+    ]
+    edge_refine_radius = min(
+        _EDGE_REFINE_MAX_RADIUS,
+        max(0, int(expand_threshold)),
+    )
 
     blocker_polygons: list[list[list[int]]] = []
     exact_blocker_bboxes = [tuple(seed_bbox)]
@@ -374,26 +518,69 @@ def run_template_match_workflow(
         )
         if tuple(candidate_bbox) in exact_blocker_bboxes:
             continue
-        dx = int(candidate_bbox[0] - seed_bbox[0])
-        dy = int(candidate_bbox[1] - seed_bbox[1])
+        coarse_dx = int(candidate_bbox[0] - seed_bbox[0])
+        coarse_dy = int(candidate_bbox[1] - seed_bbox[1])
+        refinement = {
+            "delta_x": 0,
+            "score_gain": 0.0,
+            "template_coverage": 1.0,
+        }
+        if edge_refine_radius:
+            refinement = _refine_horizontal_edge_translation(
+                source_gray,
+                seed_template_gray,
+                candidate_bbox,
+                edge_margin=max(int(expand_threshold), edge_refine_radius),
+                search_radius=edge_refine_radius,
+            )
+        refine_delta_x = int(refinement["delta_x"])
+        dx = coarse_dx + refine_delta_x
+        dy = coarse_dy
         try:
-            translated = translate_source_mask(seed_mask, dx, dy)
+            translated = translate_source_mask(
+                seed_mask,
+                dx,
+                dy,
+                allow_clip=bool(refine_delta_x),
+                min_visible_ratio=_EDGE_REFINE_MIN_MASK_VISIBLE_RATIO,
+            )
         except ValueError:
-            continue
+            if not refine_delta_x:
+                continue
+            # A refinement must never discard a legal coarse match. Fall back
+            # when the refined mask would retain too little visible area.
+            refine_delta_x = 0
+            dx = coarse_dx
+            translated = translate_source_mask(seed_mask, dx, dy)
         if not np.any(translated):
             continue
         translated_bbox = mask_bbox_xyxy(translated)
-        match_masks.append(translated)
-        serializable_matches.append(
-            {
-                "match_id": len(serializable_matches) + 1,
-                "label": str(raw_match.get("label", label)),
-                "score": float(raw_match.get("matchScore", 0.0)),
-                "translation_xy": [dx, dy],
-                "bbox_xyxy": translated_bbox,
-                "area": int(np.count_nonzero(translated)),
-            }
+        visible_ratio = float(
+            np.count_nonzero(translated) / seed_area
         )
+        match_masks.append(translated)
+        match_item = {
+            "match_id": len(serializable_matches) + 1,
+            "label": str(raw_match.get("label", label)),
+            "score": float(raw_match.get("matchScore", 0.0)),
+            "translation_xy": [dx, dy],
+            "bbox_xyxy": translated_bbox,
+            "area": int(np.count_nonzero(translated)),
+        }
+        if refine_delta_x:
+            match_item.update(
+                {
+                    "edge_refined": True,
+                    "coarse_translation_xy": [coarse_dx, coarse_dy],
+                    "edge_refine_delta_xy": [refine_delta_x, 0],
+                    "edge_refine_score_gain": float(refinement["score_gain"]),
+                    "edge_refine_template_coverage": float(
+                        refinement["template_coverage"]
+                    ),
+                    "visible_ratio": visible_ratio,
+                }
+            )
+        serializable_matches.append(match_item)
 
     result = {
         "schema_version": 1,
@@ -402,7 +589,7 @@ def run_template_match_workflow(
         "seed": {
             "instance_id": seed_id,
             "bbox_xyxy": seed_bbox,
-            "area": int(np.count_nonzero(seed_mask)),
+            "area": seed_area,
             "mask_pixel_sha256": hashlib.sha256(
                 np.ascontiguousarray(seed_mask, dtype=np.uint8).tobytes()
             ).hexdigest(),

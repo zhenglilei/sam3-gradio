@@ -111,6 +111,16 @@ def _padded_bbox(
     return x1, y1, x2 - x1, y2 - y1
 
 
+def _expanded_bbox(
+    points: np.ndarray,
+    padding: int,
+) -> tuple[int, int, int, int]:
+    """Return the unbounded context box used for padded-image candidates."""
+
+    x, y, width, height = cv2.boundingRect(points)
+    return x - padding, y - padding, width + 2 * padding, height + 2 * padding
+
+
 def _bbox_iou(first: Sequence[int], second: Sequence[int]) -> float:
     ax, ay, aw, ah = first
     bx, by, bw, bh = second
@@ -140,6 +150,87 @@ def _greedy_nms(
             continue
         kept.append((bbox, score))
     return kept
+
+
+def _partial_ccoeff_score_map(
+    image: np.ndarray,
+    template: np.ndarray,
+    padding: int,
+) -> np.ndarray:
+    """Compute CCOEFF scores while ignoring pixels introduced by padding."""
+
+    image_height, image_width = image.shape[:2]
+    template_height, template_width = template.shape[:2]
+    padded_height = image_height + 2 * padding
+    padded_width = image_width + 2 * padding
+
+    if image.ndim == 2:
+        image_channels = (image.astype(np.float32, copy=False),)
+        template_channels = (template.astype(np.float32, copy=False),)
+    else:
+        image_channels = tuple(
+            image[:, :, channel].astype(np.float32, copy=False)
+            for channel in range(image.shape[2])
+        )
+        template_channels = tuple(
+            template[:, :, channel].astype(np.float32, copy=False)
+            for channel in range(template.shape[2])
+        )
+    if len(image_channels) != len(template_channels):
+        raise ValueError("image and template channel counts must match")
+
+    valid = np.zeros((padded_height, padded_width), dtype=np.float32)
+    valid[
+        padding : padding + image_height,
+        padding : padding + image_width,
+    ] = 1.0
+    ones = np.ones((template_height, template_width), dtype=np.float32)
+    padded_channels = []
+    for channel in image_channels:
+        padded = np.zeros((padded_height, padded_width), dtype=np.float32)
+        padded[
+            padding : padding + image_height,
+            padding : padding + image_width,
+        ] = channel
+        padded_channels.append(padded)
+
+    sum_i = sum(
+        cv2.matchTemplate(padded, ones, cv2.TM_CCORR)
+        for padded in padded_channels
+    )
+    sum_i2 = sum(
+        cv2.matchTemplate(padded * padded, ones, cv2.TM_CCORR)
+        for padded in padded_channels
+    )
+    sum_t = sum(
+        cv2.matchTemplate(valid, channel, cv2.TM_CCORR)
+        for channel in template_channels
+    )
+    sum_t2 = sum(
+        cv2.matchTemplate(valid, channel * channel, cv2.TM_CCORR)
+        for channel in template_channels
+    )
+    sum_it = sum(
+        cv2.matchTemplate(padded, channel, cv2.TM_CCORR)
+        for padded, channel in zip(padded_channels, template_channels)
+    )
+
+    count = cv2.matchTemplate(valid, ones, cv2.TM_CCORR) * len(image_channels)
+    count = np.maximum(count, 1.0)
+    mean_product_i = (sum_i * sum_i) / count
+    mean_product_t = (sum_t * sum_t) / count
+    variance_i = np.maximum(sum_i2 - mean_product_i, 0.0)
+    variance_t = np.maximum(sum_t2 - mean_product_t, 0.0)
+    covariance = sum_it - (sum_i * sum_t) / count
+    denominator = np.sqrt(variance_i * variance_t)
+    score_map = np.full_like(covariance, -1.0, dtype=np.float32)
+    np.divide(
+        covariance,
+        denominator,
+        out=score_map,
+        where=denominator > 1e-6,
+    )
+    return np.clip(score_map, -1.0, 1.0)
 
 
 def match_periodic_instances(
@@ -193,33 +284,75 @@ def match_periodic_instances(
     if not _template_has_spatial_variation(template):
         raise ValueError("the template has no intensity variation")
 
-    score_map = cv2.matchTemplate(image, template, cv2.TM_CCOEFF_NORMED)
-    candidates = [
-        (
-            (int(x), int(y), template_width, template_height),
-            score,
+    # The original template includes expand_threshold pixels of context. Pad
+    # with a validity mask and calculate partial CCOEFF so synthetic pixels
+    # cannot affect scores at an image edge. Candidate polygons are checked
+    # against the unpadded image below, so padding can never become geometry.
+    image_padding = expand_threshold
+    if image_padding:
+        score_map = _partial_ccoeff_score_map(image, template, image_padding)
+        # Keep the historical score map for every fully in-image template
+        # origin; this makes interior coordinates and scores independent of
+        # the padding.
+        original_score_map = cv2.matchTemplate(
+            image,
+            template,
+            cv2.TM_CCOEFF_NORMED,
         )
-        for x, y, score in _local_peak_candidates(
-            score_map,
-            match_threshold,
-        )
-    ]
+        original_score_height, original_score_width = original_score_map.shape
+        score_map[
+            image_padding : image_padding + original_score_height,
+            image_padding : image_padding + original_score_width,
+        ] = original_score_map
+    else:
+        # With no expansion there are no out-of-image template pixels; keep
+        # the exact historical OpenCV score map and coordinate domain.
+        score_map = cv2.matchTemplate(image, template, cv2.TM_CCOEFF_NORMED)
+
+    raw_candidates = _local_peak_candidates(
+        score_map,
+        match_threshold,
+    )
 
     # Always block the seed template itself. Existing annotations are padded in
     # the same way as the seed and suppress overlapping new candidates.
     blocker_boxes: list[tuple[int, int, int, int]] = [template_bbox]
     for index, existing in enumerate(all_segmentations):
         existing_points = _polygon_points(existing, f"all_segmentations[{index}]")
-        blocker_boxes.append(
-            _padded_bbox(
-                existing_points,
-                image_width,
-                image_height,
-                expand_threshold,
+        bounded_bbox = _padded_bbox(
+            existing_points,
+            image_width,
+            image_height,
+            expand_threshold,
+        )
+        blocker_boxes.append(bounded_bbox)
+        # A candidate at an edge retains its unbounded template box. Include
+        # the matching unbounded blocker as well, without changing interior
+        # blocker behaviour.
+        expanded_bbox = _expanded_bbox(existing_points, expand_threshold)
+        if expanded_bbox != bounded_bbox:
+            blocker_boxes.append(expanded_bbox)
+
+    relative_points = seed_points - np.array([template_x, template_y], dtype=np.int32)
+    candidates = []
+    for raw_x, raw_y, score in raw_candidates:
+        x = int(raw_x) - image_padding
+        y = int(raw_y) - image_padding
+        matched_points = relative_points + np.array([x, y], dtype=np.int32)
+        if (
+            np.any(matched_points[:, 0] < 0)
+            or np.any(matched_points[:, 0] >= image_width)
+            or np.any(matched_points[:, 1] < 0)
+            or np.any(matched_points[:, 1] >= image_height)
+        ):
+            continue
+        candidates.append(
+            (
+                (x, y, template_width, template_height),
+                score,
             )
         )
 
-    relative_points = seed_points - np.array([template_x, template_y], dtype=np.int32)
     matches = []
     for bbox, score in _greedy_nms(candidates, blocker_boxes, nms_threshold):
         x, y, _, _ = bbox

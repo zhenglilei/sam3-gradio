@@ -707,6 +707,7 @@ def _export_template_match_selection_impl(
                     seed_mask,
                     int(translation[0]),
                     int(translation[1]),
+                    allow_clip=bool(match.get("edge_refined")),
                 )
                 masks.append(mask)
                 flat_masks.append(mask)

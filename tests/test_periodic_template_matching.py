@@ -25,6 +25,17 @@ def _periodic_image():
     return image, origins, seed
 
 
+def _edge_periodic_image():
+    image = np.full((100, 100, 3), 30, dtype=np.uint8)
+    origins = [(45, 45), (0, 45), (89, 45), (45, 0), (45, 89)]
+    for x, y in origins:
+        cv2.rectangle(image, (x, y), (x + 10, y + 10), (220, 220, 220), -1)
+        cv2.rectangle(image, (x + 3, y + 3), (x + 7, y + 7), (80, 80, 80), -1)
+        cv2.circle(image, (x + 2, y + 8), 1, (255, 255, 255), -1)
+    seed = [[45, 45], [55, 45], [55, 55], [45, 55]]
+    return image, origins, seed
+
+
 class PeriodicTemplateMatchingTest(unittest.TestCase):
     def test_repeated_polygon_is_translated_and_existing_annotation_is_blocked(self):
         image, _, seed = _periodic_image()
@@ -113,6 +124,92 @@ class PeriodicTemplateMatchingTest(unittest.TestCase):
                         label="blank",
                         expand_threshold=2,
                     )
+
+    def test_padding_finds_legal_instances_on_all_four_image_edges(self):
+        image, origins, seed = _edge_periodic_image()
+
+        matches = match_periodic_instances(
+            image,
+            seed,
+            label="edge-part",
+            match_threshold=0.99,
+            expand_threshold=5,
+            nms_threshold=0.3,
+        )
+
+        matched_origins = {
+            (min(point[0] for point in match["segmentation"]),
+             min(point[1] for point in match["segmentation"]))
+            for match in matches
+        }
+        self.assertEqual(
+            matched_origins,
+            set(origins[1:]),
+        )
+        self.assertEqual(len(matches), 4)
+        for match in matches:
+            self.assertTrue(
+                all(
+                    0 <= x < image.shape[1] and 0 <= y < image.shape[0]
+                    for x, y in match["segmentation"]
+                )
+            )
+
+    def test_edge_blocker_suppresses_match_and_padding_does_not_emit_external_peak(self):
+        image, _, seed = _edge_periodic_image()
+        left_edge = [[0, 45], [10, 45], [10, 55], [0, 55]]
+
+        matches = match_periodic_instances(
+            image,
+            seed,
+            label="edge-part",
+            match_threshold=0.99,
+            expand_threshold=5,
+            nms_threshold=0.3,
+            all_segmentations=[left_edge],
+        )
+
+        self.assertEqual(len(matches), 3)
+        self.assertNotIn(
+            (0, 45),
+            {
+                (
+                    min(point[0] for point in match["segmentation"]),
+                    min(point[1] for point in match["segmentation"]),
+                )
+                for match in matches
+            },
+        )
+        for match in matches:
+            self.assertTrue(
+                all(
+                    0 <= x < image.shape[1] and 0 <= y < image.shape[0]
+                    for x, y in match["segmentation"]
+                )
+                )
+
+    def test_zero_expansion_keeps_original_template_match_domain(self):
+        image, _, seed = _periodic_image()
+
+        matches = match_periodic_instances(
+            image,
+            seed,
+            label="periodic-part",
+            match_threshold=0.99,
+            expand_threshold=0,
+            nms_threshold=0.3,
+        )
+
+        self.assertEqual(
+            {
+                (
+                    min(point[0] for point in match["segmentation"]),
+                    min(point[1] for point in match["segmentation"]),
+                )
+                for match in matches
+            },
+            {(57, 22), (102, 22)},
+        )
 
     def test_excessive_local_peak_count_is_rejected_before_nms(self):
         score_map = np.zeros((130, 130), dtype=np.float32)

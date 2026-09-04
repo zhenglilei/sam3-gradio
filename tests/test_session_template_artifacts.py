@@ -500,6 +500,72 @@ class SessionTemplateArtifactTests(unittest.TestCase):
         expected[4:6, 4:6] = True
         np.testing.assert_array_equal(workflow["match_masks_fullres_bool"][0], expected)
 
+    def test_export_rebuilds_safely_clipped_edge_refinement(self):
+        source_state, image_state, pvs_state = _states()
+        source_state.update(
+            {
+                "source_width": 20,
+                "source_height": 6,
+                "crop_bbox_xyxy": [0, 0, 20, 6],
+            }
+        )
+        image_state["crop_bbox_xyxy"] = [0, 0, 20, 6]
+        seed = np.zeros((6, 20), dtype=bool)
+        seed[2:4, 10:20] = True
+        pvs_state["instances"] = {
+            1: {"id": 1, "mask_fullres_bool": seed},
+        }
+        template_state = {
+            "session_id": "a" * 32,
+            "source_image_id": "source-1",
+            "workspace_image_id": "workspace-1",
+            "result": {
+                "schema_version": 2,
+                "groups": [
+                    {
+                        "group_id": "PVS-1",
+                        "group_label": "Ax",
+                        "source_instance_id": 1,
+                        "matches": [
+                            {
+                                "match_id": 1,
+                                "score": 0.91,
+                                "translation_xy": [1, 0],
+                                "edge_refined": True,
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+        published = []
+
+        download, _status = callbacks._export_template_match_selection_impl(
+            {
+                "_publish_template_match_export": (
+                    lambda source, workflow, source_state_arg, image_state_arg: (
+                        published.append(workflow) or Path("selected.zip"),
+                        workflow["result"],
+                    )
+                ),
+                "_source_image_cache_get": lambda state: Image.new(
+                    "RGB", (20, 6), "white"
+                ),
+            },
+            source_state,
+            image_state,
+            pvs_state,
+            template_state,
+            ["PVS-1"],
+        )
+
+        self.assertEqual(download, "selected.zip")
+        rebuilt = published[0]["match_masks_fullres_bool"][0]
+        self.assertEqual(np.count_nonzero(rebuilt), 18)
+        expected = np.zeros((6, 20), dtype=bool)
+        expected[2:4, 11:20] = True
+        np.testing.assert_array_equal(rebuilt, expected)
+
     def test_export_selected_groups_rejects_unknown_group(self):
         source_state, image_state, pvs_state = _states()
         pvs_state["instances"][1].update(

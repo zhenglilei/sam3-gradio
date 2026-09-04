@@ -11,6 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import template_match_workflow as workflow_module
 from template_match_workflow import (
     map_crop_mask_to_source,
     render_template_overlay,
@@ -269,6 +270,135 @@ class TemplateMatchWorkflowTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "clipped by source bounds"):
             translate_source_mask(mask, 1, 0)
+
+    def test_translate_source_mask_allows_only_safe_edge_clipping(self):
+        mask = np.zeros((20, 20), dtype=bool)
+        mask[5:10, 10:20] = True
+
+        translated = translate_source_mask(
+            mask,
+            1,
+            0,
+            allow_clip=True,
+            min_visible_ratio=0.9,
+        )
+
+        self.assertEqual(np.count_nonzero(translated), 45)
+        with self.assertRaisesRegex(ValueError, "too little visible area"):
+            translate_source_mask(
+                mask,
+                2,
+                0,
+                allow_clip=True,
+                min_visible_ratio=0.9,
+            )
+
+    def test_horizontal_edge_refinement_requires_score_gain(self):
+        image = np.zeros((20, 40), dtype=np.uint8)
+        template = np.arange(25, dtype=np.uint8).reshape(5, 5)
+
+        def score_with_small_gain(_image, _template, x, _y, **_kwargs):
+            return (0.52 if x == 1 else 0.50), 1.0
+
+        with mock.patch(
+            "template_match_workflow._partial_ccoeff_at",
+            side_effect=score_with_small_gain,
+        ):
+            rejected = workflow_module._refine_horizontal_edge_translation(
+                image,
+                template,
+                [0, 5, 5, 10],
+                edge_margin=5,
+                search_radius=2,
+            )
+        self.assertEqual(rejected["delta_x"], 0)
+
+        def score_with_clear_gain(_image, _template, x, _y, **_kwargs):
+            return (0.54 if x == 1 else 0.50), 1.0
+
+        with mock.patch(
+            "template_match_workflow._partial_ccoeff_at",
+            side_effect=score_with_clear_gain,
+        ):
+            accepted = workflow_module._refine_horizontal_edge_translation(
+                image,
+                template,
+                [0, 5, 5, 10],
+                edge_margin=5,
+                search_radius=2,
+            )
+        self.assertEqual(accepted["delta_x"], 1)
+        self.assertAlmostEqual(accepted["score_gain"], 0.04)
+
+    def test_workflow_refines_right_edge_and_safely_clips_mask(self):
+        image = np.full((60, 100, 3), 30, dtype=np.uint8)
+        rng = np.random.default_rng(20260903)
+        template = rng.integers(50, 240, size=(10, 10, 3), dtype=np.uint8)
+        image[10:20, 10:20] = template
+        image[30:40, 91:100] = template[:, :9]
+        seed = np.zeros((60, 100), dtype=bool)
+        seed[10:20, 10:20] = True
+        state = {
+            "active_instance_id": 1,
+            "instances": {1: _instance(1, seed, "accepted")},
+        }
+        coarse_match = {
+            "segmentation": [[90, 30], [99, 30], [99, 39], [90, 39]],
+            "label": "template",
+            "matchScore": 0.95,
+        }
+
+        with mock.patch(
+            "template_match_workflow.match_periodic_instances",
+            return_value=[coarse_match],
+        ):
+            result = run_template_match_workflow(
+                image,
+                [0, 0, image.shape[1], image.shape[0]],
+                state,
+                expand_threshold=20,
+            )
+
+        self.assertEqual(result["result"]["match_count"], 1)
+        match = result["result"]["matches"][0]
+        self.assertEqual(match["translation_xy"], [81, 20])
+        self.assertEqual(match["coarse_translation_xy"], [80, 20])
+        self.assertEqual(match["edge_refine_delta_xy"], [1, 0])
+        self.assertTrue(match["edge_refined"])
+        self.assertAlmostEqual(match["visible_ratio"], 0.9)
+        self.assertEqual(np.count_nonzero(result["match_masks_fullres_bool"][0]), 90)
+
+    def test_workflow_does_not_refine_an_interior_candidate(self):
+        image = np.zeros((60, 100, 3), dtype=np.uint8)
+        seed = np.zeros((60, 100), dtype=bool)
+        seed[10:20, 10:20] = True
+        state = {
+            "active_instance_id": 1,
+            "instances": {1: _instance(1, seed, "accepted")},
+        }
+        coarse_match = {
+            "segmentation": [[45, 30], [54, 30], [54, 39], [45, 39]],
+            "label": "template",
+            "matchScore": 0.95,
+        }
+
+        with mock.patch(
+            "template_match_workflow.match_periodic_instances",
+            return_value=[coarse_match],
+        ), mock.patch(
+            "template_match_workflow._partial_ccoeff_at"
+        ) as scorer:
+            result = run_template_match_workflow(
+                image,
+                [0, 0, image.shape[1], image.shape[0]],
+                state,
+                expand_threshold=10,
+            )
+
+        scorer.assert_not_called()
+        match = result["result"]["matches"][0]
+        self.assertEqual(match["translation_xy"], [35, 20])
+        self.assertNotIn("edge_refined", match)
 
     def test_overflow_match_candidate_is_skipped(self):
         image = np.zeros((20, 20, 3), dtype=np.uint8)
