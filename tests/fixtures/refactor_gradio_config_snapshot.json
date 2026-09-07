@@ -1579,7 +1579,7 @@
     {
       "props": {
         "show_label": false,
-        "value": "### 叠层预测\n选择已制作的 O3 整体版图和当前工艺层，查看下一层的预测位置与两层交叠区域。",
+        "value": "### 叠层预测\n选择已制作的主版图（如 O3、X3、C3）和当前工艺层，查看下一层位置与两层交叠区域。",
         "visible": true
       },
       "type": "markdown"
@@ -1613,7 +1613,7 @@
     {
       "props": {
         "choices": [],
-        "label": "整体版图（O3）",
+        "label": "主版图",
         "show_label": true,
         "visible": true
       },
