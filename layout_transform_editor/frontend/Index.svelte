@@ -928,7 +928,12 @@
 			}
 			updateCursor(eventToTarget(evt));
 			const subject = isGroupMode() ? activeGroupLabel() : "Canvas";
-			syncValue("canvas", subject + " 变换已同步；点击更新预览或创建实例后使用后端权威 mask");
+			const status = subject + " 变换已同步；点击更新预览或创建实例后使用后端权威 mask";
+			if (isGroupMode()) {
+				queueSyncValue("canvas", status);
+			} else {
+				syncValue("canvas", status);
+			}
 		}
 	}
 

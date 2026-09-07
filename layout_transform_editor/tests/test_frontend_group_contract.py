@@ -51,9 +51,18 @@ class LayoutTransformEditorGroupContractTests(unittest.TestCase):
         self.assertNotIn("syncValue(", body)
         self.assertNotIn("publishGroupIntent(", body)
 
-    def test_pointer_up_commits_through_single_sync_path(self) -> None:
+    def test_pointer_up_debounces_group_and_keeps_legacy_immediate(self) -> None:
         body = _function_body(self.index_source, "onPointerUp")
-        self.assertEqual(body.count("syncValue("), 1)
+        self.assertEqual(body.count('queueSyncValue("canvas", status)'), 1)
+        self.assertEqual(body.count('syncValue("canvas", status)'), 1)
+        self.assertRegex(
+            body,
+            r"if \(isGroupMode\(\)\) \{\s*"
+            r'queueSyncValue\("canvas", status\);\s*'
+            r"\} else \{\s*"
+            r'syncValue\("canvas", status\);\s*'
+            r"\}",
+        )
         self.assertNotIn('dispatch("change")', body)
 
     def test_group_sync_only_replaces_group_intent(self) -> None:
