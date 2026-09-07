@@ -22,7 +22,6 @@ from layout_transform_utils import (
 
 
 DEFAULT_LAYER_ORDER = ("BSM", "ACT", "GE1", "GE2")
-_LAYER_TYPES = frozenset(DEFAULT_LAYER_ORDER)
 
 
 class OverlapGeometryError(ValueError):
@@ -57,9 +56,9 @@ def ordered_layers(layers: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
             raise OverlapGeometryError("layer ordinal must be an integer") from exc
         if ordinal < 0 or ordinal in ordinals:
             raise OverlapGeometryError("layer ordinals must be unique and non-negative")
-        layer_type = str(raw.get("layer_type") or "").strip().upper()
-        if layer_type not in _LAYER_TYPES:
-            raise OverlapGeometryError(f"unsupported layer type: {layer_type!r}")
+        layer_type = str(raw.get("layer_type") or "").strip()
+        if not layer_type:
+            raise OverlapGeometryError("layer type must not be empty")
         item = dict(raw)
         item["id"] = layer_id
         item["ordinal"] = ordinal

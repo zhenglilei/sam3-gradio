@@ -96,6 +96,65 @@ class OverlapAuthoringTests(unittest.TestCase):
             ],
         }
 
+    def test_labelme_json_is_one_layer_and_overlap_json_is_persisted(self):
+        payload = {
+            "version": "4.5.9",
+            "imagePath": "sample.jpg",
+            "imageWidth": 8,
+            "imageHeight": 6,
+            "shapes": [
+                {
+                    "label": "ACT-1",
+                    "shape_type": "polygon",
+                    "points": [[1, 1], [5, 1], [5, 4], [1, 4]],
+                },
+                {
+                    "label": "ACT-2",
+                    "shape_type": "polygon",
+                    "points": [[4, 2], [7, 2], [7, 5], [4, 5]],
+                },
+            ],
+        }
+        path = self._write_coco(payload, "labelme.json")
+        preview, summary = self.service.inspect_annotation_json(path)
+        self.assertEqual(preview.size, (8, 6))
+        self.assertEqual(preview.mode, "L")
+        self.assertTrue(np.asarray(preview).any())
+        self.assertIn("LabelMe", summary)
+        self.assertIn("2 个标注", summary)
+
+        draft = self.service.new_draft()
+        draft = self.service.set_name(draft, "O3_test")
+        draft = self.service.set_base_image(draft, _base(8, 6))
+        draft = self.service.add_layer_from_annotation(draft, path, "ACT")
+        draft = self.service.add_layer_from_annotation(
+            draft, path, "Custom-Metal"
+        )
+        self.assertEqual(
+            [layer["name"] for layer in draft["layers"]],
+            ["ACT", "Custom-Metal"],
+        )
+        saved = self.service.save(draft)
+        snapshot = self.store.get_layout(saved["layout_id"])
+        self.assertEqual(
+            [layer["layer_type"] for layer in snapshot["layers"]],
+            ["ACT", "Custom-Metal"],
+        )
+        self.assertEqual(
+            json.loads(snapshot["layers"][0]["annotation_json"])["shapes"],
+            payload["shapes"],
+        )
+        overlap = json.loads(snapshot["layers"][0]["next_overlap_json"])
+        self.assertEqual(overlap["metadata"]["layout_name"], "O3_test")
+        self.assertEqual(overlap["metadata"]["current_layer_type"], "ACT")
+        self.assertEqual(
+            overlap["metadata"]["next_layer_type"], "Custom-Metal"
+        )
+        self.assertEqual(overlap["images"][0]["width"], 8)
+        self.assertEqual(overlap["images"][0]["height"], 6)
+        self.assertGreater(overlap["annotations"][0]["area"], 0)
+        self.assertIsNone(snapshot["layers"][1]["next_overlap_json"])
+
     def test_coco_choices_union_and_add_layer_rereads_json(self):
         path = self._write_coco(self._coco_payload())
         choices = self.service.coco_image_choices(path)

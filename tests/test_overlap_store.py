@@ -158,8 +158,12 @@ class OverlapStoreTests(unittest.TestCase):
             self.create_default(
                 layers=[make_layer(str(index)) for index in range(MAX_LAYERS + 1)]
             )
+        custom = self.create_default(
+            name="custom", layers=[make_layer("custom", "Metal-X")]
+        )
+        self.assertEqual(custom["layers"][0]["layer_type"], "Metal-X")
         with self.assertRaises(ValidationError):
-            self.create_default(layers=[make_layer("bad", "OTHER")])
+            self.create_default(name="blank", layers=[make_layer("bad", " ")])
 
     def test_soft_delete_and_visibility(self):
         snapshot = self.create_default()
@@ -366,6 +370,84 @@ class OverlapStoreTests(unittest.TestCase):
             1,
         )
 
+
+    def test_json_documents_persist_and_legacy_schema_migrates(self):
+        annotation = {"version": "4.5.9", "shapes": [{"label": "ACT"}]}
+        overlap = {"images": [{"id": 1}], "annotations": []}
+        created = self.create_default(
+            name="json",
+            layers=[
+                make_layer(
+                    "custom",
+                    "Custom",
+                    annotation_json=annotation,
+                    next_overlap_json=overlap,
+                )
+            ],
+        )
+        stored = created["layers"][0]
+        self.assertEqual(json.loads(stored["annotation_json"]), annotation)
+        self.assertEqual(json.loads(stored["next_overlap_json"]), overlap)
+
+        legacy_path = Path(self.tempdir.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE layouts (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                    board_type TEXT NOT NULL DEFAULT 'O3'
+                        CHECK (board_type = 'O3'),
+                    base_image_png BLOB NOT NULL, width INTEGER NOT NULL,
+                    height INTEGER NOT NULL, revision INTEGER NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+                CREATE TABLE layers (
+                    id TEXT PRIMARY KEY, layout_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    layer_type TEXT NOT NULL
+                        CHECK (layer_type IN ('BSM','ACT','GE1','GE2')),
+                    name TEXT NOT NULL, mask_png BLOB NOT NULL,
+                    mask_width INTEGER NOT NULL, mask_height INTEGER NOT NULL,
+                    mask_sha256 TEXT NOT NULL, transform_json TEXT NOT NULL,
+                    UNIQUE (layout_id, ordinal),
+                    FOREIGN KEY (layout_id) REFERENCES layouts(id)
+                        ON DELETE CASCADE
+                );
+                """
+            )
+            connection.execute(
+                "INSERT INTO layouts VALUES "
+                "('layout-1','legacy','O3',?,10,20,1,'a','b',NULL)",
+                (PNG,),
+            )
+            connection.execute(
+                "INSERT INTO layers VALUES "
+                "('layer-1','layout-1',0,'ACT','ACT',?,10,20,?,?)",
+                (
+                    PNG,
+                    hashlib.sha256(PNG).hexdigest(),
+                    json.dumps(make_transform()),
+                ),
+            )
+        legacy = OverlapLayoutStore(legacy_path)
+        try:
+            snapshot = legacy.get_layout("layout-1")
+            self.assertEqual(snapshot["layers"][0]["layer_type"], "ACT")
+            self.assertIsNone(snapshot["layers"][0]["annotation_json"])
+            self.assertIsNone(snapshot["layers"][0]["next_overlap_json"])
+            updated = legacy.update_layout(
+                "layout-1",
+                1,
+                name="legacy",
+                base_image_png=PNG,
+                width=10,
+                height=20,
+                layers=[make_layer("new", "Custom")],
+            )
+            self.assertEqual(updated["layers"][0]["layer_type"], "Custom")
+        finally:
+            legacy.close()
 
 if __name__ == "__main__":
     unittest.main()

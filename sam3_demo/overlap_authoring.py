@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, UnidentifiedImageError
 
 from layout_transform_utils import (
     foreground_bbox_xyxy,
     make_layout_transform_v2,
     mask_pixel_sha256,
 )
+from sam3_demo.overlap_geometry import calculate_next_layer_overlap
 from sam3_demo.overlap_store import OverlapLayoutStore, ValidationError
 
 
@@ -430,6 +431,188 @@ def _coco_image_mask(
         union.astype(np.uint8) * 255, mode="L"
     )
 
+def _load_annotation_document(value: Any) -> dict[str, Any]:
+    """Parse one uploaded JSON whose complete contents define one layer."""
+    candidate = (
+        value if isinstance(value, (str, Path)) else getattr(value, "name", None)
+    )
+    if not isinstance(candidate, (str, Path)) or not str(candidate).strip():
+        raise OverlapAuthoringError("请先上传层标注 JSON 文件")
+    path = Path(candidate)
+    try:
+        size = path.stat().st_size
+        if size > MAX_COCO_JSON_BYTES:
+            raise OverlapAuthoringError(
+                f"JSON 文件超过大小上限 {MAX_COCO_JSON_BYTES // (1024 * 1024)} MiB"
+            )
+        text = path.read_text(encoding="utf-8")
+    except OverlapAuthoringError:
+        raise
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise OverlapAuthoringError("层标注 JSON 文件无法读取") from exc
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-standard JSON number")
+
+    try:
+        payload = json.loads(text, parse_constant=reject_constant)
+    except (MemoryError, RecursionError, TypeError, ValueError) as exc:
+        raise OverlapAuthoringError("层标注 JSON 无法解析") from exc
+    if not isinstance(payload, dict):
+        raise OverlapAuthoringError("层标注 JSON 顶层必须是对象")
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    if "shapes" in payload:
+        width = _coco_dimension(payload.get("imageWidth"), field="imageWidth")
+        height = _coco_dimension(payload.get("imageHeight"), field="imageHeight")
+        if width * height > MAX_COCO_PIXELS:
+            raise OverlapAuthoringError("LabelMe 图片像素数量超过上限")
+        shapes = payload.get("shapes")
+        if not isinstance(shapes, list) or not shapes:
+            raise OverlapAuthoringError("LabelMe JSON 缺少 shapes 或 shapes 为空")
+        if len(shapes) > MAX_COCO_ANNOTATIONS:
+            raise OverlapAuthoringError("LabelMe shapes 数量超过上限")
+        mask_image = Image.new("L", (width, height), 0)
+        drawer = ImageDraw.Draw(mask_image)
+        for index, shape in enumerate(shapes):
+            if not isinstance(shape, dict):
+                raise OverlapAuthoringError(f"LabelMe shape {index} 数据无效")
+            shape_type = str(shape.get("shape_type") or "polygon").strip().lower()
+            if shape_type != "polygon":
+                raise OverlapAuthoringError(
+                    f"LabelMe shape {index} 类型 {shape_type!r} 暂不支持"
+                )
+            points = shape.get("points")
+            if not isinstance(points, list) or len(points) < 3:
+                raise OverlapAuthoringError(
+                    f"LabelMe shape {index} 至少需要 3 个点"
+                )
+            normalized_points: list[tuple[float, float]] = []
+            for point in points:
+                if not isinstance(point, (list, tuple)) or len(point) != 2:
+                    raise OverlapAuthoringError(
+                        f"LabelMe shape {index} 点坐标无效"
+                    )
+                x, y = point
+                if (
+                    isinstance(x, bool)
+                    or isinstance(y, bool)
+                    or not isinstance(x, (int, float))
+                    or not isinstance(y, (int, float))
+                ):
+                    raise OverlapAuthoringError(
+                        f"LabelMe shape {index} 点坐标无效"
+                    )
+                x, y = float(x), float(y)
+                if not math.isfinite(x) or not math.isfinite(y):
+                    raise OverlapAuthoringError(
+                        f"LabelMe shape {index} 点坐标不是有限数"
+                    )
+                normalized_points.append((x, y))
+            drawer.polygon(normalized_points, fill=255)
+        if not np.asarray(mask_image, dtype=np.uint8).any():
+            raise OverlapAuthoringError("LabelMe 标注合并后没有前景")
+        return {
+            "format": "LabelMe",
+            "mask": mask_image,
+            "annotation_json": canonical,
+            "summary": f"LabelMe · {len(shapes)} 个标注 · {width}×{height}",
+        }
+
+    if "images" in payload or "annotations" in payload:
+        dataset = _load_coco_dataset(path)
+        if len(dataset["images"]) != 1:
+            raise OverlapAuthoringError(
+                "每个 JSON 必须只对应一层；COCO 文件只能包含一张图片"
+            )
+        record = dataset["images"][0]
+        _selected_key, mask = _coco_image_mask(dataset)
+        annotation_count = len(dataset["annotations_by_image"][record["key"]])
+        return {
+            "format": "COCO",
+            "mask": mask,
+            "annotation_json": canonical,
+            "summary": (
+                f"COCO · {annotation_count} 个标注 · "
+                f"{record['width']}×{record['height']}"
+            ),
+        }
+    raise OverlapAuthoringError("仅支持 LabelMe 或单图 COCO JSON 标注")
+
+
+def _uncompressed_rle_counts(mask: np.ndarray) -> list[int]:
+    counts: list[int] = []
+    previous = 0
+    run = 0
+    for value in np.asarray(mask, dtype=np.uint8).ravel(order="F"):
+        pixel = int(value)
+        if pixel == previous:
+            run += 1
+        else:
+            counts.append(run)
+            run = 1
+            previous = pixel
+    counts.append(run)
+    return counts
+
+
+def _overlap_annotation_document(
+    layout_name: str,
+    current: dict[str, Any],
+    following: dict[str, Any],
+    intersection: np.ndarray,
+) -> dict[str, Any]:
+    height, width = intersection.shape
+    area = int(intersection.sum())
+    annotations: list[dict[str, Any]] = []
+    if area:
+        ys, xs = np.where(intersection)
+        annotations.append(
+            {
+                "id": 1,
+                "image_id": 1,
+                "category_id": 1,
+                "segmentation": {
+                    "size": [height, width],
+                    "counts": _uncompressed_rle_counts(intersection),
+                },
+                "area": area,
+                "bbox": [
+                    int(xs.min()),
+                    int(ys.min()),
+                    int(xs.max() - xs.min() + 1),
+                    int(ys.max() - ys.min() + 1),
+                ],
+                "iscrowd": 1,
+            }
+        )
+    category = f"{current['layer_type']}∩{following['layer_type']}"
+    return {
+        "images": [
+            {
+                "id": 1,
+                "file_name": f"{layout_name}_{category}_overlap.png",
+                "width": width,
+                "height": height,
+            }
+        ],
+        "annotations": annotations,
+        "categories": [{"id": 1, "name": category}],
+        "metadata": {
+            "layout_name": layout_name,
+            "current_layer_id": current["id"],
+            "current_layer_type": current["layer_type"],
+            "next_layer_id": following["id"],
+            "next_layer_type": following["layer_type"],
+        },
+    }
+
 
 def _data_url(payload: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
@@ -471,6 +654,7 @@ def _layer_transform(
     ] if current.get("pivot_x") is not None and current.get("pivot_y") is not None else None
     return make_layout_transform_v2(
         session_id="overlap-authoring",
+
         layout_id=draft["draft_id"],
         image_id=None,
         target_size=(int(draft["width"]), int(draft["height"])),
@@ -551,16 +735,19 @@ class OverlapAuthoringService:
         mask: Any,
         layer_type: Any,
         name: Any = None,
+        annotation_json: Any = None,
     ) -> dict[str, Any]:
         out = _require_draft(draft)
         if not out.get("base_image_png"):
             raise OverlapAuthoringError("请先上传整体版图")
         if len(out["layers"]) >= MAX_LAYERS:
             raise OverlapAuthoringError(f"最多支持 {MAX_LAYERS} 层")
-        layer_type = str(layer_type or "").strip().upper()
-        if layer_type not in LAYER_TYPES:
-            raise OverlapAuthoringError("层分类必须是 BSM、ACT、GE1 或 GE2")
-        layer_name = str(name or "").strip() or f"{layer_type} {len(out['layers']) + 1}"
+        layer_type = str(layer_type or "").strip()
+        if not layer_type:
+            raise OverlapAuthoringError("请输入层分类")
+        if len(layer_type) > 128:
+            raise OverlapAuthoringError("层分类最多 128 个字符")
+        layer_name = str(name or "").strip() or layer_type
         if len(layer_name) > 128:
             raise OverlapAuthoringError("层名称最多 128 个字符")
         mask_image, mask_array = _normalise_mask(mask)
@@ -575,6 +762,7 @@ class OverlapAuthoringService:
             "mask_height": mask_image.height,
             "mask_sha256": hashlib.sha256(mask_png).hexdigest(),
             "transform": {},
+            "annotation_json": annotation_json,
         }
         if mask_image.size == (out["width"], out["height"]):
             x1, y1, x2, y2 = foreground_bbox_xyxy(mask_array)
@@ -653,6 +841,29 @@ class OverlapAuthoringService:
         mask = self.coco_image_mask(json_file, selected_image_id)
         return self.add_layer(draft, mask, layer_type, name)
 
+    def inspect_annotation_json(
+        self,
+        json_file: Any,
+    ) -> tuple[Image.Image, str]:
+        """Preview a LabelMe or single-image COCO document as one layer."""
+        document = _load_annotation_document(json_file)
+        return document["mask"], document["summary"]
+
+    def add_layer_from_annotation(
+        self,
+        draft: Any,
+        json_file: Any,
+        layer_type: Any,
+    ) -> dict[str, Any]:
+        """Re-read one JSON and add its complete annotation as one layer."""
+        document = _load_annotation_document(json_file)
+        return self.add_layer(
+            draft,
+            document["mask"],
+            layer_type,
+            annotation_json=document["annotation_json"],
+        )
+
     def remove_layer(self, draft: Any, layer_id: Any) -> dict[str, Any]:
         out = _require_draft(draft)
         layer_id = str(layer_id or "")
@@ -719,7 +930,7 @@ class OverlapAuthoringService:
             transform.update(
                 {
                     "group_id": layer["id"],
-                    "label": f"{layer['ordinal'] + 1}. {layer['name']} ({layer['layer_type']})",
+                    "label": f"{layer['ordinal'] + 1}. {layer['layer_type']}",
                     "group_mask_pixel_sha256": mask_pixel_sha256(mask),
                 }
             )
@@ -910,12 +1121,47 @@ class OverlapAuthoringService:
             raise OverlapAuthoringError("请上传整体版图")
         if len(current["layers"]) < 2:
             raise OverlapAuthoringError("至少需要两层标注")
+        geometry_layers: list[dict[str, Any]] = []
+        for ordinal, layer in enumerate(current["layers"]):
+            mask = np.asarray(
+                _decode_png(
+                    layer["mask_png"],
+                    mode="L",
+                    field=f"{layer['layer_type']} 标注",
+                ),
+                dtype=np.uint8,
+            ) > 0
+            geometry_layers.append(
+                {
+                    "id": layer["id"],
+                    "ordinal": ordinal,
+                    "layer_type": layer["layer_type"],
+                    "name": layer["name"],
+                    "transform": layer["transform"],
+                    "mask": mask,
+                }
+            )
+        overlap_documents: dict[str, dict[str, Any]] = {}
+        for layer in geometry_layers[:-1]:
+            result = calculate_next_layer_overlap(
+                geometry_layers,
+                layer["id"],
+                (current["width"], current["height"]),
+            )
+            overlap_documents[layer["id"]] = _overlap_annotation_document(
+                current["name"],
+                result["current_layer"],
+                result["next_layer"],
+                result["intersection_mask"],
+            )
         payload_layers = [
             {
                 "id": layer["id"],
                 "ordinal": ordinal,
                 "layer_type": layer["layer_type"],
                 "name": layer["name"],
+                "annotation_json": layer.get("annotation_json"),
+                "next_overlap_json": overlap_documents.get(layer["id"]),
                 "mask_png": layer["mask_png"],
                 "mask_width": layer["mask_width"],
                 "mask_height": layer["mask_height"],

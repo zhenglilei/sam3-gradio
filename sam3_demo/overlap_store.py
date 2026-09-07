@@ -30,7 +30,6 @@ MAX_LAYERS = 32
 MIN_LAYERS = 1
 BUSY_TIMEOUT_MS = 30_000
 
-_LAYER_TYPES = frozenset(("BSM", "ACT", "GE1", "GE2"))
 _TRANSFORM_FIELDS = (
     "center_x",
     "center_y",
@@ -173,6 +172,30 @@ def _normalise_transform(value: Any, field: str) -> Tuple[Dict[str, Any], str]:
         raise ValidationError(f"{field} must be an object")
     return canonical, encoded
 
+def _normalise_optional_json(value: Any, field: str) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(f"{field} must contain valid JSON") from exc
+    if not isinstance(value, Mapping):
+        raise ValidationError(f"{field} must be a JSON object")
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValidationError(f"{field} must be JSON serialisable") from exc
+    if len(encoded.encode("utf-8")) > 64 * 1024 * 1024:
+        raise ValidationError(f"{field} exceeds 64 MiB")
+    return encoded
+
 
 def _normalise_revision(value: Any) -> int:
     if not _is_positive_integer(value):
@@ -206,14 +229,15 @@ class OverlapLayoutStore:
             id TEXT PRIMARY KEY,
             layout_id TEXT NOT NULL,
             ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-            layer_type TEXT NOT NULL
-                CHECK (layer_type IN ('BSM', 'ACT', 'GE1', 'GE2')),
+            layer_type TEXT NOT NULL,
             name TEXT NOT NULL,
             mask_png BLOB NOT NULL,
             mask_width INTEGER NOT NULL CHECK (mask_width > 0),
             mask_height INTEGER NOT NULL CHECK (mask_height > 0),
             mask_sha256 TEXT NOT NULL CHECK (length(mask_sha256) = 64),
             transform_json TEXT NOT NULL,
+            annotation_json TEXT,
+            next_overlap_json TEXT,
             UNIQUE (layout_id, ordinal),
             FOREIGN KEY (layout_id) REFERENCES layouts(id) ON DELETE CASCADE
         )
@@ -262,12 +286,70 @@ class OverlapLayoutStore:
         with self._lock:
             try:
                 self._conn.execute("BEGIN")
-                for statement in self._SCHEMA:
+                for statement in self._SCHEMA[:2]:
+                    self._conn.execute(statement)
+                self._migrate_layers_schema_locked()
+                for statement in self._SCHEMA[2:]:
                     self._conn.execute(statement)
                 self._conn.commit()
             except sqlite3.Error as exc:
                 self._rollback_quietly()
                 raise OverlapStoreError("could not initialise overlap schema") from exc
+
+    def _migrate_layers_schema_locked(self) -> None:
+        """Upgrade old fixed-category rows without losing saved layouts."""
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'layers'"
+        ).fetchone()
+        if row is None:
+            return
+        table_sql = str(row["sql"] or "")
+        columns = {
+            str(item["name"])
+            for item in self._conn.execute("PRAGMA table_info(layers)").fetchall()
+        }
+        missing_json = {"annotation_json", "next_overlap_json"} - columns
+        if not missing_json and "layer_type IN" not in table_sql:
+            return
+
+        annotation_expr = (
+            "annotation_json" if "annotation_json" in columns else "NULL"
+        )
+        overlap_expr = (
+            "next_overlap_json" if "next_overlap_json" in columns else "NULL"
+        )
+        self._conn.execute("DROP TABLE IF EXISTS layers_migrated")
+        self._conn.execute(
+            """
+            CREATE TABLE layers_migrated (
+                id TEXT PRIMARY KEY,
+                layout_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+                layer_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                mask_png BLOB NOT NULL,
+                mask_width INTEGER NOT NULL CHECK (mask_width > 0),
+                mask_height INTEGER NOT NULL CHECK (mask_height > 0),
+                mask_sha256 TEXT NOT NULL CHECK (length(mask_sha256) = 64),
+                transform_json TEXT NOT NULL,
+                annotation_json TEXT,
+                next_overlap_json TEXT,
+                UNIQUE (layout_id, ordinal),
+                FOREIGN KEY (layout_id) REFERENCES layouts(id) ON DELETE CASCADE
+            )
+            """
+        )
+        self._conn.execute(
+            "INSERT INTO layers_migrated "
+            "(id, layout_id, ordinal, layer_type, name, mask_png, mask_width, "
+            "mask_height, mask_sha256, transform_json, annotation_json, "
+            "next_overlap_json) "
+            "SELECT id, layout_id, ordinal, layer_type, name, mask_png, "
+            "mask_width, mask_height, mask_sha256, transform_json, "
+            f"{annotation_expr}, {overlap_expr} FROM layers"
+        )
+        self._conn.execute("DROP TABLE layers")
+        self._conn.execute("ALTER TABLE layers_migrated RENAME TO layers")
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -377,13 +459,12 @@ class OverlapLayoutStore:
             else:
                 layer_id = self._new_id()
 
-            layer_type = entry.get("layer_type")
-            if not isinstance(layer_type, str) or layer_type not in _LAYER_TYPES:
-                raise ValidationError(
-                    f"layer {ordinal} layer_type must be one of "
-                    "BSM, ACT, GE1, GE2"
-                )
-            layer_name = _normalise_name(entry.get("name"), f"layer {ordinal} name")
+            layer_type = _normalise_name(
+                entry.get("layer_type"), f"layer {ordinal} layer_type"
+            )
+            layer_name = _normalise_name(
+                entry.get("name", layer_type), f"layer {ordinal} name"
+            )
             mask_png = _normalise_png(entry.get("mask_png"), f"layer {ordinal} mask_png")
             mask_width = _normalise_dimension(
                 entry.get("mask_width"), f"layer {ordinal} mask_width"
@@ -413,6 +494,12 @@ class OverlapLayoutStore:
             transform, transform_json = _normalise_transform(
                 transform_value, f"layer {ordinal} transform"
             )
+            annotation_json = _normalise_optional_json(
+                entry.get("annotation_json"), f"layer {ordinal} annotation_json"
+            )
+            next_overlap_json = _normalise_optional_json(
+                entry.get("next_overlap_json"), f"layer {ordinal} next_overlap_json"
+            )
             prepared.append(
                 {
                     "id": layer_id,
@@ -425,6 +512,8 @@ class OverlapLayoutStore:
                     "mask_sha256": mask_sha256,
                     "transform": transform,
                     "transform_json": transform_json,
+                    "annotation_json": annotation_json,
+                    "next_overlap_json": next_overlap_json,
                 }
             )
         return prepared
@@ -476,6 +565,8 @@ class OverlapLayoutStore:
                     "mask_height": int(row["mask_height"]),
                     "mask_sha256": str(row["mask_sha256"]),
                     "transform": transform,
+                    "annotation_json": row["annotation_json"],
+                    "next_overlap_json": row["next_overlap_json"],
                 }
             )
         return snapshot
@@ -494,7 +585,8 @@ class OverlapLayoutStore:
             raise NotFoundError(f"layout {layout_id!r} was not found")
         layer_rows = self._conn.execute(
             "SELECT id, ordinal, layer_type, name, mask_png, mask_width, "
-            "mask_height, mask_sha256, transform_json FROM layers "
+            "mask_height, mask_sha256, transform_json, annotation_json, "
+            "next_overlap_json FROM layers "
             "WHERE layout_id = ? ORDER BY ordinal ASC",
             (layout_id,),
         ).fetchall()
@@ -539,8 +631,9 @@ class OverlapLayoutStore:
             )
             self._conn.executemany(
                 "INSERT INTO layers (id, layout_id, ordinal, layer_type, name, "
-                "mask_png, mask_width, mask_height, mask_sha256, transform_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "mask_png, mask_width, mask_height, mask_sha256, transform_json, "
+                "annotation_json, next_overlap_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         layer["id"],
@@ -553,6 +646,8 @@ class OverlapLayoutStore:
                         layer["mask_height"],
                         layer["mask_sha256"],
                         layer["transform_json"],
+                        layer["annotation_json"],
+                        layer["next_overlap_json"],
                     )
                     for layer in prepared_layers
                 ],
@@ -658,8 +753,9 @@ class OverlapLayoutStore:
             self._conn.execute("DELETE FROM layers WHERE layout_id = ?", (layout_id,))
             self._conn.executemany(
                 "INSERT INTO layers (id, layout_id, ordinal, layer_type, name, "
-                "mask_png, mask_width, mask_height, mask_sha256, transform_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "mask_png, mask_width, mask_height, mask_sha256, transform_json, "
+                "annotation_json, next_overlap_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         layer["id"],
@@ -672,6 +768,8 @@ class OverlapLayoutStore:
                         layer["mask_height"],
                         layer["mask_sha256"],
                         layer["transform_json"],
+                        layer["annotation_json"],
+                        layer["next_overlap_json"],
                     )
                     for layer in prepared_layers
                 ],
