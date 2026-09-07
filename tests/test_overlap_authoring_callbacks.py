@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from sam3_demo.overlap_authoring_callbacks import (
     add_authoring_layer,
     apply_authoring_editor,
     delete_authoring_layout,
+    inspect_authoring_coco,
     draft_to_view,
     load_authoring_layout,
     new_authoring_draft,
@@ -71,6 +73,31 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
         draft = self.authoring.add_layer(draft, _mask(), "GE1", "gate")
         return draft
 
+    def _write_coco(self):
+        path = Path(self.tempdir.name) / "labels.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "images": [
+                        {
+                            "id": 7,
+                            "file_name": "sample.png",
+                            "width": 6,
+                            "height": 5,
+                        }
+                    ],
+                    "annotations": [
+                        {
+                            "image_id": 7,
+                            "segmentation": [[1, 1, 5, 1, 5, 4, 1, 4]],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
     def test_empty_and_view_contract_are_stable(self):
         view = new_authoring_draft()
         self.assertEqual(len(view), 6)
@@ -86,8 +113,9 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
         draft = new_authoring_draft()[0]
         draft = set_authoring_name("sample", draft)[0]
         draft = set_authoring_base_image(_base(), draft)[0]
-        draft = add_authoring_layer("active", "ACT", _mask(), draft)[0]
-        draft = add_authoring_layer("gate", "GE1", _mask(), draft)[0]
+        coco = self._write_coco()
+        draft = add_authoring_layer("active", "ACT", coco, "int:7", draft)[0]
+        draft = add_authoring_layer("gate", "GE1", coco, "int:7", draft)[0]
         self.assertEqual(len(draft["layers"]), 2)
         first, second = [layer["id"] for layer in draft["layers"]]
         selected = select_authoring_layer(first, draft)
@@ -99,7 +127,9 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
     def test_failures_preserve_previous_draft(self):
         draft = self._draft_with_layers()
         original = copy.deepcopy(draft)
-        failed = add_authoring_layer("bad", "UNKNOWN", _mask(), draft)
+        failed = add_authoring_layer(
+            "bad", "UNKNOWN", self._write_coco(), "int:7", draft
+        )
         self.assertEqual(failed[0], original)
         self.assertIn("失败", failed[-1])
         failed = set_authoring_base_image(None, draft)
@@ -116,7 +146,10 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
                 new_authoring_draft(),
                 set_authoring_name("next", draft),
                 set_authoring_base_image(_base(), draft),
-                add_authoring_layer("next", "ACT", _mask(), draft),
+
+                add_authoring_layer(
+                    "next", "ACT", self._write_coco(), "int:7", draft
+                ),
                 select_authoring_layer(draft["layers"][0]["id"], draft),
                 remove_authoring_layer(draft["layers"][0]["id"], draft),
                 apply_authoring_editor({}, draft),
@@ -163,6 +196,19 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
         self.assertEqual(len(saved), 7)
         self.assertEqual(saved[0]["layout_id"], saved[6]["value"])
         self.assertEqual(len(self.store.list_layouts()), 1)
+
+    def test_coco_inspection_returns_selector_and_binary_preview(self):
+        selector, preview, status = inspect_authoring_coco(self._write_coco())
+        self.assertEqual(selector["value"], "int:7")
+        self.assertEqual(selector["choices"], [("sample.png (6×5)", "int:7")])
+        self.assertEqual(preview.mode, "L")
+        self.assertTrue(np.asarray(preview).any())
+        self.assertIn("sample.png", status)
+
+        selector, preview, status = inspect_authoring_coco(None)
+        self.assertEqual(selector["choices"], [])
+        self.assertIsNone(preview)
+        self.assertIn("失败", status)
 
     def test_save_uses_current_name_without_waiting_for_blur(self):
         draft = self._draft_with_layers()

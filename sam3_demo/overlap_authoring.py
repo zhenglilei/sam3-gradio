@@ -26,6 +26,11 @@ from sam3_demo.overlap_store import OverlapLayoutStore, ValidationError
 AUTHORING_SCHEMA_VERSION = 1
 LAYER_TYPES = ("BSM", "ACT", "GE1", "GE2")
 MAX_LAYERS = 32
+MAX_COCO_JSON_BYTES = 64 * 1024 * 1024
+MAX_COCO_IMAGES = 10_000
+MAX_COCO_ANNOTATIONS = 200_000
+MAX_COCO_DIMENSION = 32_768
+MAX_COCO_PIXELS = 100_000_000
 
 
 class OverlapAuthoringError(ValueError):
@@ -97,6 +102,333 @@ def _normalise_mask(value: Any) -> tuple[Image.Image, np.ndarray]:
         raise OverlapAuthoringError("层标注没有前景")
     mask_image = Image.fromarray(foreground.astype(np.uint8) * 255, mode="L")
     return mask_image, foreground
+
+
+def _coco_id_key(value: Any, *, field: str) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise OverlapAuthoringError(f"COCO {field}必须是字符串或整数")
+    if isinstance(value, str) and not value.strip():
+        raise OverlapAuthoringError(f"COCO {field}不能为空")
+    return f"{type(value).__name__}:{value}"
+
+
+def _coco_dimension(value: Any, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise OverlapAuthoringError(f"COCO {field}必须是正整数")
+    if value > MAX_COCO_DIMENSION:
+        raise OverlapAuthoringError(
+            f"COCO {field}超过上限 {MAX_COCO_DIMENSION}"
+        )
+    return value
+
+
+def _coco_segmentation_shape_is_valid(segmentation: Any) -> None:
+    if isinstance(segmentation, list):
+        if not segmentation:
+            raise OverlapAuthoringError("COCO annotation segmentation 不能为空")
+        return
+    if isinstance(segmentation, dict):
+        if "size" not in segmentation or "counts" not in segmentation:
+            raise OverlapAuthoringError("COCO RLE segmentation 缺少 size 或 counts")
+        if not isinstance(segmentation["size"], (list, tuple)):
+            raise OverlapAuthoringError("COCO RLE size 必须是 [height, width]")
+        if len(segmentation["size"]) != 2:
+            raise OverlapAuthoringError("COCO RLE size 必须是 [height, width]")
+        if not isinstance(segmentation["counts"], (list, str, bytes)):
+            raise OverlapAuthoringError(
+                "COCO RLE counts 必须是列表、字符串或 bytes"
+            )
+        return
+    raise OverlapAuthoringError(
+        "COCO segmentation 必须是 polygon 列表或 RLE 对象"
+    )
+
+
+def _load_coco_dataset(value: Any) -> dict[str, Any]:
+    candidate = (
+        value
+        if isinstance(value, (str, Path))
+        else getattr(value, "name", None)
+    )
+    if not isinstance(candidate, (str, Path)) or not str(candidate).strip():
+        raise OverlapAuthoringError("请先上传 COCO JSON 标注文件")
+    path = Path(candidate)
+    try:
+        size = path.stat().st_size
+    except (OSError, ValueError) as exc:
+        raise OverlapAuthoringError("COCO JSON 文件无法读取") from exc
+    if size > MAX_COCO_JSON_BYTES:
+        raise OverlapAuthoringError(
+            f"COCO JSON 文件超过大小上限 {MAX_COCO_JSON_BYTES // (1024 * 1024)} MiB"
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise OverlapAuthoringError("COCO JSON 文件无法读取") from exc
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-standard JSON number")
+
+    try:
+        payload = json.loads(text, parse_constant=reject_constant)
+    except (MemoryError, RecursionError, TypeError, ValueError) as exc:
+        raise OverlapAuthoringError("COCO JSON 无法解析") from exc
+    if not isinstance(payload, dict):
+        raise OverlapAuthoringError("COCO JSON 顶层必须是对象")
+
+    images = payload.get("images")
+    if not isinstance(images, list) or not images:
+        raise OverlapAuthoringError("COCO JSON 缺少 images 或 images 为空")
+    if len(images) > MAX_COCO_IMAGES:
+        raise OverlapAuthoringError(
+            f"COCO JSON images 超过上限 {MAX_COCO_IMAGES}"
+        )
+    annotations = payload.get("annotations")
+    if not isinstance(annotations, list) or not annotations:
+        raise OverlapAuthoringError("COCO JSON 缺少 annotation 或 annotation 为空")
+    if len(annotations) > MAX_COCO_ANNOTATIONS:
+        raise OverlapAuthoringError(
+            f"COCO JSON annotations 超过上限 {MAX_COCO_ANNOTATIONS}"
+        )
+
+    records: list[dict[str, Any]] = []
+    by_key: dict[str, dict[str, Any]] = {}
+    for index, image in enumerate(images):
+        if not isinstance(image, dict):
+            raise OverlapAuthoringError(f"COCO image {index} 数据无效")
+        image_key = _coco_id_key(image.get("id"), field="image id")
+        if image_key in by_key:
+            raise OverlapAuthoringError(
+                f"COCO image id 重复：{image.get('id')!r}"
+            )
+        file_name = image.get("file_name")
+        if not isinstance(file_name, str) or not file_name.strip():
+            raise OverlapAuthoringError(
+                f"COCO image {image.get('id')!r} 缺少有效 file_name"
+            )
+        width = _coco_dimension(image.get("width"), field="image width")
+        height = _coco_dimension(image.get("height"), field="image height")
+        if width * height > MAX_COCO_PIXELS:
+            raise OverlapAuthoringError(
+                f"COCO image {image.get('id')!r} 像素数量超过上限"
+            )
+        record = {
+            "id": image["id"],
+            "key": image_key,
+            "file_name": file_name,
+            "width": width,
+            "height": height,
+        }
+        records.append(record)
+        by_key[image_key] = record
+
+    annotations_by_image = {record["key"]: [] for record in records}
+    for index, annotation in enumerate(annotations):
+        if not isinstance(annotation, dict):
+            raise OverlapAuthoringError(f"COCO annotation {index} 数据无效")
+        if "image_id" not in annotation:
+            raise OverlapAuthoringError(
+                f"COCO annotation {index} 缺少 image_id"
+            )
+        annotation_key = _coco_id_key(
+            annotation["image_id"], field="annotation image_id"
+        )
+        if annotation_key not in by_key:
+            raise OverlapAuthoringError(
+                f"COCO annotation {index} 的 image_id 不存在"
+            )
+        if "segmentation" not in annotation:
+            raise OverlapAuthoringError(
+                f"COCO annotation {index} 缺少 segmentation"
+            )
+        _coco_segmentation_shape_is_valid(annotation["segmentation"])
+        annotations_by_image[annotation_key].append(annotation)
+
+    return {
+        "images": records,
+        "by_key": by_key,
+        "annotations_by_image": annotations_by_image,
+    }
+
+
+def _decode_coco_segmentation(
+    segmentation: Any,
+    *,
+    height: int,
+    width: int,
+) -> np.ndarray:
+    try:
+        from pycocotools import mask as mask_utils
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise OverlapAuthoringError(
+            "COCO 标注解码依赖 pycocotools，不可用"
+        ) from exc
+
+    try:
+        if isinstance(segmentation, list):
+            if not segmentation:
+                raise OverlapAuthoringError(
+                    "COCO polygon segmentation 不能为空"
+                )
+            if all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in segmentation
+            ):
+                polygons = [segmentation]
+            else:
+                polygons = segmentation
+            normalized_polygons: list[list[float]] = []
+            for index, polygon in enumerate(polygons):
+                if not isinstance(polygon, (list, tuple)):
+                    raise OverlapAuthoringError(
+                        f"COCO polygon {index} 必须是坐标列表"
+                    )
+                if len(polygon) < 6 or len(polygon) % 2:
+                    raise OverlapAuthoringError(
+                        f"COCO polygon {index} 至少需要 3 个 xy 点"
+                    )
+                coordinates: list[float] = []
+                for coordinate in polygon:
+                    if (
+                        isinstance(coordinate, bool)
+                        or not isinstance(coordinate, (int, float))
+                    ):
+                        raise OverlapAuthoringError(
+                            f"COCO polygon {index} 坐标无效"
+                        )
+                    coordinate = float(coordinate)
+                    if not math.isfinite(coordinate):
+                        raise OverlapAuthoringError(
+                            f"COCO polygon {index} 坐标不是有限数"
+                        )
+                    coordinates.append(coordinate)
+                normalized_polygons.append(coordinates)
+            rle = mask_utils.merge(
+                mask_utils.frPyObjects(normalized_polygons, height, width)
+            )
+        elif isinstance(segmentation, dict):
+            size = segmentation.get("size")
+            if not isinstance(size, (list, tuple)) or len(size) != 2:
+                raise OverlapAuthoringError(
+                    "COCO RLE size 必须是 [height, width]"
+                )
+            rle_height = _coco_dimension(size[0], field="RLE height")
+            rle_width = _coco_dimension(size[1], field="RLE width")
+            if (rle_height, rle_width) != (height, width):
+                raise OverlapAuthoringError(
+                    f"COCO RLE size {(rle_height, rle_width)} 与图片尺寸 "
+                    f"{(height, width)} 不一致"
+                )
+            counts = segmentation.get("counts")
+            if isinstance(counts, list):
+                if not counts:
+                    raise OverlapAuthoringError(
+                        "COCO uncompressed RLE counts 不能为空"
+                    )
+                normalized_counts: list[int] = []
+                for count in counts:
+                    if (
+                        isinstance(count, bool)
+                        or not isinstance(count, int)
+                        or count < 0
+                    ):
+                        raise OverlapAuthoringError(
+                            "COCO RLE counts 必须是非负整数"
+                        )
+                    normalized_counts.append(count)
+                if sum(normalized_counts) != height * width:
+                    raise OverlapAuthoringError(
+                        "COCO uncompressed RLE counts 无法覆盖图片"
+                    )
+                rle = mask_utils.frPyObjects(
+                    {"size": [height, width], "counts": normalized_counts},
+                    height,
+                    width,
+                )
+            elif isinstance(counts, str):
+                try:
+                    counts = counts.encode("ascii")
+                except UnicodeEncodeError as exc:
+                    raise OverlapAuthoringError(
+                        "COCO compressed RLE counts 必须是 ASCII"
+                    ) from exc
+                if not counts:
+                    raise OverlapAuthoringError(
+                        "COCO compressed RLE counts 不能为空"
+                    )
+                rle = {"size": [height, width], "counts": counts}
+            elif isinstance(counts, bytes):
+                if not counts:
+                    raise OverlapAuthoringError(
+                        "COCO compressed RLE counts 不能为空"
+                    )
+                rle = {"size": [height, width], "counts": counts}
+            else:
+                raise OverlapAuthoringError(
+                    "COCO RLE counts 必须是列表、字符串或 bytes"
+                )
+        else:
+            raise OverlapAuthoringError(
+                "COCO segmentation 必须是 polygon 列表或 RLE 对象"
+            )
+        decoded = np.asarray(mask_utils.decode(rle))
+    except OverlapAuthoringError:
+        raise
+    except Exception as exc:
+        raise OverlapAuthoringError(
+            f"COCO segmentation 无法解码：{exc}"
+        ) from exc
+    if decoded.ndim != 2 or decoded.shape != (height, width):
+        raise OverlapAuthoringError(
+            f"COCO segmentation mask 尺寸 {decoded.shape} 与图片尺寸 "
+            f"{(height, width)} 不一致"
+        )
+    if not np.isin(decoded, (0, 1)).all():
+        raise OverlapAuthoringError("COCO segmentation mask 不是二值")
+    return np.ascontiguousarray(decoded.astype(bool))
+
+
+def _coco_image_mask(
+    dataset: dict[str, Any],
+    selected_image_id: Any = None,
+) -> tuple[str, Image.Image]:
+    records = dataset["images"]
+    by_key = dataset["by_key"]
+    if selected_image_id is None:
+        record = records[0]
+    elif isinstance(selected_image_id, str):
+        record = by_key.get(selected_image_id)
+        if record is None:
+            record = by_key.get(
+                _coco_id_key(selected_image_id, field="selected image id")
+            )
+        if record is None:
+            raise OverlapAuthoringError("选择的 COCO 图片不存在")
+    else:
+        selected_key = _coco_id_key(selected_image_id, field="selected image id")
+        record = by_key.get(selected_key)
+        if record is None:
+            raise OverlapAuthoringError("选择的 COCO 图片不存在")
+    annotations = dataset["annotations_by_image"][record["key"]]
+    if not annotations:
+        raise OverlapAuthoringError(
+            f"COCO 图片 {record['file_name']} 没有 annotation"
+        )
+    union = np.zeros((record["height"], record["width"]), dtype=bool)
+    for index, annotation in enumerate(annotations):
+        mask = _decode_coco_segmentation(
+            annotation["segmentation"],
+            height=record["height"],
+            width=record["width"],
+        )
+        union |= mask
+    if not union.any():
+        raise OverlapAuthoringError(
+            f"COCO 图片 {record['file_name']} 的 union mask 为空"
+        )
+    return record["key"], Image.fromarray(
+        union.astype(np.uint8) * 255, mode="L"
+    )
 
 
 def _data_url(payload: bytes) -> str:
@@ -266,6 +598,60 @@ class OverlapAuthoringService:
         out["active_layer_id"] = layer["id"]
         out["draft_revision"] += 1
         return out
+
+    def coco_image_choices(self, json_file: Any) -> list[tuple[str, str]]:
+        """Return collision-safe selector values for every JSON image."""
+
+        dataset = _load_coco_dataset(json_file)
+        return [
+            (
+                f"{record['file_name']} ({record['width']}×{record['height']})",
+                record["key"],
+            )
+            for record in dataset["images"]
+        ]
+
+    def coco_image_mask(
+        self,
+        json_file: Any,
+        selected_image_id: Any = None,
+    ) -> Image.Image:
+        """Rasterize all annotations for one COCO image into a binary mask."""
+
+        dataset = _load_coco_dataset(json_file)
+        _selected_key, mask = _coco_image_mask(dataset, selected_image_id)
+        return mask
+
+    def inspect_coco_json(
+        self,
+        json_file: Any,
+        selected_image_id: Any = None,
+    ) -> tuple[list[tuple[str, str]], str, Image.Image]:
+        """Return selector choices, the selected value, and its union mask."""
+
+        dataset = _load_coco_dataset(json_file)
+        choices = [
+            (
+                f"{record['file_name']} ({record['width']}×{record['height']})",
+                record["key"],
+            )
+            for record in dataset["images"]
+        ]
+        selected_key, mask = _coco_image_mask(dataset, selected_image_id)
+        return choices, selected_key, mask
+
+    def add_layer_from_coco(
+        self,
+        draft: Any,
+        json_file: Any,
+        selected_image_id: Any,
+        layer_type: Any,
+        name: Any = None,
+    ) -> dict[str, Any]:
+        """Re-read JSON and rasterize the selected image before adding a layer."""
+
+        mask = self.coco_image_mask(json_file, selected_image_id)
+        return self.add_layer(draft, mask, layer_type, name)
 
     def remove_layer(self, draft: Any, layer_id: Any) -> dict[str, Any]:
         out = _require_draft(draft)
@@ -574,6 +960,11 @@ class OverlapAuthoringService:
 __all__ = [
     "AUTHORING_SCHEMA_VERSION",
     "LAYER_TYPES",
+    "MAX_COCO_ANNOTATIONS",
+    "MAX_COCO_DIMENSION",
+    "MAX_COCO_IMAGES",
+    "MAX_COCO_JSON_BYTES",
+    "MAX_COCO_PIXELS",
     "OverlapAuthoringError",
     "OverlapAuthoringService",
 ]

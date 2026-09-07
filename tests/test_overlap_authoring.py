@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from io import BytesIO
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
+from pycocotools import mask as coco_mask
 from layout_transform_utils import build_layout_affine_matrix
 
 from sam3_demo.overlap_authoring import (
+    MAX_COCO_DIMENSION,
+    MAX_COCO_JSON_BYTES,
     OverlapAuthoringError,
     OverlapAuthoringService,
 )
@@ -24,6 +30,22 @@ def _mask(width=5, height=4):
     array = np.zeros((height, width), dtype=np.uint8)
     array[1:3, 1:4] = 255
     return Image.fromarray(array, mode="L")
+
+
+def _uncompressed_counts(mask: np.ndarray) -> list[int]:
+    counts: list[int] = []
+    previous = 0
+    run = 0
+    for value in np.asarray(mask, dtype=np.uint8).ravel(order="F"):
+        pixel = int(value)
+        if pixel == previous:
+            run += 1
+        else:
+            counts.append(run)
+            run = 1
+            previous = pixel
+    counts.append(run)
+    return counts
 
 
 class OverlapAuthoringTests(unittest.TestCase):
@@ -45,6 +67,261 @@ class OverlapAuthoringTests(unittest.TestCase):
         draft = self.service.add_layer(draft, _mask(), "ACT", "active")
         draft = self.service.add_layer(draft, _mask(), "GE1", "gate")
         return draft
+
+    def _write_coco(self, payload, name="labels.json"):
+        path = Path(self.tempdir.name) / name
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _coco_payload(self):
+        return {
+            "images": [
+                {"id": 11, "file_name": "first.png", "width": 7, "height": 6},
+                {"id": "11", "file_name": "second.png", "width": 8, "height": 5},
+            ],
+            "annotations": [
+                {
+                    "id": 1,
+                    "image_id": 11,
+                    "segmentation": [
+                        [1, 1, 5, 1, 5, 4, 1, 4],
+                        [4, 3, 6, 3, 6, 5, 4, 5],
+                    ],
+                },
+                {
+                    "id": 2,
+                    "image_id": "11",
+                    "segmentation": [[2, 1, 7, 1, 7, 4, 2, 4]],
+                },
+            ],
+        }
+
+    def test_coco_choices_union_and_add_layer_rereads_json(self):
+        path = self._write_coco(self._coco_payload())
+        choices = self.service.coco_image_choices(path)
+        self.assertEqual(
+            choices,
+            [
+                ("first.png (7×6)", "int:11"),
+                ("second.png (8×5)", "str:11"),
+            ],
+        )
+        selected_choices, selected_id, preview = self.service.inspect_coco_json(path)
+        self.assertEqual(selected_choices, choices)
+        self.assertEqual(selected_id, "int:11")
+        expected_rle = coco_mask.merge(
+            coco_mask.frPyObjects(
+                self._coco_payload()["annotations"][0]["segmentation"],
+                6,
+                7,
+            )
+        )
+        expected = coco_mask.decode(expected_rle).astype(bool)
+        self.assertTrue(
+            np.array_equal(np.asarray(preview) > 0, expected)
+        )
+
+        second_preview = self.service.coco_image_mask(path, "str:11")
+        self.assertEqual(second_preview.size, (8, 5))
+        self.assertTrue(np.asarray(second_preview).any())
+        self.assertTrue(
+            np.array_equal(
+                np.asarray(second_preview),
+                np.asarray(self.service.coco_image_mask(path, "11")),
+            )
+        )
+
+        draft = self.service.set_base_image(self.service.new_draft(), _base())
+        added = self.service.add_layer_from_coco(
+            draft, path, "int:11", "ACT", "from JSON"
+        )
+        self.assertEqual(added["layers"][0]["name"], "from JSON")
+        with Image.open(BytesIO(added["layers"][0]["mask_png"])) as mask_image:
+            self.assertTrue(
+                np.array_equal(np.asarray(mask_image) > 0, expected)
+            )
+
+        changed = self._coco_payload()
+        changed["annotations"][0]["segmentation"] = [
+            [0, 0, 2, 0, 2, 2, 0, 2]
+        ]
+        self._write_coco(changed)
+        reread = self.service.add_layer_from_coco(
+            draft, path, "int:11", "GE1"
+        )
+        with Image.open(BytesIO(reread["layers"][0]["mask_png"])) as mask_image:
+            self.assertFalse(
+                np.array_equal(np.asarray(mask_image) > 0, expected)
+            )
+
+    def test_coco_compressed_and_uncompressed_rle(self):
+        expected = np.zeros((6, 8), dtype=np.uint8)
+        expected[1:5, 2:6] = 1
+        expected[2:4, 3:5] = 0
+        encoded = coco_mask.encode(np.asfortranarray(expected))
+        segmentations = [
+            {
+                "size": [6, 8],
+                "counts": encoded["counts"].decode("ascii"),
+            },
+            {
+                "size": [6, 8],
+                "counts": _uncompressed_counts(expected),
+            },
+        ]
+        for index, segmentation in enumerate(segmentations):
+            with self.subTest(rle_type=type(segmentation["counts"]).__name__):
+                path = self._write_coco(
+                    {
+                        "images": [
+                            {
+                                "id": 1,
+                                "file_name": f"rle-{index}.png",
+                                "width": 8,
+                                "height": 6,
+                            }
+                        ],
+                        "annotations": [
+                            {"image_id": 1, "segmentation": segmentation}
+                        ],
+                    },
+                    f"rle-{index}.json",
+                )
+                actual = np.asarray(self.service.coco_image_mask(path)) > 0
+                self.assertTrue(np.array_equal(actual, expected.astype(bool)))
+
+    def test_coco_rejects_invalid_or_oversized_documents(self):
+        valid_image = {
+            "id": 1,
+            "file_name": "one.png",
+            "width": 8,
+            "height": 6,
+        }
+        valid_annotation = {
+            "image_id": 1,
+            "segmentation": [[1, 1, 5, 1, 5, 4, 1, 4]],
+        }
+
+        cases = [
+            (
+                {"images": [], "annotations": []},
+                "images",
+                "choices",
+            ),
+            (
+                {"images": [valid_image], "annotations": []},
+                "annotation",
+                "choices",
+            ),
+            (
+                {
+                    "images": [valid_image, dict(valid_image)],
+                    "annotations": [valid_annotation],
+                },
+                "重复",
+                "choices",
+            ),
+            (
+                {
+                    "images": [{**valid_image, "width": 0}],
+                    "annotations": [valid_annotation],
+                },
+                "width",
+                "choices",
+            ),
+            (
+                {
+                    "images": [
+                        {
+                            **valid_image,
+                            "width": MAX_COCO_DIMENSION + 1,
+                        }
+                    ],
+                    "annotations": [valid_annotation],
+                },
+                "上限",
+                "choices",
+            ),
+        ]
+        for index, (payload, pattern, method) in enumerate(cases):
+            with self.subTest(case=index):
+                path = self._write_coco(payload, f"invalid-{index}.json")
+                with self.assertRaisesRegex(OverlapAuthoringError, pattern):
+                    getattr(self.service, f"coco_image_{method}")(path)
+
+        bad_segmentation = dict(valid_annotation)
+        bad_segmentation["segmentation"] = [[0, 0, 1]]
+        path = self._write_coco(
+            {
+                "images": [valid_image],
+                "annotations": [bad_segmentation],
+            },
+            "bad-segmentation.json",
+        )
+        with self.assertRaisesRegex(OverlapAuthoringError, "polygon"):
+            self.service.coco_image_mask(path)
+
+        empty_segmentation = dict(valid_annotation)
+        empty_segmentation["segmentation"] = [[0, 0, 0, 0, 0, 0]]
+        path = self._write_coco(
+            {
+                "images": [valid_image],
+                "annotations": [empty_segmentation],
+            },
+            "empty-mask.json",
+        )
+        with self.assertRaisesRegex(OverlapAuthoringError, "mask 为空"):
+            self.service.coco_image_mask(path)
+
+        path = self._write_coco(
+            {
+                "images": [valid_image],
+                "annotations": [empty_segmentation, valid_annotation],
+            },
+            "mixed-empty-mask.json",
+        )
+        self.assertTrue(np.asarray(self.service.coco_image_mask(path)).any())
+
+
+        path = Path(self.tempdir.name) / "broken.json"
+        path.write_text("{", encoding="utf-8")
+        with self.assertRaisesRegex(OverlapAuthoringError, "解析"):
+            self.service.coco_image_choices(path)
+
+        path = self._write_coco(
+            {
+                "images": [valid_image],
+                "annotations": [valid_annotation],
+            },
+            "oversized.json",
+        )
+        with patch(
+            "sam3_demo.overlap_authoring.MAX_COCO_JSON_BYTES",
+            len(path.read_bytes()) - 1,
+        ):
+            with self.assertRaisesRegex(OverlapAuthoringError, "大小上限"):
+                self.service.coco_image_choices(path)
+
+        no_annotation_for_selected = self._write_coco(
+            {
+                "images": [
+                    valid_image,
+                    {
+                        "id": 2,
+                        "file_name": "two.png",
+                        "width": 8,
+                        "height": 6,
+                    },
+                ],
+                "annotations": [valid_annotation],
+            },
+            "missing-selected-annotation.json",
+        )
+        with self.assertRaisesRegex(OverlapAuthoringError, "没有 annotation"):
+            self.service.coco_image_mask(no_annotation_for_selected, "int:2")
+
+        with self.assertRaisesRegex(OverlapAuthoringError, "不存在"):
+            self.service.coco_image_mask(no_annotation_for_selected, "int:99")
 
     def test_draft_methods_are_immutable_and_transform_is_per_layer(self):
         original = self.service.new_draft()

@@ -234,17 +234,49 @@ def set_authoring_base_image(image: Any, draft: Any) -> tuple[Any, ...]:
     )
 
 
+def inspect_authoring_coco(
+    json_file: Any,
+    selected_image_id: Any = None,
+) -> tuple[dict[str, Any], Image.Image | None, str]:
+    """Load one COCO file and preview the selected image's union mask."""
+
+    try:
+        service = _service()
+        choices, selected_id, preview = service.inspect_coco_json(
+            json_file, selected_image_id
+        )
+        selected_label = next(
+            label for label, value in choices if value == selected_id
+        )
+        return (
+            gr.update(choices=choices, value=selected_id),
+            preview,
+            f"已读取 JSON 标注：{selected_label}。",
+        )
+    except (OverlapAuthoringError, OverlapStoreError) as exc:
+        return (
+            gr.update(choices=[], value=None),
+            None,
+            f"读取 JSON 标注失败：{exc}",
+        )
+
+
 def add_authoring_layer(
     layer_name: Any,
     layer_type: Any,
-    mask: Any,
+    json_file: Any,
+    selected_image_id: Any,
     draft: Any,
 ) -> tuple[Any, ...]:
     return _mutate(
         draft,
         "添加叠层",
-        lambda service, previous: service.add_layer(
-            previous, mask, layer_type, layer_name
+        lambda service, previous: service.add_layer_from_coco(
+            previous,
+            json_file,
+            selected_image_id,
+            layer_type,
+            layer_name,
         ),
     )
 
@@ -370,6 +402,7 @@ __all__ = [
     "delete_authoring_layout",
     "draft_to_view",
     "load_authoring_layout",
+    "inspect_authoring_coco",
     "new_authoring_draft",
     "refresh_authoring_layouts",
     "remove_authoring_layer",

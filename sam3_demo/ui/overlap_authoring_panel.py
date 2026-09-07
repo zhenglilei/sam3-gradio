@@ -27,7 +27,8 @@ def build_overlap_authoring_panel(*, LayoutTransformEditor, import_error=None):
     ):
         draft_state = gr.State(None)
         gr.Markdown(
-            "输入版图名称，上传整体图片和各层二值标注；列表顺序就是叠层顺序。"
+            "输入版图名称，上传整体图片和各层 COCO JSON 标注；"
+            "从 JSON 选择图片后会显示合并二值 mask 预览。列表顺序就是叠层顺序。"
             "拖动标注可平移，滚轮缩放，拖动右上圆点旋转。",
             elem_classes="stitch-canvas-help",
         )
@@ -68,11 +69,21 @@ def build_overlap_authoring_panel(*, LayoutTransformEditor, import_error=None):
                     height=320,
                 )
             with gr.Column(scale=1, min_width=300):
-                layer_mask = gr.Image(
+                layer_annotation_json = gr.File(
+                    label="新增层标注（COCO JSON）",
+                    file_types=[".json"],
+                    type="filepath",
+                )
+                layer_json_image_selector = gr.Dropdown(
+                    choices=[],
+                    value=None,
+                    label="JSON 中的图片",
+                    info="将该图片的全部 annotation 合并为一层二值 mask。",
+                )
+                layer_mask_preview = gr.Image(
                     type="pil",
-                    label="新增层标注（二值 mask）",
-                    sources=["upload", "clipboard"],
-                    interactive=True,
+                    label="标注 mask 预览",
+                    interactive=False,
                     height=220,
                 )
                 with gr.Row():
@@ -131,7 +142,9 @@ def build_overlap_authoring_panel(*, LayoutTransformEditor, import_error=None):
         delete_saved_btn=delete_saved_btn,
         layout_name=layout_name,
         base_image=base_image,
-        layer_mask=layer_mask,
+        layer_annotation_json=layer_annotation_json,
+        layer_json_image_selector=layer_json_image_selector,
+        layer_mask_preview=layer_mask_preview,
         layer_type=layer_type,
         layer_name=layer_name,
         add_layer_btn=add_layer_btn,
@@ -209,12 +222,36 @@ def bind_overlap_authoring_events(
         outputs=view_outputs,
         **event_kwargs,
     )
+    refs.layer_annotation_json.change(
+        fn=callbacks.inspect_authoring_coco,
+        inputs=[refs.layer_annotation_json],
+        outputs=[
+            refs.layer_json_image_selector,
+            refs.layer_mask_preview,
+            refs.status,
+        ],
+        **event_kwargs,
+    )
+    refs.layer_json_image_selector.input(
+        fn=callbacks.inspect_authoring_coco,
+        inputs=[
+            refs.layer_annotation_json,
+            refs.layer_json_image_selector,
+        ],
+        outputs=[
+            refs.layer_json_image_selector,
+            refs.layer_mask_preview,
+            refs.status,
+        ],
+        **event_kwargs,
+    )
     refs.add_layer_btn.click(
         fn=callbacks.add_authoring_layer,
         inputs=[
             refs.layer_name,
             refs.layer_type,
-            refs.layer_mask,
+            refs.layer_annotation_json,
+            refs.layer_json_image_selector,
             refs.draft_state,
         ],
         outputs=view_outputs,
