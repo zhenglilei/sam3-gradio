@@ -20,6 +20,7 @@ from layout_transform_utils import (
     make_layout_transform_v2,
     mask_pixel_sha256,
 )
+from sam3_demo.mask_boundary_alignment import align_mask_boundary
 from sam3_demo.overlap_geometry import calculate_next_layer_overlap
 from sam3_demo.overlap_store import OverlapLayoutStore, ValidationError
 
@@ -1184,6 +1185,66 @@ class OverlapAuthoringService:
             ),
             "editor_sync_revision": 0,
             "editor_sync_hash": "",
+        }
+
+    def alignment_proposal(
+        self,
+        draft: Any,
+        layer_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Calculate proposals for one layer without mutating its draft."""
+
+        current = _require_draft(draft)
+        if not current.get("base_image_png"):
+            raise OverlapAuthoringError("请先上传整体版图")
+        target_id = str(layer_id or current.get("active_layer_id") or "")
+        layer = next(
+            (item for item in current["layers"] if item["id"] == target_id),
+            None,
+        )
+        if layer is None:
+            raise OverlapAuthoringError("待对齐层不存在")
+        base = np.asarray(
+            _decode_png(current["base_image_png"], mode="RGB", field="整体版图"),
+            dtype=np.uint8,
+        )
+        mask = np.asarray(
+            _decode_png(layer["mask_png"], mode="L", field=f"{layer['name']} 标注"),
+            dtype=np.uint8,
+        ) > 0
+        transform = copy.deepcopy(layer["transform"])
+        result = align_mask_boundary(base, mask, transform)
+        candidates = result.get("candidates") or []
+        if not candidates:
+            status = f"{layer['layer_type']} 未找到可用粗对齐候选，请手动调整。"
+        elif result.get("auto_apply"):
+            status = (
+                f"{layer['layer_type']} 粗对齐高置信，将自动应用最佳候选；"
+                f"耗时 {result['elapsed_seconds']:.2f}s。"
+            )
+        elif result.get("ambiguous"):
+            status = (
+                f"{layer['layer_type']} 存在周期歧义，未自动应用；"
+                "请选择候选或手动调整。"
+            )
+        else:
+            status = (
+                f"{layer['layer_type']} 置信度未达自动应用门槛，"
+                "请选择候选或手动调整。"
+            )
+        return {
+            "payload_kind": "alignment_proposal",
+            "editor_session_id": current["draft_id"],
+            "document_epoch": _document_epoch(current),
+            "target_layer_id": layer["id"],
+            "target_label": layer["layer_type"],
+            "start_transform_revision": int(transform.get("revision") or 0),
+            "candidates": candidates[:3],
+            "auto_apply": bool(result.get("auto_apply")),
+            "ambiguous": bool(result.get("ambiguous")),
+            "distinct_margin": float(result.get("distinct_margin") or 0.0),
+            "elapsed_seconds": float(result.get("elapsed_seconds") or 0.0),
+            "status": status,
         }
 
     def save(self, draft: Any) -> dict[str, Any]:

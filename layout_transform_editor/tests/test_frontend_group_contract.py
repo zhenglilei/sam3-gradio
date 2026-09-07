@@ -242,6 +242,32 @@ class LayoutTransformEditorGroupContractTests(unittest.TestCase):
         self.assertIn("#ff3fa4", overlap_body)
         self.assertNotIn("StatusTracker", self.index_source)
 
+    def test_alignment_proposal_never_rehydrates_local_geometry(self) -> None:
+        self.assertIn(
+            'incoming?.payload_kind === "alignment_proposal"',
+            self.index_source,
+        )
+        handler = _function_body(
+            self.index_source,
+            "handleAlignmentProposal",
+        )
+        self.assertIn("publishClientIntent()", handler)
+        self.assertNotIn("ingestValue(", handler)
+        self.assertNotIn('dispatch("change")', handler)
+
+    def test_late_auto_alignment_respects_manual_touch_and_revision(self) -> None:
+        apply_body = _function_body(
+            self.index_source,
+            "applyAlignmentCandidate",
+        )
+        self.assertIn("manuallyTouchedGroupKeys.has(key)", apply_body)
+        self.assertIn("start_transform_revision", apply_body)
+        self.assertIn("setActiveTransform({", apply_body)
+        self.assertIn("}, false)", apply_body)
+        self.assertIn('queueSyncValue(', apply_body)
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

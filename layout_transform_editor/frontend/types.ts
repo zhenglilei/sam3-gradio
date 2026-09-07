@@ -54,12 +54,34 @@ export interface LayoutTransformGroupIntent {
 	transforms: LayoutTransformGroupIntentEntry[];
 }
 
+export interface LayoutTransformAlignmentCandidate {
+	candidate_id: string;
+	transform: Partial<LayoutTransform>;
+	metrics?: {
+		score?: number;
+		central_support?: number;
+		full_support?: number;
+		visible_ratio?: number;
+		roi_shift_spread_preview_px?: number;
+		rotation_spread_deg?: number;
+		scale_spread_percent?: number;
+	};
+}
+
 export interface LayoutTransformValue {
 	payload_kind?: "snapshot" | "intent" | "ack" | "ack_error" | "alignment_proposal";
 	editor_session_id?: string;
 	document_epoch?: string;
 	server_ack_revision?: number;
 	payload_hash?: string;
+	target_layer_id?: LayoutTransformGroupId;
+	target_label?: string;
+	start_transform_revision?: number;
+	candidates?: LayoutTransformAlignmentCandidate[];
+	auto_apply?: boolean;
+	ambiguous?: boolean;
+	distinct_margin?: number;
+	elapsed_seconds?: number;
 	enabled?: boolean;
 	base_image?: string | null;
 	mask_image?: string | null;

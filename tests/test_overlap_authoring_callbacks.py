@@ -19,6 +19,7 @@ from sam3_demo.overlap_authoring_callbacks import (
     draft_to_view,
     load_authoring_layout,
     new_authoring_draft,
+    propose_authoring_alignment,
     refresh_authoring_layouts,
     remove_authoring_layer,
     save_authoring_layout,
@@ -221,6 +222,24 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
         )
         self.assertEqual(layer["transform"]["center_x"], 11.25)
         self.assertEqual(saved[0]["editor_sync_revision"], 0)
+
+    def test_alignment_proposal_callback_does_not_replace_draft(self):
+        draft = self._draft_with_layers()
+        proposal = {
+            "payload_kind": "alignment_proposal",
+            "candidates": [],
+            "auto_apply": False,
+            "ambiguous": True,
+            "status": "存在周期歧义",
+        }
+        with patch.object(
+            self.authoring,
+            "alignment_proposal",
+            return_value=proposal,
+        ):
+            result = propose_authoring_alignment(draft)
+        self.assertEqual(result, (proposal, "存在周期歧义"))
+        self.assertNotIn("draft_state", result[0])
 
     def test_annotation_inspection_returns_binary_preview(self):
         preview, status = inspect_authoring_annotation(self._write_coco())

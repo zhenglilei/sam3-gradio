@@ -516,6 +516,56 @@ class OverlapAuthoringTests(unittest.TestCase):
         self.assertEqual(updated["draft_revision"], draft["draft_revision"] + 1)
         self.assertEqual(updated["layers"][0]["transform"]["center_x"], 9.0)
 
+    @patch("sam3_demo.overlap_authoring.align_mask_boundary")
+    def test_alignment_proposal_is_read_only_and_revision_bound(self, align):
+        draft = self._draft_with_layers()
+        before = copy.deepcopy(draft)
+        align.return_value = {
+            "candidates": [
+                {
+                    "candidate_id": "C1",
+                    "transform": {
+                        "center_x": 7.0,
+                        "center_y": 5.0,
+                        "pivot_x": 2.0,
+                        "pivot_y": 2.0,
+                        "scale": 1.0,
+                        "rotation_deg": 0.0,
+                    },
+                    "metrics": {
+                        "score": 0.95,
+                        "central_support": 0.96,
+                        "full_support": 0.91,
+                        "visible_ratio": 1.0,
+                        "roi_shift_spread_preview_px": 0.5,
+                        "rotation_spread_deg": 0.1,
+                        "scale_spread_percent": 0.25,
+                    },
+                }
+            ],
+            "auto_apply": True,
+            "ambiguous": False,
+            "distinct_margin": 0.3,
+            "elapsed_seconds": 0.4,
+        }
+
+        proposal = self.service.alignment_proposal(draft)
+
+        self.assertEqual(draft, before)
+        self.assertEqual(proposal["payload_kind"], "alignment_proposal")
+        self.assertEqual(proposal["target_layer_id"], draft["active_layer_id"])
+        active = next(
+            layer
+            for layer in draft["layers"]
+            if layer["id"] == draft["active_layer_id"]
+        )
+        self.assertEqual(
+            proposal["start_transform_revision"],
+            active["transform"]["revision"],
+        )
+        self.assertTrue(proposal["auto_apply"])
+        align.assert_called_once()
+
     def test_base_resize_recenters_layers(self):
         draft = self._draft_with_layers()
         payload = self.service.editor_payload(draft)

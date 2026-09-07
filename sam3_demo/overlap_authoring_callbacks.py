@@ -263,6 +263,25 @@ def add_authoring_layer(
     )
 
 
+def propose_authoring_alignment(
+    draft: Any,
+) -> tuple[dict[str, Any], str]:
+    """Return an asynchronous proposal without changing the draft."""
+
+    try:
+        proposal = _service().alignment_proposal(draft)
+        return proposal, str(proposal["status"])
+    except (OverlapAuthoringError, OverlapStoreError, ValueError) as exc:
+        status = f"自动粗对齐失败：{exc}；可继续手动调整。"
+        return {
+            "payload_kind": "alignment_proposal",
+            "candidates": [],
+            "auto_apply": False,
+            "ambiguous": False,
+            "status": status,
+        }, status
+
+
 def select_authoring_layer(layer_id: Any, draft: Any) -> tuple[Any, ...]:
     return _mutate(
         draft,

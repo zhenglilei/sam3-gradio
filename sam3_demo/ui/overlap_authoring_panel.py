@@ -216,7 +216,7 @@ def bind_overlap_authoring_events(
         outputs=[refs.layer_mask_preview, refs.status],
         **event_kwargs,
     )
-    refs.add_layer_btn.click(
+    add_layer_event = refs.add_layer_btn.click(
         fn=callbacks.add_authoring_layer,
         inputs=[
             refs.layer_type,
@@ -225,6 +225,16 @@ def bind_overlap_authoring_events(
         ],
         outputs=view_outputs,
         **event_kwargs,
+    )
+    add_layer_event.success(
+        fn=callbacks.propose_authoring_alignment,
+        inputs=[refs.draft_state],
+        outputs=[refs.editor, refs.status],
+        queue=True,
+        show_progress="hidden",
+        concurrency_limit=1,
+        concurrency_id="overlap-authoring-align",
+        api_visibility="private",
     )
     refs.layer_selector.input(
         fn=callbacks.select_authoring_layer,

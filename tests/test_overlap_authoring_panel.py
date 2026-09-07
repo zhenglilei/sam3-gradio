@@ -103,6 +103,23 @@ class OverlapAuthoringPanelTests(unittest.TestCase):
         )
         self.assertEqual(len(editor_sync["outputs"]), 3)
         self.assertEqual(editor_sync["show_progress"], "hidden")
+        alignment = next(
+            dep
+            for dep in dependencies
+            if dep.get("api_name") == "propose_authoring_alignment"
+        )
+        self.assertEqual(alignment["show_progress"], "hidden")
+        self.assertEqual(len(alignment["outputs"]), 2)
+        alignment_fn = next(
+            fn
+            for fn in demo.fns.values()
+            if fn.name == "propose_authoring_alignment"
+        )
+        self.assertEqual(
+            alignment_fn.concurrency_id,
+            "overlap-authoring-align",
+        )
+        self.assertEqual(alignment_fn.concurrency_limit, 1)
 
     def test_read_only_tab_needs_no_authoring_builder(self):
         with gr.Blocks() as demo:

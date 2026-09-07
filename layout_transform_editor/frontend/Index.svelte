@@ -3,6 +3,7 @@
 <script lang="ts">
 	import type {
 		LayoutTransform,
+		LayoutTransformAlignmentCandidate,
 		LayoutTransformEditorEvents,
 		LayoutTransformEditorProps,
 		LayoutTransformGroupId,
@@ -77,6 +78,8 @@
 	let hiddenGroupKeys = $state(new Set<string>());
 	let explicitVisibleGroupKeys = $state(new Set<string>());
 	let soloGroupKey = $state("");
+	let alignmentProposal = $state<LayoutTransformValue | null>(null);
+	let manuallyTouchedGroupKeys = new Set<string>();
 	let viewScale = $state(1);
 	let viewPanX = $state(0);
 	let viewPanY = $state(0);
@@ -426,6 +429,8 @@
 		groupRuntimeByKey = nextRuntimes;
 		groupTransformByKey = nextTransforms;
 		dirtyGroupKeys = new Set<string>();
+		manuallyTouchedGroupKeys = new Set<string>();
+		alignmentProposal = null;
 		const requestedActiveKey = intentMatches && intent?.active_group_id !== undefined && intent.active_group_id !== null
 			? groupKey(intent.active_group_id)
 			: "";
@@ -488,6 +493,67 @@
 		}
 	}
 
+	function proposalCandidates(): LayoutTransformAlignmentCandidate[] {
+		return Array.isArray(alignmentProposal?.candidates)
+			? alignmentProposal.candidates
+			: [];
+	}
+
+	function applyAlignmentCandidate(
+		candidate: LayoutTransformAlignmentCandidate,
+		automatic = false,
+	): void {
+		if (!alignmentProposal || alignmentProposal.target_layer_id === undefined) return;
+		const key = groupKey(alignmentProposal.target_layer_id);
+		if (!groupTransformByKey.has(key)) return;
+		if (
+			automatic
+			&& (
+				manuallyTouchedGroupKeys.has(key)
+				|| finiteNumber(
+					transformForKey(key).revision,
+					0,
+				) !== finiteNumber(alignmentProposal.start_transform_revision, 0)
+			)
+		) {
+			statusText = "粗对齐结果已到达，但检测到手动修改，未覆盖当前变换";
+			publishClientIntent();
+			return;
+		}
+		setActiveGroupLocal(key);
+		const current = normalizeTransform(transformForKey(key));
+		setActiveTransform({
+			...current,
+			...candidate.transform,
+			preview_alpha: current.preview_alpha,
+		}, false);
+		alignmentProposal = null;
+		queueSyncValue(
+			"boundary_alignment",
+			(automatic ? "已自动应用 " : "已应用 ")
+				+ String(candidate.candidate_id || "候选")
+				+ "；停止 250ms 后同步",
+		);
+	}
+
+	function handleAlignmentProposal(value: LayoutTransformValue): void {
+		const proposalSession = String(value.editor_session_id || "");
+		const proposalEpoch = String(value.document_epoch || "");
+		if (
+			(proposalSession && proposalSession !== editorSessionId)
+			|| (proposalEpoch && proposalEpoch !== documentEpoch)
+		) return;
+		alignmentProposal = cloneValue(value);
+		statusText = String(value.status || "粗对齐候选已生成");
+		publishClientIntent();
+		const candidates = Array.isArray(value.candidates) ? value.candidates : [];
+		if (value.auto_apply && candidates.length) {
+			applyAlignmentCandidate(candidates[0], true);
+		} else {
+			requestDraw();
+		}
+	}
+
 	function handleServerAck(value: LayoutTransformValue): void {
 		const ackSession = String(value.editor_session_id || "");
 		const ackEpoch = String(value.document_epoch || "");
@@ -524,6 +590,13 @@
 			if (signature !== lastAckSignature) {
 				lastAckSignature = signature;
 				handleServerAck(incoming);
+			}
+			return;
+		}
+		if (incoming?.payload_kind === "alignment_proposal") {
+			if (signature !== lastAckSignature) {
+				lastAckSignature = signature;
+				handleAlignmentProposal(incoming);
 			}
 			return;
 		}
@@ -603,9 +676,12 @@
 		return groupTransformByKey.get(key) || transform;
 	}
 
-	function setActiveTransform(next: LayoutTransform): void {
+	function setActiveTransform(next: LayoutTransform, manual = true): void {
 		transform = normalizeTransform(next);
-		if (isGroupMode() && activeGroupKey) groupTransformByKey.set(activeGroupKey, transform);
+		if (isGroupMode() && activeGroupKey) {
+			groupTransformByKey.set(activeGroupKey, transform);
+			if (manual) manuallyTouchedGroupKeys.add(activeGroupKey);
+		}
 		refreshNumericDraft();
 	}
 
@@ -1642,6 +1718,30 @@
 				{/each}
 			</div>
 		{/if}
+		{#if alignmentProposal}
+			<div class="alignment-proposal" class:ambiguous={alignmentProposal.ambiguous === true}>
+				<div class="proposal-copy">
+					<strong>
+						{alignmentProposal.ambiguous ? "存在周期歧义" : "粗对齐建议"}
+					</strong>
+					<span>{alignmentProposal.status}</span>
+				</div>
+				{#if proposalCandidates().length}
+					<div class="proposal-actions">
+						{#each proposalCandidates() as candidate}
+							<button
+								type="button"
+								on:click={() => applyAlignmentCandidate(candidate)}
+							>
+								应用 {candidate.candidate_id}
+								· 支持率 {Math.round(finiteNumber(candidate.metrics?.central_support, 0) * 100)}%
+								· 分数 {finiteNumber(candidate.metrics?.score, 0).toFixed(3)}
+							</button>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 		<div class="canvas-wrap">
 			<canvas
 				bind:this={canvasEl}
@@ -1884,6 +1984,53 @@
 	.numeric-toolbar small {
 		font-size: 10px;
 		color: #94a3b8;
+	}
+	.alignment-proposal {
+		display: grid;
+		grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.2fr);
+		gap: 8px;
+		align-items: center;
+		border: 1px solid #93c5fd;
+		border-radius: 8px;
+		background: #eff6ff;
+		padding: 7px 9px;
+	}
+	.alignment-proposal.ambiguous {
+		border-color: #fbbf24;
+		background: #fffbeb;
+	}
+	.proposal-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		font-size: 11px;
+		color: #475569;
+	}
+	.proposal-copy strong {
+		color: #1e3a8a;
+		font-size: 12px;
+	}
+	.alignment-proposal.ambiguous .proposal-copy strong {
+		color: #92400e;
+	}
+	.proposal-actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 5px;
+	}
+	.proposal-actions button {
+		border: 1px solid #60a5fa;
+		border-radius: 6px;
+		background: #ffffff;
+		color: #1d4ed8;
+		font-size: 11px;
+		font-weight: 700;
+		padding: 5px 8px;
+		cursor: pointer;
+	}
+	.proposal-actions button:hover {
+		background: #dbeafe;
 	}
 	.overlap-legend {
 		display: flex;
