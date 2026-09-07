@@ -6,7 +6,7 @@ from .refs import ComponentRefs
 
 
 def build_template_stitch_tab():
-    with gr.TabItem("模板拼接", id="tab_template_stitch"):
+    with gr.TabItem("模板拼接", id="tab_template_stitch", visible=False):
         gr.Markdown(
             "### 模板拼接\n"
             "面向周期孔阵分块：检测孔心与周期，2×2 自动判定角点排列，其他网格按文件顺序配准拼接。",

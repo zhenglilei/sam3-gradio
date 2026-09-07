@@ -1,5 +1,5 @@
 {
-  "component_count": 323,
+  "component_count": 325,
   "components": [
     {
       "props": {
@@ -1572,7 +1572,7 @@
         "id": "tab_layout_mask",
         "interactive": true,
         "label": "版图截图转掩码",
-        "visible": true
+        "visible": false
       },
       "type": "tabitem"
     },
@@ -2143,7 +2143,7 @@
         "id": "tab_template_stitch",
         "interactive": true,
         "label": "模板拼接",
-        "visible": true
+        "visible": false
       },
       "type": "tabitem"
     },
@@ -2381,6 +2381,18 @@
     },
     {
       "props": {
+        "visible": true
+      },
+      "type": "row"
+    },
+    {
+      "props": {
+        "visible": true
+      },
+      "type": "column"
+    },
+    {
+      "props": {
         "show_label": false,
         "value": "#### 1 · 上传分块",
         "visible": true
@@ -2447,7 +2459,7 @@
       "props": {
         "visible": true
       },
-      "type": "group"
+      "type": "column"
     },
     {
       "props": {
@@ -2574,7 +2586,7 @@
       "props": {
         "visible": true
       },
-      "type": "group"
+      "type": "column"
     },
     {
       "props": {
@@ -6464,35 +6476,35 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        279,
-        280,
+        281,
+        282,
         274,
-        293,
         295,
-        296,
-        302,
-        303,
-        281
+        297,
+        298,
+        304,
+        305,
+        283
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        313,
-        288,
-        289,
-        307,
-        316,
-        320,
-        306,
+        315,
+        290,
+        291,
+        309,
+        318,
+        322,
         308,
-        290
+        310,
+        292
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          282,
+          284,
           "click"
         ]
       ],
@@ -6505,29 +6517,29 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        280,
+        282,
         274
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        280,
-        313,
-        288,
-        289,
-        307,
-        316,
-        320,
-        306,
+        282,
+        315,
+        290,
+        291,
+        309,
+        318,
+        322,
         308,
-        290
+        310,
+        292
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          280,
+          282,
           "input"
         ]
       ],
@@ -6541,30 +6553,30 @@
       "cancels": [],
       "inputs": [
         274,
-        280,
-        293,
+        282,
         295,
-        296
+        297,
+        298
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        313,
-        288,
-        289,
-        307,
-        316,
-        320,
-        306,
+        315,
+        290,
+        291,
+        309,
+        318,
+        322,
         308,
-        290
+        310,
+        292
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          286,
+          288,
           "click"
         ]
       ],
@@ -6577,27 +6589,27 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        313,
+        315,
         274
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        288,
-        289,
-        307,
-        316,
-        320,
-        306,
+        290,
+        291,
+        309,
+        318,
+        322,
         308,
-        290
+        310,
+        292
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          313,
+          315,
           "change"
         ]
       ],
@@ -6610,30 +6622,30 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        288,
-        289,
         290,
+        291,
+        292,
         274
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        313,
-        288,
-        289,
-        307,
-        316,
-        320,
-        306,
+        315,
+        290,
+        291,
+        309,
+        318,
+        322,
         308,
-        290
+        310,
+        292
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          292,
+          294,
           "click"
         ]
       ],
@@ -6646,45 +6658,16 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        293,
         295,
-        296,
+        297,
+        298,
         274
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        313,
-        307
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          293,
-          "change"
-        ]
-      ],
-      "trigger_after": null,
-      "trigger_only_on_success": false
-    },
-    {
-      "api_name": "_apply_stitch_options_1",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [
-        293,
-        295,
-        296,
-        274
-      ],
-      "max_batch_size": 4,
-      "outputs": [
-        274,
-        313,
-        307
+        315,
+        309
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -6699,28 +6682,57 @@
       "trigger_only_on_success": false
     },
     {
-      "api_name": "_apply_stitch_options_2",
+      "api_name": "_apply_stitch_options_1",
       "backend_fn": true,
       "batch": false,
       "cancels": [],
       "inputs": [
-        293,
         295,
-        296,
+        297,
+        298,
         274
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        313,
-        307
+        315,
+        309
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          296,
+          297,
+          "change"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
+      "api_name": "_apply_stitch_options_2",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        295,
+        297,
+        298,
+        274
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        274,
+        315,
+        309
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          298,
           "change"
         ]
       ],
@@ -6733,25 +6745,25 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        302,
-        303,
+        304,
+        305,
         274
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        307,
-        316,
-        320,
-        306,
-        308
+        309,
+        318,
+        322,
+        308,
+        310
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          302,
+          304,
           "change"
         ]
       ],
@@ -6764,25 +6776,25 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        302,
-        303,
+        304,
+        305,
         274
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        307,
-        316,
-        320,
-        306,
-        308
+        309,
+        318,
+        322,
+        308,
+        310
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          303,
+          305,
           "change"
         ]
       ],
@@ -6796,25 +6808,25 @@
       "cancels": [],
       "inputs": [
         274,
-        302,
-        303
+        304,
+        305
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        316,
-        320,
-        307,
-        306,
+        318,
+        322,
+        309,
         308,
-        317
+        310,
+        319
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          305,
+          307,
           "click"
         ]
       ],
@@ -6827,26 +6839,26 @@
       "batch": false,
       "cancels": [],
       "inputs": [
-        317,
+        319,
         274
       ],
       "max_batch_size": 4,
       "outputs": [
         274,
-        316,
-        320,
-        307,
-        306,
+        318,
+        322,
+        309,
         308,
-        317,
-        318
+        310,
+        319,
+        320
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          317,
+          319,
           "input"
         ]
       ],
@@ -6864,20 +6876,20 @@
       "max_batch_size": 4,
       "outputs": [
         274,
-        316,
-        320,
-        307,
-        306,
+        318,
+        322,
+        309,
         308,
-        317,
-        318
+        310,
+        319,
+        320
       ],
       "queue": true,
       "scroll_to_output": false,
       "show_progress": "full",
       "targets": [
         [
-          318,
+          320,
           "click"
         ]
       ],
@@ -6922,7 +6934,7 @@
       "show_progress": "full",
       "targets": [
         [
-          306,
+          308,
           "click"
         ]
       ],
@@ -6963,7 +6975,7 @@
       ],
       "max_batch_size": 4,
       "outputs": [
-        308
+        310
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -7520,7 +7532,7 @@
                 "component": 24
               }
             ],
-            "component": 321
+            "component": 323
           },
           {
             "component": 22
@@ -8456,120 +8468,130 @@
                           {
                             "children": [
                               {
-                                "component": 278
-                              },
-                              {
-                                "component": 279
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 280
-                                  },
-                                  {
-                                    "component": 281
-                                  }
-                                ],
-                                "component": 283
-                              },
-                              {
-                                "component": 282
-                              }
-                            ],
-                            "component": 277
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 285
-                              },
-                              {
-                                "component": 286
-                              },
-                              {
                                 "children": [
                                   {
                                     "children": [
+                                      {
+                                        "component": 280
+                                      },
+                                      {
+                                        "component": 281
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "component": 282
+                                          },
+                                          {
+                                            "component": 283
+                                          }
+                                        ],
+                                        "component": 285
+                                      },
+                                      {
+                                        "component": 284
+                                      }
+                                    ],
+                                    "component": 279
+                                  },
+                                  {
+                                    "children": [
+                                      {
+                                        "component": 287
+                                      },
                                       {
                                         "component": 288
                                       },
                                       {
+                                        "children": [
+                                          {
+                                            "children": [
+                                              {
+                                                "component": 290
+                                              },
+                                              {
+                                                "component": 291
+                                              },
+                                              {
+                                                "component": 292
+                                              }
+                                            ],
+                                            "component": 293
+                                          }
+                                        ],
                                         "component": 289
                                       },
                                       {
-                                        "component": 290
-                                      }
-                                    ],
-                                    "component": 291
-                                  }
-                                ],
-                                "component": 287
-                              },
-                              {
-                                "component": 292
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "component": 293
-                                  }
-                                ],
-                                "component": 298
-                              },
-                              {
-                                "children": [
-                                  {
-                                    "children": [
-                                      {
-                                        "component": 295
+                                        "component": 294
                                       },
                                       {
+                                        "children": [
+                                          {
+                                            "component": 295
+                                          }
+                                        ],
+                                        "component": 300
+                                      },
+                                      {
+                                        "children": [
+                                          {
+                                            "children": [
+                                              {
+                                                "component": 297
+                                              },
+                                              {
+                                                "component": 298
+                                              }
+                                            ],
+                                            "component": 299
+                                          }
+                                        ],
                                         "component": 296
                                       }
                                     ],
-                                    "component": 297
-                                  }
-                                ],
-                                "component": 294
-                              }
-                            ],
-                            "component": 284
-                          },
-                          {
-                            "children": [
-                              {
-                                "component": 300
-                              },
-                              {
-                                "children": [
+                                    "component": 286
+                                  },
                                   {
                                     "children": [
                                       {
                                         "component": 302
                                       },
                                       {
+                                        "children": [
+                                          {
+                                            "children": [
+                                              {
+                                                "component": 304
+                                              },
+                                              {
+                                                "component": 305
+                                              }
+                                            ],
+                                            "component": 306
+                                          }
+                                        ],
                                         "component": 303
+                                      },
+                                      {
+                                        "component": 307
+                                      },
+                                      {
+                                        "component": 308
                                       }
                                     ],
-                                    "component": 304
+                                    "component": 301
                                   }
                                 ],
-                                "component": 301
-                              },
-                              {
-                                "component": 305
-                              },
-                              {
-                                "component": 306
+                                "component": 278
                               }
                             ],
-                            "component": 299
+                            "component": 277
                           },
                           {
-                            "component": 307
+                            "component": 309
                           },
                           {
-                            "component": 308
+                            "component": 310
                           }
                         ],
                         "component": 276
@@ -8579,25 +8601,19 @@
                           {
                             "children": [
                               {
-                                "component": 311
-                              },
-                              {
-                                "component": 312
-                              },
-                              {
                                 "component": 313
+                              },
+                              {
+                                "component": 314
+                              },
+                              {
+                                "component": 315
                               }
                             ],
-                            "component": 310
+                            "component": 312
                           },
                           {
                             "children": [
-                              {
-                                "component": 315
-                              },
-                              {
-                                "component": 316
-                              },
                               {
                                 "component": 317
                               },
@@ -8609,12 +8625,18 @@
                               },
                               {
                                 "component": 320
+                              },
+                              {
+                                "component": 321
+                              },
+                              {
+                                "component": 322
                               }
                             ],
-                            "component": 314
+                            "component": 316
                           }
                         ],
-                        "component": 309
+                        "component": 311
                       }
                     ],
                     "component": 275
@@ -8629,7 +8651,7 @@
         "component": 0
       },
       {
-        "component": 322
+        "component": 324
       }
     ],
     "component": "root"

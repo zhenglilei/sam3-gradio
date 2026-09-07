@@ -160,6 +160,21 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         expected = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         self.assertEqual(actual, expected)
 
+    def test_el_mask_only_exposes_image_and_periodic_stitch_tabs(self):
+        tabs = {
+            component["props"].get("id"): component["props"]
+            for component in self.components
+            if component.get("type") == "tabitem"
+        }
+        visible_tabs = {
+            tab_id
+            for tab_id, props in tabs.items()
+            if props.get("visible", True)
+        }
+        self.assertEqual(visible_tabs, {"tab_image", "tab_stitch"})
+        self.assertFalse(tabs["tab_layout_mask"]["visible"])
+        self.assertFalse(tabs["tab_template_stitch"]["visible"])
+
     def test_common_output_order_is_frozen(self):
         dependency = self.dependencies["_run_pcs"]
         output_names = [

@@ -12,7 +12,7 @@ def build_layout_mask_tab(
     _layout_region_editor_empty,
     _LAYOUT_MASK_MORPH_LIMIT_PX,
 ):
-    with gr.TabItem("版图截图转掩码", id="tab_layout_mask"):
+    with gr.TabItem("版图截图转掩码", id="tab_layout_mask", visible=False):
         with gr.Sidebar(
             label="AI Mask \u4fee\u590d\u52a9\u624b",
             open=True,
