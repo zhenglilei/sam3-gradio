@@ -27,8 +27,8 @@ def build_overlap_authoring_panel(*, LayoutTransformEditor, import_error=None):
     ):
         draft_state = gr.State(None)
         gr.Markdown(
-            "输入版图名称，上传整体图片和各层 COCO JSON 标注；"
-            "从 JSON 选择图片后会显示合并二值 mask 预览。列表顺序就是叠层顺序。"
+            "输入主版图名称，上传一张主版图图片；每份 JSON 标注就是一个子层。"
+            "JSON 会直接显示为 mask 并叠加到主版图，列表顺序就是叠层顺序。"
             "拖动标注可平移，滚轮缩放，拖动右上圆点旋转。",
             elem_classes="stitch-canvas-help",
         )
@@ -63,40 +63,30 @@ def build_overlap_authoring_panel(*, LayoutTransformEditor, import_error=None):
             with gr.Column(scale=1, min_width=300):
                 base_image = gr.Image(
                     type="pil",
-                    label="整体版图图片",
+                    label="主版图图片",
                     sources=["upload", "clipboard"],
                     interactive=True,
                     height=320,
                 )
             with gr.Column(scale=1, min_width=300):
                 layer_annotation_json = gr.File(
-                    label="新增层标注（COCO JSON）",
+                    label="新增子层标注（LabelMe / 单图 COCO JSON）",
                     file_types=[".json"],
                     type="filepath",
                 )
-                layer_json_image_selector = gr.Dropdown(
-                    choices=[],
-                    value=None,
-                    label="JSON 中的图片",
-                    info="将该图片的全部 annotation 合并为一层二值 mask。",
-                )
                 layer_mask_preview = gr.Image(
                     type="pil",
-                    label="标注 mask 预览",
+                    label="该层标注 mask 预览",
                     interactive=False,
                     height=220,
                 )
-                with gr.Row():
-                    layer_type = gr.Dropdown(
-                        choices=["BSM", "ACT", "GE1", "GE2"],
-                        value="ACT",
-                        label="层分类",
-                    )
-                    layer_name = gr.Textbox(
-                        label="层名称（可选）",
-                        placeholder="例如：ACT 主层",
-                        max_lines=1,
-                    )
+                layer_type = gr.Dropdown(
+                    choices=["BSM", "ACT", "GE1", "GE2"],
+                    value="ACT",
+                    label="子层分类",
+                    info="可直接输入当前主版图实际使用的自定义层分类。",
+                    allow_custom_value=True,
+                )
                 add_layer_btn = gr.Button(
                     "添加这一层", variant="primary"
                 )
@@ -143,10 +133,8 @@ def build_overlap_authoring_panel(*, LayoutTransformEditor, import_error=None):
         layout_name=layout_name,
         base_image=base_image,
         layer_annotation_json=layer_annotation_json,
-        layer_json_image_selector=layer_json_image_selector,
         layer_mask_preview=layer_mask_preview,
         layer_type=layer_type,
-        layer_name=layer_name,
         add_layer_btn=add_layer_btn,
         layer_selector=layer_selector,
         remove_layer_btn=remove_layer_btn,
@@ -223,35 +211,16 @@ def bind_overlap_authoring_events(
         **event_kwargs,
     )
     refs.layer_annotation_json.change(
-        fn=callbacks.inspect_authoring_coco,
+        fn=callbacks.inspect_authoring_annotation,
         inputs=[refs.layer_annotation_json],
-        outputs=[
-            refs.layer_json_image_selector,
-            refs.layer_mask_preview,
-            refs.status,
-        ],
-        **event_kwargs,
-    )
-    refs.layer_json_image_selector.input(
-        fn=callbacks.inspect_authoring_coco,
-        inputs=[
-            refs.layer_annotation_json,
-            refs.layer_json_image_selector,
-        ],
-        outputs=[
-            refs.layer_json_image_selector,
-            refs.layer_mask_preview,
-            refs.status,
-        ],
+        outputs=[refs.layer_mask_preview, refs.status],
         **event_kwargs,
     )
     refs.add_layer_btn.click(
         fn=callbacks.add_authoring_layer,
         inputs=[
-            refs.layer_name,
             refs.layer_type,
             refs.layer_annotation_json,
-            refs.layer_json_image_selector,
             refs.draft_state,
         ],
         outputs=view_outputs,

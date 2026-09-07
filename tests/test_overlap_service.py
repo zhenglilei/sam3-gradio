@@ -98,8 +98,8 @@ class OverlapPredictionServiceTests(unittest.TestCase):
         self.assertEqual(result["current_layer"]["layer_type"], "ACT")
         self.assertEqual(result["next_layer"]["layer_type"], "GE1")
         self.assertEqual(result["metrics"]["intersection_area"], 2)
-        self.assertIn("当前层：ACT main", result["report"])
-        self.assertIn("下一层：GE1 contact", result["report"])
+        self.assertIn("当前层：ACT", result["report"])
+        self.assertIn("下一层：GE1", result["report"])
         self.assertNotIn("base_image_png", result["layout"])
 
     def test_render_propagates_observed_current_pose(self):

@@ -96,8 +96,7 @@ def _layer_choices(draft: Mapping[str, Any]) -> list[tuple[str, str]]:
             raise OverlapAuthoringError("制作草稿层 ID 无效")
         choices.append(
             (
-                f"{ordinal + 1}. {layer.get('name', '')} "
-                f"({layer.get('layer_type', '')})",
+                f"{ordinal + 1}. {layer.get('layer_type', '')}",
                 layer_id,
             )
         )
@@ -234,49 +233,30 @@ def set_authoring_base_image(image: Any, draft: Any) -> tuple[Any, ...]:
     )
 
 
-def inspect_authoring_coco(
+def inspect_authoring_annotation(
     json_file: Any,
-    selected_image_id: Any = None,
-) -> tuple[dict[str, Any], Image.Image | None, str]:
-    """Load one COCO file and preview the selected image's union mask."""
-
+) -> tuple[Image.Image | None, str]:
+    """Preview one LabelMe or single-image COCO file as one complete layer."""
     try:
         service = _service()
-        choices, selected_id, preview = service.inspect_coco_json(
-            json_file, selected_image_id
-        )
-        selected_label = next(
-            label for label, value in choices if value == selected_id
-        )
-        return (
-            gr.update(choices=choices, value=selected_id),
-            preview,
-            f"已读取 JSON 标注：{selected_label}。",
-        )
+        preview, summary = service.inspect_annotation_json(json_file)
+        return preview, f"已读取层标注：{summary}。"
     except (OverlapAuthoringError, OverlapStoreError) as exc:
-        return (
-            gr.update(choices=[], value=None),
-            None,
-            f"读取 JSON 标注失败：{exc}",
-        )
+        return None, f"读取层标注失败：{exc}"
 
 
 def add_authoring_layer(
-    layer_name: Any,
     layer_type: Any,
     json_file: Any,
-    selected_image_id: Any,
     draft: Any,
 ) -> tuple[Any, ...]:
     return _mutate(
         draft,
         "添加叠层",
-        lambda service, previous: service.add_layer_from_coco(
+        lambda service, previous: service.add_layer_from_annotation(
             previous,
             json_file,
-            selected_image_id,
             layer_type,
-            layer_name,
         ),
     )
 

@@ -53,7 +53,7 @@ class OverlapPredictionService:
         """Return Gradio-compatible labels and stable layout ids."""
         return [
             (
-                f"{item['name']} · O3 · {item['width']}×{item['height']}",
+                f"{item['name']} · {item['width']}×{item['height']}",
                 item["id"],
             )
             for item in self._store.list_layouts()
@@ -65,7 +65,7 @@ class OverlapPredictionService:
         layers = ordered_layers(snapshot["layers"])
         return [
             (
-                f"{layer['ordinal'] + 1}. {layer['name']} ({layer['layer_type']})",
+                f"{layer['ordinal'] + 1}. {layer['layer_type']}",
                 layer["id"],
             )
             for layer in layers[:-1]
@@ -128,8 +128,8 @@ class OverlapPredictionService:
         bbox = metrics["intersection_bbox_xyxy"]
         bbox_text = "无" if bbox is None else ", ".join(str(value) for value in bbox)
         report = (
-            f"当前层：{current['name']} ({current['layer_type']})\n"
-            f"下一层：{following['name']} ({following['layer_type']})\n"
+            f"当前层：{current['layer_type']}\n"
+            f"下一层：{following['layer_type']}\n"
             f"交叠面积：{metrics['intersection_area']:,} px\n"
             f"IoU：{metrics['iou']:.4f}\n"
             f"当前层覆盖率：{metrics['current_coverage']:.2%}\n"

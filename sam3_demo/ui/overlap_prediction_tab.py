@@ -13,7 +13,7 @@ def build_overlap_prediction_tab(
     with gr.TabItem("叠层预测", id="tab_overlap_prediction") as tab_item:
         gr.Markdown(
             "### 叠层预测\n"
-            "选择已制作的 O3 整体版图和当前工艺层，查看下一层的预测位置与两层交叠区域。",
+            "选择已制作的主版图（如 O3、X3、C3）和当前工艺层，查看下一层位置与两层交叠区域。",
             elem_classes="stitch-intro",
         )
         with gr.Row(elem_classes="stitch-main-row"):
@@ -27,7 +27,7 @@ def build_overlap_prediction_tab(
                     layout_selector = gr.Dropdown(
                         choices=[],
                         value=None,
-                        label="整体版图（O3）",
+                        label="主版图",
                         info="数据来自后端叠层版图库。",
                     )
                     refresh_btn = gr.Button("刷新版图库", variant="secondary", size="sm")

@@ -41,7 +41,7 @@ class OverlapAuthoringPanelTests(unittest.TestCase):
             "load_authoring_layout",
             "set_authoring_name",
             "set_authoring_base_image",
-            "inspect_authoring_coco",
+            "inspect_authoring_annotation",
             "add_authoring_layer",
             "select_authoring_layer",
             "remove_authoring_layer",
@@ -52,7 +52,7 @@ class OverlapAuthoringPanelTests(unittest.TestCase):
         authoring_fns = [
             fn for fn in demo.fns.values() if fn.name in authoring_names
         ]
-        self.assertEqual(len(authoring_fns), 15)
+        self.assertEqual(len(authoring_fns), 14)
         self.assertTrue(
             all(
                 fn.concurrency_id == "overlap-authoring-write"
@@ -78,20 +78,17 @@ class OverlapAuthoringPanelTests(unittest.TestCase):
             dep
             for dep in dependencies
             if str(dep.get("api_name") or "").startswith(
-                "inspect_authoring_coco"
+                "inspect_authoring_annotation"
             )
         ]
-        self.assertEqual(len(coco_inputs), 2)
-        self.assertEqual(
-            {dep["targets"][0][1] for dep in coco_inputs},
-            {"change", "input"},
-        )
+        self.assertEqual(len(coco_inputs), 1)
+        self.assertEqual(coco_inputs[0]["targets"][0][1], "change")
         add_layer = next(
             dep
             for dep in dependencies
             if dep.get("api_name") == "add_authoring_layer"
         )
-        self.assertEqual(len(add_layer["inputs"]), 5)
+        self.assertEqual(len(add_layer["inputs"]), 3)
         self.assertEqual(base_input["targets"][0][1], "input")
         save = next(
             dep
