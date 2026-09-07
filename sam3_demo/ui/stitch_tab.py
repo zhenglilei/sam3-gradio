@@ -25,62 +25,64 @@ def build_stitch_tab(
 
         with gr.Row(elem_classes="stitch-main-row"):
             with gr.Column(scale=1, min_width=320, elem_classes="stitch-control-column"):
-                with gr.Group(elem_classes="stitch-card"):
-                    gr.Markdown("#### 1 · 上传分块")
-                    stitch_files = gr.File(
-                        label="选择同一组相邻图片",
-                        file_count="multiple",
-                        file_types=["image"],
-                        type="filepath",
-                    )
-                    stitch_layout = gr.Dropdown(
-                        choices=layout_choices,
-                        value="horizontal",
-                        label="排列方式",
-                        info="横/纵按文件顺序；网格按上排从左到右，再按下排从左到右。",
-                    )
-                    stitch_remove_black_border = gr.Checkbox(
-                        value=True,
-                        label="加载时自动去黑边",
-                        info="仅裁除与图片四周连续相连的近黑边；不会删除画面内部黑线。修改后请重新加载。",
-                    )
-                    stitch_load_btn = gr.Button("加载到拼接画布", variant="secondary")
+                with gr.Group(elem_classes="stitch-card stitch-step-shell"):
+                    with gr.Row(elem_classes="stitch-step-pager"):
+                        with gr.Column(elem_classes="stitch-step-page"):
+                            gr.Markdown("#### 1 · 上传分块")
+                            stitch_files = gr.File(
+                                label="选择同一组相邻图片",
+                                file_count="multiple",
+                                file_types=["image"],
+                                type="filepath",
+                            )
+                            stitch_layout = gr.Dropdown(
+                                choices=layout_choices,
+                                value="horizontal",
+                                label="排列方式",
+                                info="横/纵按文件顺序；网格按上排从左到右，再按下排从左到右。",
+                            )
+                            stitch_remove_black_border = gr.Checkbox(
+                                value=True,
+                                label="加载时自动去黑边",
+                                info="仅裁除与图片四周连续相连的近黑边；不会删除画面内部黑线。修改后请重新加载。",
+                            )
+                            stitch_load_btn = gr.Button("加载到拼接画布", variant="secondary")
 
-                with gr.Group(elem_classes="stitch-card"):
-                    gr.Markdown("#### 2 · 自动对齐与微调")
-                    stitch_align_btn = gr.Button("自动对齐", variant="primary")
-                    with gr.Row():
-                        stitch_dx = gr.Number(value=0, precision=0, label="选中块 x（px）")
-                        stitch_dy = gr.Number(value=0, precision=0, label="选中块 y（px）")
-                        stitch_rotation = gr.Number(
-                            value=0,
-                            minimum=-180,
-                            maximum=180,
-                            step=0.1,
-                            precision=2,
-                            label="选中块旋转（°）",
-                        )
-                    stitch_apply_xy_btn = gr.Button("应用位置与旋转", size="sm")
-                    stitch_nudge_step = gr.Radio(
-                        choices=[("1 px", 1), ("5 px", 5), ("10 px", 10)],
-                        value=1,
-                        label="方向键步长",
-                    )
-                    with gr.Row():
-                        stitch_diff_mode = gr.Checkbox(value=False, label="差分闪边")
-                        stitch_show_loupe = gr.Checkbox(value=True, label="光标放大镜")
+                        with gr.Column(elem_classes="stitch-step-page"):
+                            gr.Markdown("#### 2 · 自动对齐与微调")
+                            stitch_align_btn = gr.Button("自动对齐", variant="primary")
+                            with gr.Row():
+                                stitch_dx = gr.Number(value=0, precision=0, label="选中块 x（px）")
+                                stitch_dy = gr.Number(value=0, precision=0, label="选中块 y（px）")
+                                stitch_rotation = gr.Number(
+                                    value=0,
+                                    minimum=-180,
+                                    maximum=180,
+                                    step=0.1,
+                                    precision=2,
+                                    label="选中块旋转（°）",
+                                )
+                            stitch_apply_xy_btn = gr.Button("应用位置与旋转", size="sm")
+                            stitch_nudge_step = gr.Radio(
+                                choices=[("1 px", 1), ("5 px", 5), ("10 px", 10)],
+                                value=1,
+                                label="方向键步长",
+                            )
+                            with gr.Row():
+                                stitch_diff_mode = gr.Checkbox(value=False, label="差分闪边")
+                                stitch_show_loupe = gr.Checkbox(value=True, label="光标放大镜")
 
-                with gr.Group(elem_classes="stitch-card"):
-                    gr.Markdown("#### 3 · 生成与交接")
-                    with gr.Row():
-                        stitch_blend = gr.Checkbox(value=True, label="接缝融合")
-                        stitch_crop_periodic = gr.Checkbox(value=False, label="裁完整周期")
-                    stitch_export_btn = gr.Button("生成拼接结果", variant="primary")
-                    stitch_handoff_btn = gr.Button(
-                        "导入到智能图像分割 · 上传与裁剪",
-                        variant="secondary",
-                        interactive=False,
-                    )
+                        with gr.Column(elem_classes="stitch-step-page"):
+                            gr.Markdown("#### 3 · 生成与交接")
+                            with gr.Row():
+                                stitch_blend = gr.Checkbox(value=True, label="接缝融合")
+                                stitch_crop_periodic = gr.Checkbox(value=False, label="裁完整周期")
+                            stitch_export_btn = gr.Button("生成拼接结果", variant="primary")
+                            stitch_handoff_btn = gr.Button(
+                                "导入到智能图像分割 · 上传与裁剪",
+                                variant="secondary",
+                                interactive=False,
+                            )
 
                 stitch_status = gr.Markdown(
                     "请先上传一组分块图。",

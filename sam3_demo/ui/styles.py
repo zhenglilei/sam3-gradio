@@ -165,6 +165,27 @@ h1 { text-align: center; font-family: 'Helvetica Neue', Helvetica, Arial, sans-s
     margin: 0 0 8px !important;
     color: #1e3a5f !important;
 }
+.stitch-step-shell {
+    overflow: hidden !important;
+}
+.stitch-step-pager {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    gap: 12px !important;
+    overflow-x: auto !important;
+    overscroll-behavior-x: contain;
+    scroll-behavior: smooth;
+    scroll-snap-type: x mandatory;
+    scrollbar-gutter: stable;
+    padding-bottom: 8px;
+}
+.stitch-step-page {
+    flex: 0 0 100% !important;
+    min-width: 100% !important;
+    max-width: 100% !important;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+}
 .stitch-canvas-help {
     color: #64748b !important;
     font-size: 0.9rem !important;
