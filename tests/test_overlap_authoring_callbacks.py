@@ -30,6 +30,14 @@ from sam3_demo.overlap_service import OverlapPredictionService
 from sam3_demo.overlap_store import OverlapLayoutStore, OverlapStoreError
 
 
+def _advance_intent(payload: dict, amount: int = 1) -> None:
+    intent = payload["group_intent"]
+    revision = int(intent.get("client_revision") or 0) + amount
+    intent["client_revision"] = revision
+    intent["transform_set_revision"] = revision
+    intent["payload_hash"] = f"test:{revision}"
+
+
 def _base(width=16, height=12):
     return Image.new("RGB", (width, height), (20, 30, 40))
 
@@ -154,13 +162,14 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
                 delete_authoring_layout(draft),
             ]
         self.assertEqual(len(callback_results[0]), 6)
-        for result in callback_results[1:7]:
+        for result in callback_results[1:6]:
             self.assertEqual(result[0], draft)
             self.assertIn("失败", result[-1])
-        self.assertEqual(len(callback_results[7]), 7)
-        self.assertEqual(len(callback_results[8]), 7)
-        self.assertEqual(len(callback_results[9]), 7)
+        self.assertEqual(len(callback_results[6]), 3)
+        self.assertEqual(callback_results[6][1]["payload_kind"], "ack_error")
+        self.assertIn("失败", callback_results[6][-1])
         for result in callback_results[7:]:
+            self.assertEqual(len(result), 7)
             self.assertEqual(result[0], draft)
             self.assertIn("失败", result[-2])
 
@@ -181,17 +190,37 @@ class OverlapAuthoringCallbackTests(unittest.TestCase):
         first, second = [layer["id"] for layer in draft["layers"]]
         payload = draft_to_view(draft, service=self.authoring)[4]
         intent = payload["group_intent"]
-        intent["transform_set_revision"] += 1
+        _advance_intent(payload)
         intent["changed_group_ids"] = [first]
         intent["ordered_group_ids"] = [second, first]
         item = next(x for x in intent["transforms"] if x["group_id"] == first)
         item["transform"]["center_x"] += 1
         updated = apply_authoring_editor(payload, draft)
+        self.assertEqual(updated[1]["payload_kind"], "ack")
         self.assertEqual([x["id"] for x in updated[0]["layers"]], [second, first])
         saved = save_authoring_layout(updated[0])
         self.assertEqual(len(saved), 7)
         self.assertEqual(saved[0]["layout_id"], saved[6]["value"])
         self.assertEqual(len(self.store.list_layouts()), 1)
+
+    def test_save_applies_latest_unsynced_editor_snapshot(self):
+        draft = self._draft_with_layers()
+        payload = draft_to_view(draft, service=self.authoring)[4]
+        first = draft["layers"][0]["id"]
+        _advance_intent(payload)
+        intent = payload["group_intent"]
+        intent["changed_group_ids"] = [first]
+        item = next(x for x in intent["transforms"] if x["group_id"] == first)
+        item["transform"]["center_x"] = 11.25
+
+        saved = save_authoring_layout(draft, "latest", payload)
+
+        persisted = self.store.get_layout(saved[0]["layout_id"])
+        layer = next(
+            x for x in persisted["layers"] if x["layer_type"] == "ACT"
+        )
+        self.assertEqual(layer["transform"]["center_x"], 11.25)
+        self.assertEqual(saved[0]["editor_sync_revision"], 0)
 
     def test_annotation_inspection_returns_binary_preview(self):
         preview, status = inspect_authoring_annotation(self._write_coco())

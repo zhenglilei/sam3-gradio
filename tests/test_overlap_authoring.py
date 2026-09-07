@@ -32,6 +32,14 @@ def _mask(width=5, height=4):
     return Image.fromarray(array, mode="L")
 
 
+def _advance_intent(payload: dict, amount: int = 1) -> None:
+    intent = payload["group_intent"]
+    revision = int(intent.get("client_revision") or 0) + amount
+    intent["client_revision"] = revision
+    intent["transform_set_revision"] = revision
+    intent["payload_hash"] = f"test:{revision}"
+
+
 def _uncompressed_counts(mask: np.ndarray) -> list[int]:
     counts: list[int] = []
     previous = 0
@@ -435,7 +443,7 @@ class OverlapAuthoringTests(unittest.TestCase):
         payload = self.service.editor_payload(draft)
         first, second = [layer["id"] for layer in draft["layers"]]
         intent = payload["group_intent"]
-        intent["transform_set_revision"] += 1
+        _advance_intent(payload)
         intent["changed_group_ids"] = [first]
         intent["ordered_group_ids"] = [second, first]
         first_item = next(
@@ -461,18 +469,27 @@ class OverlapAuthoringTests(unittest.TestCase):
         )
         self.assertEqual(draft["layers"][0]["transform"]["center_x"], 6.0)
 
-    def test_editor_intent_rejects_stale_and_forged_collections(self):
+    def test_editor_intent_is_idempotent_and_rejects_stale_or_forged(self):
         draft = self._draft_with_layers()
-        payload = self.service.editor_payload(draft)
+        initial = self.service.editor_payload(draft)
+        self.assertEqual(self.service.apply_editor_intent(draft, initial), draft)
+
+        newest = copy.deepcopy(initial)
+        _advance_intent(newest, 2)
+        newest["group_intent"]["payload_hash"] = "test:newest"
+        applied = self.service.apply_editor_intent(draft, newest)
+        stale = copy.deepcopy(initial)
+        _advance_intent(stale)
         with self.assertRaisesRegex(OverlapAuthoringError, "revision"):
-            self.service.apply_editor_intent(draft, payload)
+            self.service.apply_editor_intent(applied, stale)
+
         payload = self.service.editor_payload(draft)
-        payload["group_intent"]["transform_set_revision"] += 1
+        _advance_intent(payload)
         payload["group_intent"]["ordered_group_ids"] = ["forged"]
         with self.assertRaisesRegex(OverlapAuthoringError, "顺序"):
             self.service.apply_editor_intent(draft, payload)
         payload = self.service.editor_payload(draft)
-        payload["group_intent"]["transform_set_revision"] += 1
+        _advance_intent(payload)
         payload["group_intent"]["transforms"].pop()
         with self.assertRaisesRegex(OverlapAuthoringError, "集合"):
             self.service.apply_editor_intent(draft, payload)
@@ -482,7 +499,7 @@ class OverlapAuthoringTests(unittest.TestCase):
         payload = self.service.editor_payload(draft)
         layer_id = draft["layers"][0]["id"]
         intent = payload["group_intent"]
-        intent["transform_set_revision"] += 2
+        _advance_intent(payload, 2)
         intent["changed_group_ids"] = [layer_id]
         item = next(
             value
@@ -494,15 +511,16 @@ class OverlapAuthoringTests(unittest.TestCase):
         updated = self.service.apply_editor_intent(draft, payload)
 
         self.assertEqual(
-            updated["draft_revision"], intent["transform_set_revision"]
+            updated["editor_sync_revision"], intent["client_revision"]
         )
+        self.assertEqual(updated["draft_revision"], draft["draft_revision"] + 1)
         self.assertEqual(updated["layers"][0]["transform"]["center_x"], 9.0)
 
     def test_base_resize_recenters_layers(self):
         draft = self._draft_with_layers()
         payload = self.service.editor_payload(draft)
         layer_id = draft["layers"][0]["id"]
-        payload["group_intent"]["transform_set_revision"] += 1
+        _advance_intent(payload)
         payload["group_intent"]["changed_group_ids"] = [layer_id]
         item = next(
             value

@@ -95,7 +95,14 @@ class OverlapAuthoringPanelTests(unittest.TestCase):
             for dep in dependencies
             if dep.get("api_name") == "save_authoring_layout"
         )
-        self.assertEqual(len(save["inputs"]), 2)
+        self.assertEqual(len(save["inputs"]), 3)
+        editor_sync = next(
+            dep
+            for dep in dependencies
+            if dep.get("api_name") == "apply_authoring_editor"
+        )
+        self.assertEqual(len(editor_sync["outputs"]), 3)
+        self.assertEqual(editor_sync["show_progress"], "hidden")
 
     def test_read_only_tab_needs_no_authoring_builder(self):
         with gr.Blocks() as demo:

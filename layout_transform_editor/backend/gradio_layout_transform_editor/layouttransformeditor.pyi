@@ -72,7 +72,15 @@ class LayoutTransformEditor(Component):
             return {}
 
         result: dict[str, Any] = {}
-        for field in ("enabled", "target_width", "target_height"):
+        for field in (
+            "payload_kind",
+            "editor_session_id",
+            "document_epoch",
+            "payload_hash",
+            "enabled",
+            "target_width",
+            "target_height",
+        ):
             if field in raw:
                 result[field] = raw[field]
         transform = self._sanitize_transform(raw.get("transform"))
@@ -104,11 +112,28 @@ class LayoutTransformEditor(Component):
             "active_group_id": intent.get("active_group_id"),
             "transforms": transforms,
         }
+        for field in (
+            "editor_session_id",
+            "document_epoch",
+            "client_revision",
+            "payload_hash",
+        ):
+            if field in intent:
+                sanitized_intent[field] = intent[field]
         changed_group_ids = intent.get("changed_group_ids")
         if isinstance(changed_group_ids, list):
             sanitized_intent["changed_group_ids"] = [
                 value
                 for value in changed_group_ids
+                if isinstance(value, (str, int))
+                and not isinstance(value, bool)
+                and value != ""
+            ]
+        ordered_group_ids = intent.get("ordered_group_ids")
+        if isinstance(ordered_group_ids, list):
+            sanitized_intent["ordered_group_ids"] = [
+                value
+                for value in ordered_group_ids
                 if isinstance(value, (str, int))
                 and not isinstance(value, bool)
                 and value != ""

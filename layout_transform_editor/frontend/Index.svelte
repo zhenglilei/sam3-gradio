@@ -6,6 +6,7 @@
 		LayoutTransformEditorEvents,
 		LayoutTransformEditorProps,
 		LayoutTransformGroupId,
+		LayoutTransformGroupIntent,
 		LayoutTransformGroupView,
 		LayoutTransformValue,
 	} from "./types";
@@ -26,6 +27,8 @@
 	const props = $props();
 	const MAX_CANVAS_SIDE = 2048;
 	const WHEEL_ZOOM_SPEED = 0.00035;
+	const EDIT_SYNC_DELAY_MS = 250;
+	const EDIT_SYNC_TIMEOUT_MS = 10000;
 	const GROUP_COLORS: [number, number, number][] = [
 		[0, 255, 120],
 		[0, 188, 255],
@@ -57,6 +60,14 @@
 	let dragStart = { x: 0, y: 0, center_x: 0, center_y: 0 };
 	let rotateStart = { angle: 0, rotation: 0 };
 	let changeSyncTimer: ReturnType<typeof setTimeout> | null = null;
+	let syncAckTimer: ReturnType<typeof setTimeout> | null = null;
+	let syncInFlightRevision: number | null = null;
+	let syncRetryRevision: number | null = null;
+	let clientRevision = 0;
+	let serverAckRevision = 0;
+	let editorSessionId = "";
+	let documentEpoch = "";
+	let lastAckSignature = "";
 	let dirtyGroupKeys = new Set<string>();
 	let draggedGroupKey = $state("");
 	let dragOverGroupKey = $state("");
@@ -260,6 +271,23 @@
 		}
 	}
 
+	function clearSyncAckTimer(): void {
+		if (syncAckTimer) {
+			clearTimeout(syncAckTimer);
+			syncAckTimer = null;
+		}
+	}
+
+	function hashIntent(value: unknown): string {
+		const text = JSON.stringify(value);
+		let hash = 0x811c9dc5;
+		for (let index = 0; index < text.length; index++) {
+			hash ^= text.charCodeAt(index);
+			hash = Math.imul(hash, 0x01000193);
+		}
+		return "fnv1a32:" + (hash >>> 0).toString(16).padStart(8, "0");
+	}
+
 	function restoreGroupOrder(
 		groups: LayoutTransformGroupView[],
 		orderedGroupIds: LayoutTransformGroupId[] | undefined,
@@ -291,6 +319,12 @@
 		const serverGroups = Array.isArray(view?.groups) ? view.groups : [];
 		const intent = localValue.group_intent;
 		const intentMatches = !!view && !!intent && String(intent.selection_signature || "") === String(view.selection_signature || "");
+		editorSessionId = String(localValue.editor_session_id || intent?.editor_session_id || "");
+		documentEpoch = String(localValue.document_epoch || intent?.document_epoch || view?.selection_signature || "");
+		clientRevision = Math.max(0, Math.trunc(finiteNumber(intent?.client_revision ?? intent?.transform_set_revision, 0)));
+		serverAckRevision = clientRevision;
+		syncInFlightRevision = null;
+		clearSyncAckTimer();
 		const groups = view?.allow_reorder === true && intentMatches
 			? restoreGroupOrder(serverGroups, intent?.ordered_group_ids)
 			: serverGroups;
@@ -356,6 +390,9 @@
 
 	function ingestValue(value: LayoutTransformValue | null): void {
 		clearQueuedSync();
+		clearSyncAckTimer();
+		syncInFlightRevision = null;
+		syncRetryRevision = null;
 		imageLoadGeneration += 1;
 		const generation = imageLoadGeneration;
 		localValue = cloneValue(value);
@@ -385,17 +422,55 @@
 		}
 	}
 
+	function handleServerAck(value: LayoutTransformValue): void {
+		const ackSession = String(value.editor_session_id || "");
+		const ackEpoch = String(value.document_epoch || "");
+		if (
+			(ackSession && ackSession !== editorSessionId)
+			|| (ackEpoch && ackEpoch !== documentEpoch)
+		) {
+			return;
+		}
+		clearSyncAckTimer();
+		if (value.payload_kind === "ack_error") {
+			syncInFlightRevision = null;
+			statusText = String(value.status || "同步失败；本地修改仍保留");
+			publishClientIntent();
+			draw();
+			return;
+		}
+		const ackRevision = Math.max(0, Math.trunc(finiteNumber(value.server_ack_revision, 0)));
+		serverAckRevision = Math.max(serverAckRevision, ackRevision);
+		syncRetryRevision = null;
+		if (syncInFlightRevision !== null && ackRevision >= syncInFlightRevision) {
+			syncInFlightRevision = null;
+		}
+		statusText = clientRevision > serverAckRevision ? "本地修改待同步" : "已同步";
+		publishClientIntent();
+		if (clientRevision > serverAckRevision) scheduleIntentDispatch(0);
+		draw();
+	}
+
 	$effect(() => {
-		const signature = JSON.stringify(gradio.props.value || null);
+		const incoming = gradio.props.value || null;
+		const signature = JSON.stringify(incoming);
+		if (incoming?.payload_kind === "ack" || incoming?.payload_kind === "ack_error") {
+			if (signature !== lastAckSignature) {
+				lastAckSignature = signature;
+				handleServerAck(incoming);
+			}
+			return;
+		}
 		if (signature !== lastSignature) {
 			lastSignature = signature;
-			ingestValue(gradio.props.value);
+			ingestValue(incoming);
 		}
 	});
 
 	onDestroy(() => {
 		imageLoadGeneration += 1;
 		clearQueuedSync();
+		clearSyncAckTimer();
 	});
 
 	function matrix(t: LayoutTransform): [number, number, number, number, number, number] {
@@ -535,6 +610,10 @@
 
 	function publishClientIntent(): void {
 		const outbound: LayoutTransformValue = {
+			payload_kind: "intent",
+			editor_session_id: editorSessionId,
+			document_epoch: documentEpoch,
+			payload_hash: String(localValue.group_intent?.payload_hash || ""),
 			enabled: localValue.enabled,
 			transform: { ...normalizeTransform(transform) },
 			target_width: localValue.target_width,
@@ -550,6 +629,39 @@
 		lastSignature = JSON.stringify(outbound);
 	}
 
+	function dispatchLatestIntent(): void {
+		if (!isGroupMode()) {
+			gradio.dispatch("change");
+			return;
+		}
+		const intent = localValue.group_intent;
+		const revision = Math.max(0, Math.trunc(finiteNumber(intent?.client_revision, 0)));
+		if (!intent || revision <= serverAckRevision || syncInFlightRevision !== null) return;
+		clearSyncAckTimer();
+		syncInFlightRevision = revision;
+		statusText = "同步中…";
+		publishClientIntent();
+		gradio.dispatch("change");
+		syncAckTimer = setTimeout(() => {
+			if (syncInFlightRevision !== revision) return;
+			syncInFlightRevision = null;
+			const retry = syncRetryRevision !== revision;
+			syncRetryRevision = revision;
+			statusText = retry ? "同步超时，正在重试；本地修改仍保留" : "同步失败；可继续编辑或直接保存重试";
+			publishClientIntent();
+			draw();
+			if (retry) scheduleIntentDispatch(1000);
+		}, EDIT_SYNC_TIMEOUT_MS);
+	}
+
+	function scheduleIntentDispatch(delay = EDIT_SYNC_DELAY_MS): void {
+		clearQueuedSync();
+		changeSyncTimer = setTimeout(() => {
+			changeSyncTimer = null;
+			dispatchLatestIntent();
+		}, Math.max(0, delay));
+	}
+
 	function publishGroupIntent(origin: string, status: string, bumpTransform: boolean, dispatchChange = true): void {
 		if (!isGroupMode()) return;
 		if (bumpTransform) bumpActiveTransformRevision(origin);
@@ -558,24 +670,33 @@
 		const changedGroupIds = groupViews()
 			.filter((group) => dirtyGroupKeys.has(groupKey(group.group_id)))
 			.map((group) => group.group_id);
-		const priorRevision = Number(localValue.group_intent?.transform_set_revision || 0);
+		const nextRevision = clientRevision + 1;
+		const nextIntent: LayoutTransformGroupIntent = {
+			selection_signature: String(view?.selection_signature || documentEpoch),
+			transform_set_revision: nextRevision,
+			editor_session_id: editorSessionId,
+			document_epoch: documentEpoch,
+			client_revision: nextRevision,
+			payload_hash: "",
+			active_group_id: activeView?.group_id ?? null,
+			changed_group_ids: changedGroupIds,
+			...(canReorderGroups() ? { ordered_group_ids: groupViews().map((group) => group.group_id) } : {}),
+			transforms: serializeGroupTransforms(),
+		};
+		nextIntent.payload_hash = hashIntent({ ...nextIntent, payload_hash: "" });
+		clientRevision = nextRevision;
+		syncRetryRevision = null;
 		localValue = {
 			...localValue,
-			group_intent: {
-				selection_signature: String(view?.selection_signature || ""),
-				transform_set_revision: priorRevision + 1,
-				active_group_id: activeView?.group_id ?? null,
-				changed_group_ids: changedGroupIds,
-				...(canReorderGroups() ? { ordered_group_ids: groupViews().map((group) => group.group_id) } : {}),
-				transforms: serializeGroupTransforms(),
-			},
+			payload_kind: "intent",
+			editor_session_id: editorSessionId,
+			document_epoch: documentEpoch,
+			payload_hash: nextIntent.payload_hash,
+			group_intent: nextIntent,
 		};
-		statusText = status;
+		statusText = status + "（本地修改）";
 		publishClientIntent();
-		if (dispatchChange) {
-			clearQueuedSync();
-			gradio.dispatch("change");
-		}
+		if (dispatchChange) scheduleIntentDispatch(0);
 		draw();
 	}
 
@@ -600,7 +721,12 @@
 		draw();
 	}
 
-	function queueSyncValue(origin: string, status: string, delay = 140): void {
+	function queueSyncValue(origin: string, status: string, delay = EDIT_SYNC_DELAY_MS): void {
+		if (isGroupMode()) {
+			syncValue(origin, status, false);
+			scheduleIntentDispatch(delay);
+			return;
+		}
 		syncValue(origin, status, false);
 		clearQueuedSync();
 		changeSyncTimer = setTimeout(() => {

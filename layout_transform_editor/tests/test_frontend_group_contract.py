@@ -80,7 +80,14 @@ class LayoutTransformEditorGroupContractTests(unittest.TestCase):
         self.assertIn("ordered_group_ids", publish_body)
         self.assertIn("canReorderGroups()", publish_body)
         self.assertIn("groupViews().map", publish_body)
-        self.assertEqual(publish_body.count('gradio.dispatch("change")'), 1)
+        self.assertEqual(publish_body.count('gradio.dispatch("change")'), 0)
+        self.assertIn("scheduleIntentDispatch(0)", publish_body)
+        dispatch_body = _function_body(
+            self.index_source,
+            "dispatchLatestIntent",
+        )
+        self.assertEqual(dispatch_body.count('gradio.dispatch("change")'), 2)
+        self.assertIn("syncInFlightRevision !== null", dispatch_body)
 
         drop_body = _function_body(self.index_source, "onGroupDrop")
         self.assertEqual(drop_body.count('publishGroupIntent("reorder_groups"'), 1)

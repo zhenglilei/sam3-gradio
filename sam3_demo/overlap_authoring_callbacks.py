@@ -55,6 +55,8 @@ def _offline_empty_draft() -> dict[str, Any]:
         "height": 0,
         "layers": [],
         "active_layer_id": None,
+        "editor_sync_revision": 0,
+        "editor_sync_hash": "",
     }
 
 
@@ -277,14 +279,44 @@ def remove_authoring_layer(layer_id: Any, draft: Any) -> tuple[Any, ...]:
     )
 
 
-def apply_authoring_editor(editor_payload: Any, draft: Any) -> tuple[Any, ...]:
-    return _mutate(
-        draft,
-        "应用叠层变换",
-        lambda service, previous: service.apply_editor_intent(
-            previous, editor_payload
-        ),
-    )
+def apply_authoring_editor(
+    editor_payload: Any, draft: Any
+) -> tuple[Any, dict[str, Any], str]:
+    """Apply one intent and return an ACK without rehydrating the editor."""
+
+    service: OverlapAuthoringService | None = None
+    try:
+        service = _service()
+        updated = service.apply_editor_intent(draft, editor_payload)
+        status = "叠层变换已同步。"
+        return updated, service.editor_ack(updated, status=status), status
+    except (OverlapAuthoringError, OverlapStoreError) as exc:
+        status = f"应用叠层变换失败：{exc}"
+        if service is None:
+            return (
+                copy.deepcopy(draft),
+                {
+                    "payload_kind": "ack_error",
+                    "status": status,
+                },
+                status,
+            )
+        try:
+            current = _as_empty_draft(service, draft)
+            return (
+                current,
+                service.editor_ack(current, error=status),
+                status,
+            )
+        except OverlapAuthoringError:
+            return (
+                copy.deepcopy(draft),
+                {
+                    "payload_kind": "ack_error",
+                    "status": status,
+                },
+                status,
+            )
 
 
 def _layout_choices_update(
@@ -341,17 +373,21 @@ def load_authoring_layout(
 def save_authoring_layout(
     draft: Any,
     layout_name: Any = None,
+    editor_payload: Any = None,
 ) -> tuple[Any, ...]:
     """Create/update a layout and return the latest shared selector update."""
 
     service: OverlapAuthoringService | None = None
     try:
         service = _service()
-        current = (
-            service.set_name(draft, layout_name)
-            if layout_name is not None
-            else draft
-        )
+        current = draft
+        if (
+            isinstance(editor_payload, dict)
+            and isinstance(editor_payload.get("group_intent"), dict)
+        ):
+            current = service.apply_editor_intent(current, editor_payload)
+        if layout_name is not None:
+            current = service.set_name(current, layout_name)
         saved = service.save(current)
         view = draft_to_view(saved, service=service)
         view = _with_status(view, f"版图已保存：{view[1]}。")

@@ -618,21 +618,32 @@ def _data_url(payload: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
 
 
-def _selection_signature(draft: dict[str, Any]) -> str:
+def _document_epoch(draft: dict[str, Any]) -> str:
+    """Identify assets whose replacement requires a full browser rehydrate."""
+
+    base_png = draft.get("base_image_png")
     identity = {
         "draft_id": draft["draft_id"],
-        "draft_revision": int(draft["draft_revision"]),
-        "layers": [
-            {
-                "id": layer["id"],
-                "ordinal": int(layer["ordinal"]),
-                "mask_sha256": layer["mask_sha256"],
-            }
-            for layer in draft["layers"]
-        ],
+        "base_image_sha256": (
+            hashlib.sha256(base_png).hexdigest() if base_png else None
+        ),
+        "layers": sorted(
+            [
+                {
+                    "id": layer["id"],
+                    "mask_sha256": layer["mask_sha256"],
+                }
+                for layer in draft["layers"]
+            ],
+            key=lambda item: item["id"],
+        ),
     }
     payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _selection_signature(draft: dict[str, Any]) -> str:
+    return _document_epoch(draft)
 
 
 def _layer_transform(
@@ -690,6 +701,8 @@ class OverlapAuthoringService:
             "height": 0,
             "layers": [],
             "active_layer_id": None,
+            "editor_sync_revision": 0,
+            "editor_sync_hash": "",
         }
 
     def set_name(self, draft: Any, name: Any) -> dict[str, Any]:
@@ -908,17 +921,27 @@ class OverlapAuthoringService:
 
     def editor_payload(self, draft: Any) -> dict[str, Any]:
         out = _require_draft(draft)
+        epoch = _document_epoch(out)
+        snapshot_meta = {
+            "payload_kind": "snapshot",
+            "editor_session_id": out["draft_id"],
+            "document_epoch": epoch,
+        }
         if not out.get("base_image_png"):
-            return {"enabled": False, "status": "请先上传整体版图"}
+            return {
+                **snapshot_meta,
+                "enabled": False,
+                "status": "请先上传整体版图",
+            }
         if not out["layers"]:
             return {
+                **snapshot_meta,
                 "enabled": False,
                 "base_image": _data_url(out["base_image_png"]),
                 "target_width": out["width"],
                 "target_height": out["height"],
                 "status": "请上传至少一层标注",
             }
-        signature = _selection_signature(out)
         groups = []
         transforms = []
         for layer in out["layers"]:
@@ -957,20 +980,27 @@ class OverlapAuthoringService:
             for item in transforms
             if item["group_id"] == active_id
         )
+        sync_revision = int(out.get("editor_sync_revision") or 0)
+        sync_hash = str(out.get("editor_sync_hash") or "")
         return {
+            **snapshot_meta,
             "enabled": True,
             "base_image": _data_url(out["base_image_png"]),
             "transform": copy.deepcopy(active_transform),
             "transform_mode": "label_groups",
             "group_view": {
-                "selection_signature": signature,
+                "selection_signature": epoch,
                 "regions_revision": int(out["draft_revision"]),
                 "allow_reorder": True,
                 "groups": groups,
             },
             "group_intent": {
-                "selection_signature": signature,
-                "transform_set_revision": int(out["draft_revision"]),
+                "selection_signature": epoch,
+                "transform_set_revision": sync_revision,
+                "editor_session_id": out["draft_id"],
+                "document_epoch": epoch,
+                "client_revision": sync_revision,
+                "payload_hash": sync_hash,
                 "active_group_id": active_id,
                 "changed_group_ids": [],
                 "ordered_group_ids": [
@@ -983,6 +1013,26 @@ class OverlapAuthoringService:
             "status": "拖动层标注平移；滚轮缩放；拖动右上圆点旋转；上方列表可调整顺序。",
         }
 
+    def editor_ack(
+        self,
+        draft: Any,
+        *,
+        status: str = "叠层变换已同步",
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        current = _require_draft(draft)
+        payload = {
+            "payload_kind": "ack_error" if error else "ack",
+            "editor_session_id": current["draft_id"],
+            "document_epoch": _document_epoch(current),
+            "server_ack_revision": int(
+                current.get("editor_sync_revision") or 0
+            ),
+            "payload_hash": str(current.get("editor_sync_hash") or ""),
+            "status": str(error or status),
+        }
+        return payload
+
     def apply_editor_intent(
         self, draft: Any, editor_payload: Any
     ) -> dict[str, Any]:
@@ -992,15 +1042,39 @@ class OverlapAuthoringService:
         intent = editor_payload.get("group_intent")
         if not isinstance(intent, dict):
             raise OverlapAuthoringError("编辑器缺少 group_intent")
-        if intent.get("selection_signature") != _selection_signature(current):
+
+        epoch = _document_epoch(current)
+        if intent.get("selection_signature") != epoch:
             raise OverlapAuthoringError("编辑器数据已过期，请重试")
-        intent_revision = intent.get("transform_set_revision")
+        if intent.get("editor_session_id") != current["draft_id"]:
+            raise OverlapAuthoringError("编辑器会话已过期，请重试")
+        if intent.get("document_epoch") != epoch:
+            raise OverlapAuthoringError("编辑器版图已更新，请重试")
+
+        client_revision = intent.get("client_revision")
+        legacy_revision = intent.get("transform_set_revision")
         if (
-            not isinstance(intent_revision, int)
-            or isinstance(intent_revision, bool)
-            or intent_revision <= current["draft_revision"]
+            not isinstance(client_revision, int)
+            or isinstance(client_revision, bool)
+            or client_revision < 0
+            or legacy_revision != client_revision
         ):
+            raise OverlapAuthoringError("编辑器 revision 无效")
+        payload_hash = intent.get("payload_hash")
+        if (
+            not isinstance(payload_hash, str)
+            or len(payload_hash) > 128
+        ):
+            raise OverlapAuthoringError("编辑器 payload hash 无效")
+
+        stored_revision = int(current.get("editor_sync_revision") or 0)
+        stored_hash = str(current.get("editor_sync_hash") or "")
+        if client_revision < stored_revision:
             raise OverlapAuthoringError("编辑器 revision 已过期，请重试")
+        if client_revision == stored_revision:
+            if payload_hash == stored_hash:
+                return current
+            raise OverlapAuthoringError("编辑器 revision 内容冲突")
 
         current_ids = [layer["id"] for layer in current["layers"]]
         active_id = str(intent.get("active_group_id") or "")
@@ -1087,12 +1161,9 @@ class OverlapAuthoringService:
         for ordinal, layer in enumerate(current["layers"]):
             layer["ordinal"] = ordinal
         current["active_layer_id"] = active_id
-        # Gradio captures State when a browser event is dispatched. A quick
-        # drag followed by wheel/rotate can enqueue a later, full editor
-        # snapshot alongside an older draft. The intent revision is monotonic
-        # and the payload contains the complete transform/order set, so advance
-        # to that revision instead of requiring an adjacent value.
-        current["draft_revision"] = intent_revision
+        current["editor_sync_revision"] = client_revision
+        current["editor_sync_hash"] = payload_hash
+        current["draft_revision"] = int(current["draft_revision"]) + 1
         return current
 
     def load_layout(self, layout_id: str) -> dict[str, Any]:
@@ -1111,6 +1182,8 @@ class OverlapAuthoringService:
             "active_layer_id": (
                 snapshot["layers"][0]["id"] if snapshot["layers"] else None
             ),
+            "editor_sync_revision": 0,
+            "editor_sync_hash": "",
         }
 
     def save(self, draft: Any) -> dict[str, Any]:

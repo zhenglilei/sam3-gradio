@@ -241,12 +241,16 @@ def bind_overlap_authoring_events(
     refs.editor.change(
         fn=callbacks.apply_authoring_editor,
         inputs=[refs.editor, refs.draft_state],
-        outputs=view_outputs,
-        **event_kwargs,
+        outputs=[refs.draft_state, refs.editor, refs.status],
+        queue=True,
+        show_progress="hidden",
+        concurrency_limit=1,
+        concurrency_id="overlap-authoring-write",
+        api_visibility="private",
     )
     save_event = refs.save_btn.click(
         fn=callbacks.save_authoring_layout,
-        inputs=[refs.draft_state, refs.layout_name],
+        inputs=[refs.draft_state, refs.layout_name, refs.editor],
         outputs=persist_outputs,
         **event_kwargs,
     )

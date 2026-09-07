@@ -44,6 +44,10 @@ export interface LayoutTransformGroupIntentEntry {
 export interface LayoutTransformGroupIntent {
 	selection_signature: string;
 	transform_set_revision: number;
+	editor_session_id?: string;
+	document_epoch?: string;
+	client_revision?: number;
+	payload_hash?: string;
 	active_group_id: LayoutTransformGroupId | null;
 	changed_group_ids?: LayoutTransformGroupId[];
 	ordered_group_ids?: LayoutTransformGroupId[];
@@ -51,6 +55,11 @@ export interface LayoutTransformGroupIntent {
 }
 
 export interface LayoutTransformValue {
+	payload_kind?: "snapshot" | "intent" | "ack" | "ack_error" | "alignment_proposal";
+	editor_session_id?: string;
+	document_epoch?: string;
+	server_ack_revision?: number;
+	payload_hash?: string;
 	enabled?: boolean;
 	base_image?: string | null;
 	mask_image?: string | null;

@@ -152,6 +152,37 @@ class LayoutTransformEditorPreprocessTests(unittest.TestCase):
         self.assertNotIn("base_image", group_transform)
         self.assertNotIn("area", group_transform)
 
+    def test_group_sync_protocol_fields_are_preserved(self) -> None:
+        payload = {
+            "payload_kind": "intent",
+            "editor_session_id": "session-1",
+            "document_epoch": "epoch-1",
+            "payload_hash": "fnv1a32:12345678",
+            "transform_mode": "label_groups",
+            "group_intent": {
+                "selection_signature": "epoch-1",
+                "transform_set_revision": 9,
+                "editor_session_id": "session-1",
+                "document_epoch": "epoch-1",
+                "client_revision": 9,
+                "payload_hash": "fnv1a32:12345678",
+                "active_group_id": "layer-1",
+                "transforms": [],
+            },
+        }
+
+        sanitized = self.component.preprocess(payload)
+
+        self.assertEqual(sanitized["payload_kind"], "intent")
+        self.assertEqual(sanitized["editor_session_id"], "session-1")
+        self.assertEqual(sanitized["document_epoch"], "epoch-1")
+        self.assertEqual(sanitized["payload_hash"], "fnv1a32:12345678")
+        intent = sanitized["group_intent"]
+        self.assertEqual(intent["client_revision"], 9)
+        self.assertEqual(intent["editor_session_id"], "session-1")
+        self.assertEqual(intent["document_epoch"], "epoch-1")
+        self.assertEqual(intent["payload_hash"], "fnv1a32:12345678")
+
     def test_flat_transform_payload_remains_compatible(self) -> None:
         sanitized = self.component.preprocess(
             {
