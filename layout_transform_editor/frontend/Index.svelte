@@ -12,7 +12,6 @@
 	} from "./types";
 	import { Gradio } from "@gradio/utils";
 	import { Block } from "@gradio/atoms";
-	import { StatusTracker } from "@gradio/statustracker";
 	import { onDestroy } from "svelte";
 
 	interface GroupRuntime {
@@ -26,7 +25,7 @@
 
 	const props = $props();
 	const MAX_CANVAS_SIDE = 2048;
-	const WHEEL_ZOOM_SPEED = 0.00035;
+	const WHEEL_ZOOM_LOG_PER_PIXEL = Math.log(1.01) / 100;
 	const EDIT_SYNC_DELAY_MS = 250;
 	const EDIT_SYNC_TIMEOUT_MS = 10000;
 	const GROUP_COLORS: [number, number, number][] = [
@@ -46,6 +45,7 @@
 	let tintCanvas: HTMLCanvasElement | null = null;
 	let groupRuntimeByKey = new Map<string, GroupRuntime>();
 	let groupTransformByKey = new Map<string, LayoutTransform>();
+	let overlapCanvas: HTMLCanvasElement | null = null;
 	let baseReady = $state(false);
 	let maskReady = $state(false);
 	let statusText = $state("等待版图 mask");
@@ -73,6 +73,26 @@
 	let dragOverGroupKey = $state("");
 	let dragOverPosition = $state<"before" | "after">("before");
 	let suppressGroupClick = $state(false);
+	let displayMode = $state<"align" | "overlap">("align");
+	let hiddenGroupKeys = $state(new Set<string>());
+	let explicitVisibleGroupKeys = $state(new Set<string>());
+	let soloGroupKey = $state("");
+	let viewScale = $state(1);
+	let viewPanX = $state(0);
+	let viewPanY = $state(0);
+	let panning = $state(false);
+	let spacePressed = $state(false);
+	let panStart = { client_x: 0, client_y: 0, pan_x: 0, pan_y: 0 };
+	let drawFrame: number | null = null;
+	type NumericField = "x" | "y" | "scale" | "rotation" | "alpha";
+	let editingNumericField = $state<NumericField | "">("");
+	let numericDraft = $state<Record<NumericField, string>>({
+		x: "0",
+		y: "0",
+		scale: "100",
+		rotation: "0",
+		alpha: "22",
+	});
 
 	function defaultTransform(): LayoutTransform {
 		return {
@@ -154,6 +174,31 @@
 	function activeGroupLabel(): string {
 		const view = activeGroupView();
 		return view ? String(view.label || "Label " + String(view.group_id)) : "";
+	}
+
+	function nextBusinessGroupKey(): string {
+		const groups = groupViews();
+		const index = groups.findIndex((group) => groupKey(group.group_id) === activeGroupKey);
+		if (index < 0 || index + 1 >= groups.length) return "";
+		return groupKey(groups[index + 1].group_id);
+	}
+
+	function defaultGroupVisible(key: string): boolean {
+		if (soloGroupKey) return key === soloGroupKey;
+		if (key === activeGroupKey) return true;
+		return displayMode === "overlap" && key === nextBusinessGroupKey();
+	}
+
+	function isGroupVisible(key: string): boolean {
+		if (hiddenGroupKeys.has(key)) return false;
+		if (explicitVisibleGroupKeys.has(key)) return true;
+		return defaultGroupVisible(key);
+	}
+
+	function visibleGroupKeys(): string[] {
+		return groupViews()
+			.map((group) => groupKey(group.group_id))
+			.filter((key) => isGroupVisible(key));
 	}
 
 	function targetWidth(): number {
@@ -288,6 +333,25 @@
 		return "fnv1a32:" + (hash >>> 0).toString(16).padStart(8, "0");
 	}
 
+	function requestDraw(): void {
+		if (drawFrame !== null) return;
+		drawFrame = requestAnimationFrame(() => {
+			drawFrame = null;
+			draw();
+		});
+	}
+
+	function refreshNumericDraft(): void {
+		if (editingNumericField) return;
+		numericDraft = {
+			x: finiteNumber(transform.center_x, 0).toFixed(2).replace(/\.00$/, ""),
+			y: finiteNumber(transform.center_y, 0).toFixed(2).replace(/\.00$/, ""),
+			scale: (finiteNumber(transform.scale, 1) * 100).toFixed(3).replace(/0+$/, "").replace(/\.$/, ""),
+			rotation: finiteNumber(transform.rotation_deg, 0).toFixed(3).replace(/0+$/, "").replace(/\.$/, ""),
+			alpha: (finiteNumber(transform.preview_alpha, 0.22) * 100).toFixed(1).replace(/\.0$/, ""),
+		};
+	}
+
 	function restoreGroupOrder(
 		groups: LayoutTransformGroupView[],
 		orderedGroupIds: LayoutTransformGroupId[] | undefined,
@@ -368,6 +432,7 @@
 		activeGroupKey = nextRuntimes.has(requestedActiveKey) ? requestedActiveKey : (nextRuntimes.keys().next().value || "");
 		transform = normalizeTransform(groupTransformByKey.get(activeGroupKey) || fallback);
 		if (activeGroupKey) groupTransformByKey.set(activeGroupKey, transform);
+		refreshNumericDraft();
 		maskImg = null;
 		maskCanvas = null;
 		tintCanvas = null;
@@ -411,6 +476,7 @@
 			ingestGroupValue(generation);
 		} else {
 			transform = normalizeTransform(localValue.transform);
+			refreshNumericDraft();
 			statusText = localValue.status || "编辑器已加载";
 			maskReady = false;
 			loadImage(localValue.mask_image, generation, (img) => {
@@ -471,6 +537,7 @@
 		imageLoadGeneration += 1;
 		clearQueuedSync();
 		clearSyncAckTimer();
+		if (drawFrame !== null) cancelAnimationFrame(drawFrame);
 	});
 
 	function matrix(t: LayoutTransform): [number, number, number, number, number, number] {
@@ -501,10 +568,23 @@
 
 	function eventToTarget(evt: PointerEvent | WheelEvent): { x: number; y: number } {
 		const rect = canvasEl.getBoundingClientRect();
+		const displayX = ((evt.clientX - rect.left) / Math.max(1, rect.width)) * targetWidth();
+		const displayY = ((evt.clientY - rect.top) / Math.max(1, rect.height)) * targetHeight();
 		return {
-			x: ((evt.clientX - rect.left) / Math.max(1, rect.width)) * targetWidth(),
-			y: ((evt.clientY - rect.top) / Math.max(1, rect.height)) * targetHeight(),
+			x: (displayX - viewPanX) / Math.max(0.05, viewScale),
+			y: (displayY - viewPanY) / Math.max(0.05, viewScale),
 		};
+	}
+
+	function viewTransform(ctx: CanvasRenderingContext2D, rs: number): void {
+		ctx.setTransform(
+			rs * viewScale,
+			0,
+			0,
+			rs * viewScale,
+			rs * viewPanX,
+			rs * viewPanY,
+		);
 	}
 
 	function maskForegroundAt(canvas: HTMLCanvasElement | null, sourceX: number, sourceY: number): boolean {
@@ -526,6 +606,7 @@
 	function setActiveTransform(next: LayoutTransform): void {
 		transform = normalizeTransform(next);
 		if (isGroupMode() && activeGroupKey) groupTransformByKey.set(activeGroupKey, transform);
+		refreshNumericDraft();
 	}
 
 	function hitLegacyMask(targetX: number, targetY: number): boolean {
@@ -541,10 +622,19 @@
 	}
 
 	function hitGroupAt(targetX: number, targetY: number): string {
-		if (activeGroupKey && hitGroupMask(activeGroupKey, targetX, targetY)) return activeGroupKey;
+		const visible = new Set(visibleGroupKeys());
+		if (
+			activeGroupKey
+			&& visible.has(activeGroupKey)
+			&& hitGroupMask(activeGroupKey, targetX, targetY)
+		) return activeGroupKey;
 		const keys = groupViews().map((group) => groupKey(group.group_id)).reverse();
 		for (const key of keys) {
-			if (key !== activeGroupKey && hitGroupMask(key, targetX, targetY)) return key;
+			if (
+				key !== activeGroupKey
+				&& visible.has(key)
+				&& hitGroupMask(key, targetX, targetY)
+			) return key;
 		}
 		return "";
 	}
@@ -568,13 +658,17 @@
 		const angle = (Number(transform.rotation_deg || 0) * Math.PI) / 180;
 		const ux = Math.cos(angle - Math.PI / 4);
 		const uy = Math.sin(angle - Math.PI / 4);
-		return { x: corner.x + ux * 34, y: corner.y + uy * 34 };
+		const offset = 34 / Math.max(0.05, viewScale);
+		return { x: corner.x + ux * offset, y: corner.y + uy * offset };
 	}
 
 	function handleRadius(): number {
 		const rect = canvasEl?.getBoundingClientRect();
-		if (!rect) return 14;
-		return Math.max(8, (14 * targetWidth()) / Math.max(1, rect.width));
+		if (!rect) return 14 / viewScale;
+		return Math.max(
+			8 / viewScale,
+			(14 * targetWidth()) / Math.max(1, rect.width) / viewScale,
+		);
 	}
 
 	function hitRotateHandle(targetX: number, targetY: number): boolean {
@@ -697,7 +791,7 @@
 		statusText = status + "（本地修改）";
 		publishClientIntent();
 		if (dispatchChange) scheduleIntentDispatch(0);
-		draw();
+		requestDraw();
 	}
 
 	function syncValue(origin: string, status: string, dispatchChange = true): void {
@@ -718,7 +812,7 @@
 			clearQueuedSync();
 			gradio.dispatch("change");
 		}
-		draw();
+		requestDraw();
 	}
 
 	function queueSyncValue(origin: string, status: string, delay = EDIT_SYNC_DELAY_MS): void {
@@ -753,13 +847,62 @@
 		rs: number,
 		tinted: HTMLCanvasElement,
 		t: LayoutTransform,
+		alpha = clamp(Number(t.preview_alpha ?? 0.35), 0, 1),
 	): void {
 		ctx.save();
-		ctx.globalAlpha = clamp(Number(t.preview_alpha ?? 0.35), 0, 1);
+		ctx.globalAlpha = alpha;
 		const [a, b, c, d, e, f] = matrix(t);
-		ctx.setTransform(rs * a, rs * b, rs * c, rs * d, rs * e, rs * f);
+		ctx.setTransform(
+			rs * viewScale * a,
+			rs * viewScale * b,
+			rs * viewScale * c,
+			rs * viewScale * d,
+			rs * (viewScale * e + viewPanX),
+			rs * (viewScale * f + viewPanY),
+		);
 		ctx.imageSmoothingEnabled = false;
 		ctx.drawImage(tinted, 0, 0, tinted.width, tinted.height);
+		ctx.restore();
+	}
+
+	function drawOverlapPreview(
+		ctx: CanvasRenderingContext2D,
+		rs: number,
+		firstKey: string,
+		secondKey: string,
+	): void {
+		const first = groupRuntimeByKey.get(firstKey);
+		const second = groupRuntimeByKey.get(secondKey);
+		if (!first?.tintCanvas || !second?.tintCanvas || !first.ready || !second.ready) return;
+		const overlay = overlapCanvas || document.createElement("canvas");
+		overlapCanvas = overlay;
+		if (overlay.width !== canvasEl.width) overlay.width = canvasEl.width;
+		if (overlay.height !== canvasEl.height) overlay.height = canvasEl.height;
+		const overlapCtx = overlay.getContext("2d");
+		if (!overlapCtx) return;
+		overlapCtx.setTransform(1, 0, 0, 1, 0, 0);
+		overlapCtx.globalCompositeOperation = "source-over";
+		overlapCtx.clearRect(0, 0, overlay.width, overlay.height);
+		drawTint(overlapCtx, rs, first.tintCanvas, transformForKey(firstKey), 1);
+		overlapCtx.globalCompositeOperation = "destination-in";
+		drawTint(overlapCtx, rs, second.tintCanvas, transformForKey(secondKey), 1);
+		overlapCtx.globalCompositeOperation = "source-in";
+		overlapCtx.setTransform(1, 0, 0, 1, 0, 0);
+		overlapCtx.fillStyle = "#ff3fa4";
+		overlapCtx.fillRect(0, 0, overlay.width, overlay.height);
+		overlapCtx.globalCompositeOperation = "source-atop";
+		overlapCtx.strokeStyle = "rgba(255,255,255,0.78)";
+		overlapCtx.lineWidth = 1.5;
+		for (let offset = -overlay.height; offset < overlay.width; offset += 14) {
+			overlapCtx.beginPath();
+			overlapCtx.moveTo(offset, 0);
+			overlapCtx.lineTo(offset + overlay.height, overlay.height);
+			overlapCtx.stroke();
+		}
+		ctx.save();
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.globalAlpha = 0.62;
+		ctx.drawImage(overlay, 0, 0);
 		ctx.restore();
 	}
 
@@ -767,30 +910,34 @@
 		const corners = bboxCorners();
 		ctx.save();
 		ctx.lineJoin = "round";
-		ctx.lineWidth = Math.max(2.5, tw / 700);
+		ctx.lineWidth = Math.max(2.5, tw / 700) / viewScale;
 		ctx.strokeStyle = "rgba(0,0,0,0.82)";
 		ctx.beginPath();
 		ctx.moveTo(corners[0].x, corners[0].y);
 		for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
 		ctx.closePath();
 		ctx.stroke();
-		ctx.lineWidth = Math.max(1.8, tw / 1000);
+		ctx.lineWidth = Math.max(1.8, tw / 1000) / viewScale;
 		ctx.strokeStyle = "#00ff66";
 		ctx.stroke();
 		const h = rotateHandleCenter();
 		const top = corners.reduce(
-			(best, p) => (p.y < best.y || (Math.abs(p.y - best.y) < 1e-6 && p.x > best.x) ? p : best),
+			(best, point) => (
+				point.y < best.y || (Math.abs(point.y - best.y) < 1e-6 && point.x > best.x)
+					? point
+					: best
+			),
 			corners[0],
 		);
 		ctx.strokeStyle = "#0f172a";
-		ctx.lineWidth = Math.max(2, tw / 900);
+		ctx.lineWidth = Math.max(2, tw / 900) / viewScale;
 		ctx.beginPath();
 		ctx.moveTo(top.x, top.y);
 		ctx.lineTo(h.x, h.y);
 		ctx.stroke();
 		ctx.fillStyle = rotating ? "#ffb000" : "#ffffff";
 		ctx.strokeStyle = "#00ff66";
-		ctx.lineWidth = Math.max(2, tw / 900);
+		ctx.lineWidth = Math.max(2, tw / 900) / viewScale;
 		ctx.beginPath();
 		ctx.arc(h.x, h.y, handleRadius(), 0, Math.PI * 2);
 		ctx.fill();
@@ -805,15 +952,16 @@
 		const left = Math.min(...corners.map((point) => point.x));
 		const top = Math.min(...corners.map((point) => point.y));
 		const label = String(runtime.view.label || "Label " + String(runtime.view.group_id));
+		const inverseView = 1 / Math.max(0.05, viewScale);
 		ctx.save();
-		ctx.font = "600 13px sans-serif";
-		const width = ctx.measureText(label).width + 12;
+		ctx.font = "600 " + String(13 * inverseView) + "px sans-serif";
+		const width = ctx.measureText(label).width + 12 * inverseView;
 		const x = clamp(left, 2, Math.max(2, targetWidth() - width - 2));
-		const y = clamp(top - 23, 2, Math.max(2, targetHeight() - 22));
-		ctx.fillStyle = active ? "rgba(15,23,42,0.92)" : "rgba(51,65,85,0.76)";
-		ctx.fillRect(x, y, width, 20);
+		const y = clamp(top - 23 * inverseView, 2, Math.max(2, targetHeight() - 22 * inverseView));
+		ctx.fillStyle = active ? "rgba(15,23,42,0.92)" : "rgba(51,65,85,0.62)";
+		ctx.fillRect(x, y, width, 20 * inverseView);
 		ctx.fillStyle = "#ffffff";
-		ctx.fillText(label, x + 6, y + 14);
+		ctx.fillText(label, x + 6 * inverseView, y + 14 * inverseView);
 		ctx.restore();
 	}
 
@@ -822,34 +970,54 @@
 		const tw = targetWidth();
 		const th = targetHeight();
 		const rs = canvasRenderScale();
-		canvasEl.width = Math.max(1, Math.round(tw * rs));
-		canvasEl.height = Math.max(1, Math.round(th * rs));
+		const renderWidth = Math.max(1, Math.round(tw * rs));
+		const renderHeight = Math.max(1, Math.round(th * rs));
+		if (canvasEl.width !== renderWidth) canvasEl.width = renderWidth;
+		if (canvasEl.height !== renderHeight) canvasEl.height = renderHeight;
 		const ctx = canvasEl.getContext("2d");
 		if (!ctx) return;
-		ctx.setTransform(rs, 0, 0, rs, 0, 0);
-		ctx.clearRect(0, 0, tw, th);
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+		viewTransform(ctx, rs);
 		drawBase(ctx, tw, th);
 		if (localValue.enabled === false) return;
 		if (isGroupMode()) {
-			const keys = groupViews().map((group) => groupKey(group.group_id));
+			const keys = visibleGroupKeys();
 			const drawOrder = keys.filter((key) => key !== activeGroupKey);
-			if (activeGroupKey) drawOrder.push(activeGroupKey);
+			if (keys.includes(activeGroupKey)) drawOrder.push(activeGroupKey);
+			const nextKey = nextBusinessGroupKey();
 			for (const key of drawOrder) {
 				const runtime = groupRuntimeByKey.get(key);
 				if (runtime?.ready && runtime.tintCanvas) {
-					drawTint(ctx, rs, runtime.tintCanvas, transformForKey(key));
+					const alpha = key === activeGroupKey
+						? clamp(Number(transformForKey(key).preview_alpha ?? 0.22), 0, 1)
+						: (key === nextKey ? 0.10 : 0.08);
+					drawTint(ctx, rs, runtime.tintCanvas, transformForKey(key), alpha);
 				}
 			}
-			ctx.setTransform(rs, 0, 0, rs, 0, 0);
+			if (
+				displayMode === "overlap"
+				&& activeGroupKey
+				&& nextKey
+				&& keys.includes(activeGroupKey)
+				&& keys.includes(nextKey)
+			) {
+				drawOverlapPreview(ctx, rs, activeGroupKey, nextKey);
+			}
+			viewTransform(ctx, rs);
 			for (const key of drawOrder) {
 				if (groupRuntimeByKey.get(key)?.ready) drawGroupLabel(ctx, key, key === activeGroupKey);
 			}
-			if (activeGroupKey && groupRuntimeByKey.get(activeGroupKey)?.ready) drawActiveControls(ctx, tw);
+			if (
+				activeGroupKey
+				&& keys.includes(activeGroupKey)
+				&& groupRuntimeByKey.get(activeGroupKey)?.ready
+			) drawActiveControls(ctx, tw);
 			return;
 		}
 		if (tintCanvas && maskReady) {
 			drawTint(ctx, rs, tintCanvas, transform);
-			ctx.setTransform(rs, 0, 0, rs, 0, 0);
+			viewTransform(ctx, rs);
 			drawActiveControls(ctx, tw);
 		}
 	}
@@ -866,9 +1034,149 @@
 		activeGroupKey = key;
 		transform = normalizeTransform(groupTransformByKey.get(key));
 		groupTransformByKey.set(key, transform);
+		refreshNumericDraft();
 		statusText = "当前 Label：" + activeGroupLabel();
-		draw();
+		requestDraw();
 		return true;
+	}
+
+	function setDisplayMode(mode: "align" | "overlap"): void {
+		displayMode = mode;
+		statusText = mode === "align"
+			? "对齐模式：默认只显示当前层"
+			: "交叠预览：当前层突出、下一业务层淡显";
+		requestDraw();
+	}
+
+	function toggleGroupVisibility(evt: MouseEvent, key: string): void {
+		evt.stopPropagation();
+		const nextHidden = new Set(hiddenGroupKeys);
+		const nextExplicit = new Set(explicitVisibleGroupKeys);
+		if (isGroupVisible(key)) {
+			nextHidden.add(key);
+			nextExplicit.delete(key);
+		} else {
+			nextHidden.delete(key);
+			nextExplicit.add(key);
+		}
+		hiddenGroupKeys = nextHidden;
+		explicitVisibleGroupKeys = nextExplicit;
+		statusText = "显示设置仅保存在浏览器，不改变保存数据";
+		requestDraw();
+	}
+
+	function toggleSoloGroup(evt: MouseEvent, key: string): void {
+		evt.stopPropagation();
+		soloGroupKey = soloGroupKey === key ? "" : key;
+		statusText = soloGroupKey ? "已单独显示一层" : "已退出单层显示";
+		requestDraw();
+	}
+
+	function resetView(): void {
+		viewScale = 1;
+		viewPanX = 0;
+		viewPanY = 0;
+		statusText = "画布视图已复位（不影响保存数据）";
+		requestDraw();
+	}
+
+	function zoomView(factor: number): void {
+		const next = clamp(viewScale * factor, 0.2, 8);
+		const displayX = targetWidth() / 2;
+		const displayY = targetHeight() / 2;
+		const targetX = (displayX - viewPanX) / viewScale;
+		const targetY = (displayY - viewPanY) / viewScale;
+		viewPanX = displayX - targetX * next;
+		viewPanY = displayY - targetY * next;
+		viewScale = next;
+		statusText = "画布视图 " + Math.round(viewScale * 100) + "%（仅本地）";
+		requestDraw();
+	}
+
+	function numericTransformValue(field: NumericField, raw: number): LayoutTransform {
+		if (field === "x") return { ...transform, center_x: raw };
+		if (field === "y") return { ...transform, center_y: raw };
+		if (field === "scale") return { ...transform, scale: clamp(raw / 100, 0.01, 20) };
+		if (field === "rotation") return { ...transform, rotation_deg: normalizeRotation(raw) };
+		return { ...transform, preview_alpha: clamp(raw / 100, 0, 1) };
+	}
+
+	function commitNumericField(field: NumericField): void {
+		const raw = Number(numericDraft[field]);
+		editingNumericField = "";
+		if (!Number.isFinite(raw)) {
+			refreshNumericDraft();
+			return;
+		}
+		const before = normalizeTransform(transform);
+		const next = normalizeTransform(numericTransformValue(field, raw));
+		const unchanged = (
+			Math.abs(next.center_x - before.center_x) < 1e-9
+			&& Math.abs(next.center_y - before.center_y) < 1e-9
+			&& Math.abs(next.scale - before.scale) < 1e-12
+			&& Math.abs(next.rotation_deg - before.rotation_deg) < 1e-9
+			&& Math.abs(next.preview_alpha - before.preview_alpha) < 1e-12
+		);
+		setActiveTransform(next);
+		if (unchanged) {
+			requestDraw();
+			return;
+		}
+		queueSyncValue("numeric", activeGroupLabel() + " 参数已更新");
+	}
+
+	function onNumericInput(evt: Event, field: NumericField): void {
+		numericDraft = {
+			...numericDraft,
+			[field]: (evt.currentTarget as HTMLInputElement).value,
+		};
+	}
+
+	function numericStep(field: NumericField, evt: KeyboardEvent): number {
+		const direction = evt.key === "ArrowUp" ? 1 : -1;
+		const regular = field === "x" || field === "y" ? 1 : (field === "alpha" ? 1 : 0.1);
+		const fine = field === "x" || field === "y" ? 0.1 : (field === "alpha" ? 0.1 : 0.01);
+		const fast = field === "x" || field === "y" ? 10 : (field === "alpha" ? 5 : 1);
+		return direction * (evt.shiftKey ? fine : (evt.altKey ? fast : regular));
+	}
+
+	function onNumericKeydown(evt: KeyboardEvent, field: NumericField): void {
+		if (evt.key === "Escape") {
+			evt.preventDefault();
+			editingNumericField = "";
+			refreshNumericDraft();
+			(evt.currentTarget as HTMLInputElement).blur();
+			return;
+		}
+		if (evt.key === "Enter") {
+			evt.preventDefault();
+			commitNumericField(field);
+			(evt.currentTarget as HTMLInputElement).blur();
+			return;
+		}
+		if (evt.key === "ArrowUp" || evt.key === "ArrowDown") {
+			evt.preventDefault();
+			const current = finiteNumber(numericDraft[field], 0);
+			numericDraft = {
+				...numericDraft,
+				[field]: String(current + numericStep(field, evt)),
+			};
+			commitNumericField(field);
+		}
+	}
+
+	function onWindowKeydown(evt: KeyboardEvent): void {
+		if (
+			evt.code === "Space"
+			&& !(evt.target instanceof HTMLInputElement)
+			&& !(evt.target instanceof HTMLTextAreaElement)
+		) {
+			spacePressed = true;
+		}
+	}
+
+	function onWindowKeyup(evt: KeyboardEvent): void {
+		if (evt.code === "Space") spacePressed = false;
 	}
 
 	function clearGroupDragState(): void {
@@ -958,16 +1266,27 @@
 		}
 	}
 
+	function beginCanvasPan(evt: PointerEvent): void {
+		panning = true;
+		cursorStyle = "grabbing";
+		panStart = {
+			client_x: evt.clientX,
+			client_y: evt.clientY,
+			pan_x: viewPanX,
+			pan_y: viewPanY,
+		};
+		canvasEl.setPointerCapture(evt.pointerId);
+	}
+
 	function onPointerDown(evt: PointerEvent): void {
 		if (evt.button !== 0) return;
-		if (!hasEditableMask()) {
-			statusText = "请先启用并加载版图 mask";
-			draw();
-			return;
-		}
 		clearQueuedSync();
 		const p = eventToTarget(evt);
-		if (hitRotateHandle(p.x, p.y)) {
+		if (spacePressed) {
+			beginCanvasPan(evt);
+			return;
+		}
+		if (hasEditableMask() && hitRotateHandle(p.x, p.y)) {
 			cursorStyle = "grabbing";
 			rotating = true;
 			rotateStart = {
@@ -977,17 +1296,19 @@
 			canvasEl.setPointerCapture(evt.pointerId);
 			return;
 		}
-		if (isGroupMode()) {
+		let hit = false;
+		if (hasEditableMask() && isGroupMode()) {
 			const hitKey = hitGroupAt(p.x, p.y);
-			if (!hitKey) {
-				statusText = "请点中任一 Label mask 前景后拖动";
-				draw();
-				return;
+			if (hitKey) {
+				setActiveGroupLocal(hitKey);
+				hit = true;
 			}
-			setActiveGroupLocal(hitKey);
-		} else if (!hitLegacyMask(p.x, p.y)) {
-			statusText = "请点中版图 mask 前景后拖动";
-			draw();
+		} else if (hasEditableMask()) {
+			hit = hitLegacyMask(p.x, p.y);
+		}
+		if (!hit) {
+			beginCanvasPan(evt);
+			statusText = "正在平移画布视图（仅本地）";
 			return;
 		}
 		cursorStyle = "grabbing";
@@ -1002,19 +1323,31 @@
 	}
 
 	function updateCursor(p: { x: number; y: number }): void {
-		if (!hasEditableMask()) {
-			cursorStyle = "not-allowed";
-			return;
-		}
-		const hit = isGroupMode() ? !!hitGroupAt(p.x, p.y) : hitLegacyMask(p.x, p.y);
-		if (hitRotateHandle(p.x, p.y) || hit) {
+		if (spacePressed) {
 			cursorStyle = "grab";
 			return;
 		}
-		cursorStyle = "crosshair";
+		if (!hasEditableMask()) {
+			cursorStyle = "grab";
+			return;
+		}
+		const hit = isGroupMode() ? !!hitGroupAt(p.x, p.y) : hitLegacyMask(p.x, p.y);
+		cursorStyle = hitRotateHandle(p.x, p.y) || hit ? "grab" : "grab";
 	}
 
 	function onPointerMove(evt: PointerEvent): void {
+		if (panning) {
+			const rect = canvasEl.getBoundingClientRect();
+			viewPanX = panStart.pan_x + (
+				(evt.clientX - panStart.client_x) * targetWidth() / Math.max(1, rect.width)
+			);
+			viewPanY = panStart.pan_y + (
+				(evt.clientY - panStart.client_y) * targetHeight() / Math.max(1, rect.height)
+			);
+			statusText = "正在平移画布视图（仅本地）";
+			requestDraw();
+			return;
+		}
 		const p = eventToTarget(evt);
 		if (!dragging && !rotating) {
 			updateCursor(p);
@@ -1027,23 +1360,34 @@
 				center_x: dragStart.center_x + p.x - dragStart.x,
 				center_y: dragStart.center_y + p.y - dragStart.y,
 			});
-			statusText = "正在拖动 " + (isGroupMode() ? activeGroupLabel() : "版图") + "；松开后同步变换";
+			statusText = "正在拖动 " + (isGroupMode() ? activeGroupLabel() : "版图") + "（本地）";
 		} else if (rotating) {
 			const angle = Math.atan2(p.y - transform.center_y, p.x - transform.center_x) * 180 / Math.PI;
 			setActiveTransform({
 				...transform,
 				rotation_deg: normalizeRotation(rotateStart.rotation + angle - rotateStart.angle),
 			});
-			statusText = "正在旋转 " + (isGroupMode() ? activeGroupLabel() : "版图") + "；松开后同步变换";
+			statusText = "正在旋转 " + (isGroupMode() ? activeGroupLabel() : "版图") + "（本地）";
 		}
-		draw();
+		requestDraw();
 	}
 
 	function onPointerLeave(): void {
-		if (!dragging && !rotating) cursorStyle = "crosshair";
+		if (!dragging && !rotating && !panning) cursorStyle = "grab";
 	}
 
 	function onPointerUp(evt: PointerEvent): void {
+		if (panning) {
+			panning = false;
+			try {
+				canvasEl.releasePointerCapture(evt.pointerId);
+			} catch (_) {
+				// Pointer capture may already have been released by the browser.
+			}
+			statusText = "画布视图已调整（仅本地，不影响保存数据）";
+			updateCursor(eventToTarget(evt));
+			return;
+		}
 		if (dragging || rotating) {
 			dragging = false;
 			rotating = false;
@@ -1054,7 +1398,7 @@
 			}
 			updateCursor(eventToTarget(evt));
 			const subject = isGroupMode() ? activeGroupLabel() : "Canvas";
-			const status = subject + " 变换已同步；点击更新预览或创建实例后使用后端权威 mask";
+			const status = subject + " 已在本地更新，停止操作 250ms 后静默同步";
 			if (isGroupMode()) {
 				queueSyncValue("canvas", status);
 			} else {
@@ -1063,16 +1407,43 @@
 		}
 	}
 
+	function wheelPixels(evt: WheelEvent): number {
+		if (evt.deltaMode === WheelEvent.DOM_DELTA_LINE) return evt.deltaY * 16;
+		if (evt.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+			return evt.deltaY * Math.max(1, canvasEl.getBoundingClientRect().height);
+		}
+		return evt.deltaY;
+	}
+
 	function onWheel(evt: WheelEvent): void {
-		if (!hasEditableMask()) return;
 		evt.preventDefault();
+		const rect = canvasEl.getBoundingClientRect();
+		const displayX = ((evt.clientX - rect.left) / Math.max(1, rect.width)) * targetWidth();
+		const displayY = ((evt.clientY - rect.top) / Math.max(1, rect.height)) * targetHeight();
+		if (evt.ctrlKey || evt.metaKey) {
+			const targetX = (displayX - viewPanX) / viewScale;
+			const targetY = (displayY - viewPanY) / viewScale;
+			const nextViewScale = clamp(
+				viewScale * Math.exp(-wheelPixels(evt) * 0.0015),
+				0.2,
+				8,
+			);
+			viewPanX = displayX - targetX * nextViewScale;
+			viewPanY = displayY - targetY * nextViewScale;
+			viewScale = nextViewScale;
+			statusText = "画布视图 " + Math.round(viewScale * 100) + "%（仅本地）";
+			requestDraw();
+			return;
+		}
+		if (!hasEditableMask()) return;
 		const p = eventToTarget(evt);
 		if (isGroupMode()) {
 			const hitKey = hitGroupAt(p.x, p.y);
 			if (hitKey) setActiveGroupLocal(hitKey);
 		}
 		const before = targetToSource(p.x, p.y, transform);
-		const factor = Math.exp(-evt.deltaY * WHEEL_ZOOM_SPEED);
+		const modifier = evt.shiftKey ? 0.1 : (evt.altKey ? 5 : 1);
+		const factor = Math.exp(-wheelPixels(evt) * WHEEL_ZOOM_LOG_PER_PIXEL * modifier);
 		const nextScale = clamp(Number(transform.scale || 1) * factor, 0.01, 20);
 		let next = { ...transform, scale: nextScale };
 		const afterTarget = sourceToTarget(before.x, before.y, next);
@@ -1082,7 +1453,11 @@
 			center_y: Number(next.center_y || 0) + p.y - afterTarget.y,
 		};
 		setActiveTransform(next);
-		queueSyncValue("canvas", "滚轮缩放已同步: scale=" + nextScale.toFixed(3));
+		queueSyncValue(
+			"canvas",
+			"本地缩放 " + (nextScale * 100).toFixed(2) + "%；停止 250ms 后同步",
+		);
+		requestDraw();
 	}
 
 	function resetTransform(): void {
@@ -1140,10 +1515,12 @@
 	}
 </script>
 
+<svelte:window on:keydown={onWindowKeydown} on:keyup={onWindowKeyup} />
+
 <Block
 	visible={gradio.shared.visible}
 	variant="solid"
-	border_mode={dragging || rotating ? "focus" : "base"}
+	border_mode={dragging || rotating || panning ? "focus" : "base"}
 	padding={false}
 	elem_id={gradio.shared.elem_id}
 	elem_classes={gradio.shared.elem_classes}
@@ -1152,12 +1529,6 @@
 	scale={gradio.shared.scale}
 	min_width={gradio.shared.min_width}
 >
-	<StatusTracker
-		autoscroll={gradio.shared.autoscroll}
-		i18n={gradio.i18n}
-		{...gradio.shared.loading_status}
-		on_clear_status={() => gradio.dispatch("clear_status", gradio.shared.loading_status)}
-	/>
 	<div class="layout-editor" style={"min-height:" + heightStyle(gradio.props.height)}>
 		{#if isGroupMode()}
 			<div class="group-picker">
@@ -1169,18 +1540,37 @@
 						</option>
 					{/each}
 				</select>
+				<div class="mode-switch" aria-label="显示模式">
+					<button
+						type="button"
+						class:active={displayMode === "align"}
+						on:click={() => setDisplayMode("align")}
+					>对齐模式</button>
+					<button
+						type="button"
+						class:active={displayMode === "overlap"}
+						on:click={() => setDisplayMode("overlap")}
+					>交叠预览</button>
+				</div>
 				{#if canReorderGroups()}
 					<div class="group-reorder" aria-label="调整 Label 叠层顺序">
-						<div class="group-reorder-hint">拖动调整叠层顺序</div>
+						<div class="group-reorder-hint">拖动排序；眼睛与单层显示仅影响浏览器预览</div>
 						<div class="group-reorder-list">
 							{#each groupViews() as group, index}
-								<button
-									type="button"
+								<div
 									class="group-reorder-item"
 									class:active={groupKey(group.group_id) === activeGroupKey}
 									class:drop-before={dragOverGroupKey === groupKey(group.group_id) && dragOverPosition === "before"}
 									class:drop-after={dragOverGroupKey === groupKey(group.group_id) && dragOverPosition === "after"}
+									role="button"
+									tabindex="0"
 									on:click={(evt) => onGroupRowClick(evt, groupKey(group.group_id))}
+									on:keydown={(evt) => {
+										if (evt.key === "Enter" || evt.key === " ") {
+											evt.preventDefault();
+											onGroupRowClick(evt as unknown as MouseEvent, groupKey(group.group_id));
+										}
+									}}
 									on:dragover={(evt) => onGroupDragOver(evt, groupKey(group.group_id))}
 									on:drop={(evt) => onGroupDrop(evt, groupKey(group.group_id))}
 								>
@@ -1193,8 +1583,26 @@
 										on:dragend={onGroupDragEnd}
 									>⠿</span>
 									<span class="group-order">{index + 1}</span>
-									<span class="group-reorder-label">{group.label || "Label " + String(group.group_id)}</span>
-								</button>
+									<span class="group-reorder-label">
+										{group.label || "Label " + String(group.group_id)}
+										{#if groupKey(group.group_id) === activeGroupKey}
+											<span class="current-badge">当前</span>
+										{/if}
+									</span>
+									<button
+										type="button"
+										class="visibility-button"
+										title={isGroupVisible(groupKey(group.group_id)) ? "隐藏此层" : "显示此层"}
+										on:click={(evt) => toggleGroupVisibility(evt, groupKey(group.group_id))}
+									>{isGroupVisible(groupKey(group.group_id)) ? "👁" : "—"}</button>
+									<button
+										type="button"
+										class="solo-button"
+										class:active={soloGroupKey === groupKey(group.group_id)}
+										title="只显示此层"
+										on:click={(evt) => toggleSoloGroup(evt, groupKey(group.group_id))}
+									>S</button>
+								</div>
 							{/each}
 						</div>
 					</div>
@@ -1205,8 +1613,35 @@
 			<button type="button" on:click={resetTransform} disabled={!hasEditableMask()}>居中归一</button>
 			<button type="button" on:click={centerTransform} disabled={!hasEditableMask()}>居中</button>
 			<button type="button" on:click={fitTransform} disabled={!hasEditableMask()}>适配</button>
-			<button type="button" on:click={bringIntoView} disabled={!hasEditableMask()}>找回视野</button>
+			<button type="button" on:click={bringIntoView} disabled={!hasEditableMask()}>找回标注</button>
+			<button type="button" on:click={() => zoomView(0.8)}>画布 −</button>
+			<button type="button" on:click={resetView}>{Math.round(viewScale * 100)}%</button>
+			<button type="button" on:click={() => zoomView(1.25)}>画布 ＋</button>
 		</div>
+		{#if hasEditableMask()}
+			<div class="numeric-toolbar" aria-label="当前层精细参数">
+				{#each [
+					["x", "X", "px"],
+					["y", "Y", "px"],
+					["scale", "缩放", "%"],
+					["rotation", "旋转", "°"],
+					["alpha", "透明度", "%"],
+				] as item}
+					<label>
+						<span>{item[1]}</span>
+						<input
+							type="number"
+							value={numericDraft[item[0] as NumericField]}
+							on:focus={() => editingNumericField = item[0] as NumericField}
+							on:input={(evt) => onNumericInput(evt, item[0] as NumericField)}
+							on:keydown={(evt) => onNumericKeydown(evt, item[0] as NumericField)}
+							on:blur={() => commitNumericField(item[0] as NumericField)}
+						/>
+						<small>{item[2]}</small>
+					</label>
+				{/each}
+			</div>
+		{/if}
 		<div class="canvas-wrap">
 			<canvas
 				bind:this={canvasEl}
@@ -1219,7 +1654,21 @@
 				style={"cursor:" + cursorStyle}
 			></canvas>
 		</div>
-		<div class="status">{statusText}</div>
+		{#if isGroupMode() && displayMode === "overlap" && nextBusinessGroupKey()}
+			<div class="overlap-legend">
+				<span class="legend-current">当前：{activeGroupLabel()}</span>
+				<span class="legend-next">下一层：{groupRuntimeByKey.get(nextBusinessGroupKey())?.view.label}</span>
+				<span class="legend-overlap">{activeGroupLabel()} × {groupRuntimeByKey.get(nextBusinessGroupKey())?.view.label}</span>
+			</div>
+		{/if}
+		<div class="status">
+			<span class:dirty={clientRevision > serverAckRevision}>
+				{clientRevision > serverAckRevision
+					? (syncInFlightRevision === null ? "本地修改" : "同步中")
+					: "已同步"}
+			</span>
+			<span>{statusText}</span>
+		</div>
 	</div>
 </Block>
 
@@ -1268,7 +1717,7 @@
 	}
 	.group-reorder-item {
 		display: grid;
-		grid-template-columns: auto auto minmax(0, 1fr);
+		grid-template-columns: auto auto minmax(0, 1fr) auto auto;
 		align-items: center;
 		gap: 5px;
 		min-width: 120px;
@@ -1322,8 +1771,8 @@
 	}
 	.toolbar {
 		display: grid;
-		grid-template-columns: repeat(4, minmax(0, 1fr));
-		gap: 8px;
+		grid-template-columns: repeat(7, minmax(0, 1fr));
+		gap: 6px;
 	}
 	.toolbar button {
 		border: 1px solid #cbd5e1;
@@ -1356,7 +1805,120 @@
 		user-select: none;
 		touch-action: none;
 	}
+	.mode-switch {
+		grid-column: 1 / -1;
+		display: inline-flex;
+		gap: 4px;
+		padding: 3px;
+		border-radius: 8px;
+		background: #e2e8f0;
+		width: fit-content;
+	}
+	.mode-switch button {
+		border: 0;
+		border-radius: 6px;
+		background: transparent;
+		color: #475569;
+		font-weight: 700;
+		padding: 5px 12px;
+		cursor: pointer;
+	}
+	.mode-switch button.active {
+		background: #ffffff;
+		color: #0f766e;
+		box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+	}
+	.current-badge {
+		margin-left: 5px;
+		border-radius: 999px;
+		background: #0284c7;
+		color: #ffffff;
+		font-size: 10px;
+		font-weight: 700;
+		padding: 1px 5px;
+	}
+	.visibility-button,
+	.solo-button {
+		width: 28px;
+		height: 26px;
+		border: 1px solid #cbd5e1;
+		border-radius: 5px;
+		background: #ffffff;
+		color: #475569;
+		font-weight: 700;
+		cursor: pointer;
+	}
+	.solo-button.active {
+		border-color: #7c3aed;
+		background: #ede9fe;
+		color: #6d28d9;
+	}
+	.numeric-toolbar {
+		display: grid;
+		grid-template-columns: repeat(5, minmax(92px, 1fr));
+		gap: 6px;
+	}
+	.numeric-toolbar label {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 5px;
+		border: 1px solid #dbe4ef;
+		border-radius: 7px;
+		background: #ffffff;
+		padding: 4px 6px;
+		font-size: 11px;
+		font-weight: 700;
+		color: #334155;
+	}
+	.numeric-toolbar input {
+		min-width: 0;
+		width: 100%;
+		border: 0;
+		outline: 0;
+		background: transparent;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		color: #0f172a;
+	}
+	.numeric-toolbar small {
+		font-size: 10px;
+		color: #94a3b8;
+	}
+	.overlap-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		font-size: 11px;
+		font-weight: 700;
+	}
+	.overlap-legend span {
+		border-radius: 999px;
+		padding: 3px 8px;
+	}
+	.legend-current {
+		background: rgba(0, 255, 120, 0.18);
+		color: #047857;
+	}
+	.legend-next {
+		border: 1px dashed #0284c7;
+		background: rgba(0, 188, 255, 0.08);
+		color: #0369a1;
+	}
+	.legend-overlap {
+		background: repeating-linear-gradient(
+			135deg,
+			#fce7f3,
+			#fce7f3 4px,
+			#fbcfe8 4px,
+			#fbcfe8 8px
+		);
+		color: #be185d;
+	}
 	.status {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		font-size: 12px;
 		line-height: 1.35;
 		color: #475569;
@@ -1365,5 +1927,26 @@
 		border-radius: 6px;
 		padding: 6px 8px;
 		min-height: 28px;
+	}
+	.status > span:first-child {
+		flex: none;
+		border-radius: 999px;
+		background: #dcfce7;
+		color: #166534;
+		font-size: 10px;
+		font-weight: 800;
+		padding: 2px 7px;
+	}
+	.status > span:first-child.dirty {
+		background: #fef3c7;
+		color: #92400e;
+	}
+	@media (max-width: 760px) {
+		.toolbar {
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+		}
+		.numeric-toolbar {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 </style>

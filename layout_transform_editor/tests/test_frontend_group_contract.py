@@ -181,6 +181,67 @@ class LayoutTransformEditorGroupContractTests(unittest.TestCase):
         ingest_body = _function_body(self.index_source, "ingestValue")
         self.assertIn("imageLoadGeneration += 1", ingest_body)
 
+    def test_wheel_is_precise_local_and_delta_mode_normalized(self) -> None:
+        body = _function_body(self.index_source, "onWheel")
+        self.assertIn("wheelPixels(evt)", body)
+        self.assertIn("evt.shiftKey ? 0.1", body)
+        self.assertIn("evt.altKey ? 5", body)
+        self.assertIn("queueSyncValue(", body)
+        self.assertNotIn('dispatch("change")', body)
+        normalizer = _function_body(self.index_source, "wheelPixels")
+        self.assertIn("WheelEvent.DOM_DELTA_LINE", normalizer)
+        self.assertIn("WheelEvent.DOM_DELTA_PAGE", normalizer)
+        self.assertIn("Math.log(1.01) / 100", self.index_source)
+
+    def test_view_visibility_and_solo_are_browser_only(self) -> None:
+        self.assertIn('let displayMode = $state<"align" | "overlap">("align")', self.index_source)
+        visible = _function_body(self.index_source, "defaultGroupVisible")
+        self.assertIn('displayMode === "overlap"', visible)
+        for name in (
+            "setDisplayMode",
+            "toggleGroupVisibility",
+            "toggleSoloGroup",
+            "resetView",
+            "zoomView",
+        ):
+            body = _function_body(self.index_source, name)
+            self.assertNotIn('dispatch("change")', body)
+            self.assertNotIn("syncValue(", body)
+            self.assertNotIn("queueSyncValue(", body)
+            self.assertNotIn("publishGroupIntent(", body)
+
+    def test_canvas_pan_never_changes_layer_transform(self) -> None:
+        begin = _function_body(self.index_source, "beginCanvasPan")
+        self.assertIn("viewPanX", begin)
+        self.assertNotIn("setActiveTransform", begin)
+        move = _function_body(self.index_source, "onPointerMove")
+        pan_block = move.split("if (panning)", 1)[1].split("const p =", 1)[0]
+        self.assertIn("viewPanX", pan_block)
+        self.assertIn("requestDraw()", pan_block)
+        self.assertNotIn("setActiveTransform", pan_block)
+        self.assertNotIn('dispatch("change")', pan_block)
+
+    def test_numeric_editing_only_syncs_on_commit(self) -> None:
+        input_body = _function_body(self.index_source, "onNumericInput")
+        self.assertNotIn("syncValue(", input_body)
+        self.assertNotIn("queueSyncValue(", input_body)
+        commit_body = _function_body(self.index_source, "commitNumericField")
+        self.assertIn('queueSyncValue("numeric"', commit_body)
+        self.assertIn('evt.key === "Escape"', _function_body(self.index_source, "onNumericKeydown"))
+
+    def test_overlap_preview_is_focused_and_patterned(self) -> None:
+        draw_body = _function_body(self.index_source, "draw")
+        self.assertIn("visibleGroupKeys()", draw_body)
+        self.assertIn("preview_alpha ?? 0.22", draw_body)
+        self.assertIn("? 0.10", draw_body)
+        self.assertIn("canvasEl.width !== renderWidth", draw_body)
+        self.assertIn("drawOverlapPreview", draw_body)
+        overlap_body = _function_body(self.index_source, "drawOverlapPreview")
+        self.assertIn('"destination-in"', overlap_body)
+        self.assertIn('"source-atop"', overlap_body)
+        self.assertIn("#ff3fa4", overlap_body)
+        self.assertNotIn("StatusTracker", self.index_source)
+
 
 if __name__ == "__main__":
     unittest.main()
