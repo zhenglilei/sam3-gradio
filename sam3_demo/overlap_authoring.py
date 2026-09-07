@@ -397,7 +397,12 @@ class OverlapAuthoringService:
             raise OverlapAuthoringError("编辑器缺少 group_intent")
         if intent.get("selection_signature") != _selection_signature(current):
             raise OverlapAuthoringError("编辑器数据已过期，请重试")
-        if intent.get("transform_set_revision") != current["draft_revision"] + 1:
+        intent_revision = intent.get("transform_set_revision")
+        if (
+            not isinstance(intent_revision, int)
+            or isinstance(intent_revision, bool)
+            or intent_revision <= current["draft_revision"]
+        ):
             raise OverlapAuthoringError("编辑器 revision 已过期，请重试")
 
         current_ids = [layer["id"] for layer in current["layers"]]
@@ -485,7 +490,12 @@ class OverlapAuthoringService:
         for ordinal, layer in enumerate(current["layers"]):
             layer["ordinal"] = ordinal
         current["active_layer_id"] = active_id
-        current["draft_revision"] += 1
+        # Gradio captures State when a browser event is dispatched. A quick
+        # drag followed by wheel/rotate can enqueue a later, full editor
+        # snapshot alongside an older draft. The intent revision is monotonic
+        # and the payload contains the complete transform/order set, so advance
+        # to that revision instead of requiring an adjacent value.
+        current["draft_revision"] = intent_revision
         return current
 
     def load_layout(self, layout_id: str) -> dict[str, Any]:

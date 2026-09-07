@@ -141,6 +141,27 @@ class OverlapAuthoringTests(unittest.TestCase):
         with self.assertRaisesRegex(OverlapAuthoringError, "集合"):
             self.service.apply_editor_intent(draft, payload)
 
+    def test_editor_intent_accepts_coalesced_revision_gap(self):
+        draft = self._draft_with_layers()
+        payload = self.service.editor_payload(draft)
+        layer_id = draft["layers"][0]["id"]
+        intent = payload["group_intent"]
+        intent["transform_set_revision"] += 2
+        intent["changed_group_ids"] = [layer_id]
+        item = next(
+            value
+            for value in intent["transforms"]
+            if value["group_id"] == layer_id
+        )
+        item["transform"]["center_x"] = 9.0
+
+        updated = self.service.apply_editor_intent(draft, payload)
+
+        self.assertEqual(
+            updated["draft_revision"], intent["transform_set_revision"]
+        )
+        self.assertEqual(updated["layers"][0]["transform"]["center_x"], 9.0)
+
     def test_base_resize_recenters_layers(self):
         draft = self._draft_with_layers()
         payload = self.service.editor_payload(draft)
