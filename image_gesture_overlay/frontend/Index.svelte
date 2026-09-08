@@ -267,6 +267,10 @@
 		return String(image?.currentSrc || image?.src || "");
 	}
 
+	function preventNativeImageDrag(event: DragEvent): void {
+		event.preventDefault();
+	}
+
 	function clearTargetObservers(): void {
 		clearTransitionTimer();
 		if (retryTimer !== null) clearTimeout(retryTimer);
@@ -276,6 +280,7 @@
 		targetMutationObserver?.disconnect();
 		targetMutationObserver = null;
 		targetImage?.removeEventListener("load", handleTargetImageLoad);
+		targetImage?.removeEventListener("dragstart", preventNativeImageDrag);
 		targetHost = null;
 		targetImage = null;
 		targetReady = false;
@@ -383,8 +388,13 @@
 		})[0] || null;
 		if (image !== targetImage) {
 			targetImage?.removeEventListener("load", handleTargetImageLoad);
+			targetImage?.removeEventListener("dragstart", preventNativeImageDrag);
 			targetImage = image;
-			targetImage?.addEventListener("load", handleTargetImageLoad);
+			if (targetImage) {
+				targetImage.draggable = false;
+				targetImage.addEventListener("load", handleTargetImageLoad);
+				targetImage.addEventListener("dragstart", preventNativeImageDrag);
+			}
 			targetResizeObserver?.disconnect();
 			targetResizeObserver = new ResizeObserver(measureTarget);
 			targetResizeObserver.observe(targetHost);
@@ -418,9 +428,17 @@
 		bindTargetImage();
 	}
 
+	function reconnectIfTargetHostChanged(): void {
+		const id = targetElemId();
+		const currentHost = id ? document.getElementById(id) : null;
+		if (currentHost !== targetHost) connectTarget();
+	}
+
 	onMount(() => {
 		mounted = true;
 		observedTargetId = targetElemId();
+		const targetReplacementObserver = new MutationObserver(reconnectIfTargetHostChanged);
+		targetReplacementObserver.observe(document.body, { childList: true, subtree: true });
 		connectTarget();
 		window.addEventListener("resize", measureTarget);
 		window.addEventListener("scroll", measureTarget, true);
@@ -432,6 +450,7 @@
 			window.removeEventListener("scroll", measureTarget, true);
 			window.visualViewport?.removeEventListener("resize", measureTarget);
 			window.visualViewport?.removeEventListener("scroll", measureTarget);
+			targetReplacementObserver.disconnect();
 			clearTargetObservers();
 		};
 	});

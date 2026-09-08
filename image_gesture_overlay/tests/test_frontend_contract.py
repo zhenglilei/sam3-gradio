@@ -65,6 +65,21 @@ class ImageGestureOverlayFrontendContractTests(unittest.TestCase):
         self.assertIn("if (!targetImage)", bind_body)
         self.assertIn("targetReady = false", bind_body)
 
+    def test_reconnects_when_gradio_replaces_target_host(self) -> None:
+        reconnect_body = _function_body(self.source, "reconnectIfTargetHostChanged")
+        self.assertIn("document.getElementById(id)", reconnect_body)
+        self.assertIn("currentHost !== targetHost", reconnect_body)
+        self.assertIn("connectTarget()", reconnect_body)
+        self.assertIn(
+            "new MutationObserver(reconnectIfTargetHostChanged)",
+            self.source,
+        )
+        self.assertIn(
+            "targetReplacementObserver.observe(document.body, { childList: true, subtree: true })",
+            self.source,
+        )
+        self.assertIn("targetReplacementObserver.disconnect()", self.source)
+
     def test_image_identity_is_separate_from_interaction_revision(self) -> None:
         image_body = _function_body(self.source, "imageIdentitySignature")
         for field in ("view.image_id", "view.image_sha256", "naturalWidth()", "naturalHeight()"):
@@ -127,6 +142,27 @@ class ImageGestureOverlayFrontendContractTests(unittest.TestCase):
         self.assertIn("pointer-events: none", self.source)
         self.assertIn("selection-rectangle.draft-selection", self.source)
         self.assertIn("selection-rectangle.applied-selection", self.source)
+
+    def test_target_image_native_drag_is_disabled_and_cleaned_up(self) -> None:
+        prevent_body = _function_body(self.source, "preventNativeImageDrag")
+        self.assertIn("event.preventDefault()", prevent_body)
+
+        bind_body = _function_body(self.source, "bindTargetImage")
+        self.assertIn("targetImage.draggable = false", bind_body)
+        self.assertIn(
+            'targetImage.addEventListener("dragstart", preventNativeImageDrag)',
+            bind_body,
+        )
+        self.assertIn(
+            'targetImage?.removeEventListener("dragstart", preventNativeImageDrag)',
+            bind_body,
+        )
+
+        cleanup_body = _function_body(self.source, "clearTargetObservers")
+        self.assertIn(
+            'targetImage?.removeEventListener("dragstart", preventNativeImageDrag)',
+            cleanup_body,
+        )
 
 
 if __name__ == "__main__":
