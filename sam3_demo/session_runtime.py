@@ -371,7 +371,7 @@ class SessionRegistry:
         except SessionExpired:
             resume_id = self._state_fields(state)[-1]
             expected = _resume_id(hash_value, ip_value)
-            if resume_id is None or not hmac.compare_digest(resume_id, expected):
+            if resume_id is not None and not hmac.compare_digest(resume_id, expected):
                 raise SessionError("stale session does not belong to this browser")
             return self.bind(hash_value, ip_value), True
         return self._state(record), False
