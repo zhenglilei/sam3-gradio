@@ -65,6 +65,21 @@ class ImageGestureOverlayFrontendContractTests(unittest.TestCase):
         self.assertIn("if (!targetImage)", bind_body)
         self.assertIn("targetReady = false", bind_body)
 
+    def test_reconnects_when_gradio_replaces_target_host(self) -> None:
+        reconnect_body = _function_body(self.source, "reconnectIfTargetHostChanged")
+        self.assertIn("document.getElementById(id)", reconnect_body)
+        self.assertIn("currentHost !== targetHost", reconnect_body)
+        self.assertIn("connectTarget()", reconnect_body)
+        self.assertIn(
+            "new MutationObserver(reconnectIfTargetHostChanged)",
+            self.source,
+        )
+        self.assertIn(
+            "targetReplacementObserver.observe(document.body, { childList: true, subtree: true })",
+            self.source,
+        )
+        self.assertIn("targetReplacementObserver.disconnect()", self.source)
+
     def test_image_identity_is_separate_from_interaction_revision(self) -> None:
         image_body = _function_body(self.source, "imageIdentitySignature")
         for field in ("view.image_id", "view.image_sha256", "naturalWidth()", "naturalHeight()"):
