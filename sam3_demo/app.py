@@ -89,6 +89,7 @@ from sam3_demo import template_stitch_callbacks as _template_stitch_cb
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, request_identity
 from sam3_demo.session_runtime import SessionError, SessionRecord, SessionRegistry
+from sam3_demo.stitch_draft_store import StitchDraftStore
 
 def _model_lease_wrapper(reason):
     """Preserve callback signatures while holding a reentrant model lease."""
@@ -4068,15 +4069,21 @@ _SESSION_REGISTRY = SessionRegistry(
     start_sweeper=True,
     sweep_interval=_SESSION_SWEEP_INTERVAL_SECONDS,
 )
+_STITCH_DRAFT_STORE = StitchDraftStore(
+    runtime_dir / "stitch_drafts",
+    ttl_seconds=24 * 60 * 60,
+)
 atexit.register(_SESSION_REGISTRY.shutdown)
 
 
 def _session_state_bundle(server_state):
     session_id = str(server_state["session_id"])
     owner_token = str(server_state["owner_token"])
+    resume_id = str(server_state["resume_id"])
 
     def owned(state):
         state["owner_token"] = owner_token
+        state["resume_id"] = resume_id
         return state
 
     image = owned({
@@ -4089,6 +4096,14 @@ def _session_state_bundle(server_state):
     })
     region = _new_layout_region_state()
     region["session_id"] = session_id
+    stitch_state = _stitch_cb.new_stitch_state(session_id)
+    stitch_draft = _STITCH_DRAFT_STORE.load(resume_id)
+    if stitch_draft is not None:
+        stitch_state.update(stitch_draft)
+        stitch_state["mosaic"] = None
+        stitch_state["mosaic_full"] = None
+        stitch_state["generated_revision"] = None
+        stitch_state["status"] = "已恢复上次周期拼接草稿；请重新生成拼接结果"
     return (
         server_state,
         image,
@@ -4100,9 +4115,47 @@ def _session_state_bundle(server_state):
         owned(_new_layout_state(session_id)),
         owned(region),
         owned(_new_layout_mask_agent_state(session_id)),
-        owned(_stitch_cb.new_stitch_state(session_id)),
+        owned(stitch_state),
         owned(_template_stitch_cb.new_template_stitch_state(session_id)),
     )
+
+
+def _persist_stitch_result(result):
+    state = result[0] if isinstance(result, tuple) and result else None
+    if isinstance(state, dict) and state.get("resume_id"):
+        try:
+            _STITCH_DRAFT_STORE.save(state["resume_id"], state)
+        except Exception:
+            logger.exception("Unable to persist stitch draft")
+    return result
+
+
+def _session_recovery_states(server_state):
+    bundle = _session_state_bundle(server_state)
+    names = (
+        "session_state",
+        "image_state",
+        "source_image_state",
+        "pcs_state",
+        "pvs_state",
+        "template_match_state",
+        "prompt_state",
+        "layout_state",
+        "layout_region_state",
+        "layout_mask_agent_state",
+        "stitch_state",
+        "template_stitch_state",
+    )
+    states = dict(zip(names, bundle))
+    states.update(
+        {
+            "source_state": states["source_image_state"],
+            "region_state": states["layout_region_state"],
+            "agent_state": states["layout_mask_agent_state"],
+            "_layout_state": states["layout_state"],
+        }
+    )
+    return states
 
 
 def _bootstrap_session(request: gr.Request):
@@ -4140,7 +4193,7 @@ def _load_stitch_tiles(
     crop_periodic,
     remove_black_border=True,
 ):
-    return _stitch_cb.load_tiles(
+    return _persist_stitch_result(_stitch_cb.load_tiles(
         files,
         layout,
         stitch_state,
@@ -4150,55 +4203,63 @@ def _load_stitch_tiles(
         blend,
         crop_periodic,
         remove_black_border,
-    )
+    ))
 
 
 def _auto_align_stitch(stitch_state, layout, nudge_step, diff_mode, show_loupe):
-    return _stitch_cb.auto_align(stitch_state, layout, nudge_step, diff_mode, show_loupe)
+    return _persist_stitch_result(
+        _stitch_cb.auto_align(stitch_state, layout, nudge_step, diff_mode, show_loupe)
+    )
 
 
 def _apply_stitch_layout(layout, stitch_state):
-    return _stitch_cb.apply_layout(layout, stitch_state)
+    return _persist_stitch_result(_stitch_cb.apply_layout(layout, stitch_state))
 
 
 def _stitch_canvas_changed(payload, stitch_state):
-    return _stitch_cb.canvas_changed(payload, stitch_state)
+    return _persist_stitch_result(_stitch_cb.canvas_changed(payload, stitch_state))
 
 
 def _apply_stitch_xy(dx, dy, rotation_deg, stitch_state):
-    return _stitch_cb.apply_numeric_transform(dx, dy, rotation_deg, stitch_state)
+    return _persist_stitch_result(
+        _stitch_cb.apply_numeric_transform(dx, dy, rotation_deg, stitch_state)
+    )
 
 
 def _apply_stitch_options(nudge_step, diff_mode, show_loupe, stitch_state):
-    return _stitch_cb.apply_canvas_options(nudge_step, diff_mode, show_loupe, stitch_state)
+    return _persist_stitch_result(
+        _stitch_cb.apply_canvas_options(nudge_step, diff_mode, show_loupe, stitch_state)
+    )
 
 
 def _apply_stitch_export_options(blend, crop_periodic, stitch_state):
-    return _stitch_cb.apply_export_options(blend, crop_periodic, stitch_state)
+    return _persist_stitch_result(
+        _stitch_cb.apply_export_options(blend, crop_periodic, stitch_state)
+    )
 
 
 def _generate_stitch_mosaic(stitch_state, blend, crop_periodic):
-    return _stitch_cb.generate_mosaic(
+    return _persist_stitch_result(_stitch_cb.generate_mosaic(
         stitch_state,
         blend,
         crop_periodic,
         publish_mosaic=_publish_stitch_mosaic,
-    )
+    ))
 
 
 def _crop_stitch_mosaic(gesture_payload, stitch_state):
-    return _stitch_cb.crop_mosaic_preview(
+    return _persist_stitch_result(_stitch_cb.crop_mosaic_preview(
         gesture_payload,
         stitch_state,
         publish_mosaic=_publish_stitch_mosaic,
-    )
+    ))
 
 
 def _restore_stitch_mosaic(stitch_state):
-    return _stitch_cb.restore_full_mosaic(
+    return _persist_stitch_result(_stitch_cb.restore_full_mosaic(
         stitch_state,
         publish_mosaic=_publish_stitch_mosaic,
-    )
+    ))
 
 
 def _handoff_stitch_mosaic(stitch_state, mode, session_state, layout_state):
@@ -4253,6 +4314,7 @@ def _session_callback_registry():
             callbacks[name],
             registry=_SESSION_REGISTRY,
             trusted_proxy_cidrs=_SESSION_TRUSTED_PROXY_CIDRS,
+            recovery_factory=_session_recovery_states,
         )
     return callbacks
 

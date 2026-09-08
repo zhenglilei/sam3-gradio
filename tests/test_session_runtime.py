@@ -6,6 +6,7 @@ from sam3_demo.session_runtime import (
     SessionError,
     SessionExpired,
     SessionRegistry,
+    resume_id_for_identity,
     resolve_client_ip,
     validate_trusted_proxy_cidrs,
 )
@@ -375,6 +376,69 @@ class SessionRegistryTests(unittest.TestCase):
                 registry.bind("browser-a", "203.0.113.1")
             with self.assertRaises(SessionError):
                 registry.validate(state, "browser-a", "203.0.113.1")
+        finally:
+            registry.shutdown()
+
+
+class SessionRecoveryTests(unittest.TestCase):
+    def test_resume_id_is_stable_across_registry_restarts_and_identity_scoped(self):
+        first = SessionRegistry(secret=b"first")
+        second = SessionRegistry(secret=b"second")
+        try:
+            a = first.bind("browser-a", "203.0.113.1")
+            b = second.bind("browser-a", "203.0.113.1")
+            self.assertEqual(a["resume_id"], b["resume_id"])
+            self.assertEqual(
+                a["resume_id"],
+                resume_id_for_identity("browser-a", "203.0.113.1"),
+            )
+            self.assertNotEqual(
+                a["resume_id"],
+                resume_id_for_identity("browser-b", "203.0.113.1"),
+            )
+            self.assertNotEqual(
+                a["resume_id"],
+                resume_id_for_identity("browser-a", "203.0.113.2"),
+            )
+        finally:
+            first.shutdown()
+            second.shutdown()
+
+    def test_ensure_recovers_restart_but_rejects_other_browser(self):
+        old_registry = SessionRegistry(secret=b"old")
+        stale = old_registry.bind("browser-a", "203.0.113.1")
+        old_registry.shutdown()
+        new_registry = SessionRegistry(secret=b"new")
+        try:
+            rebound, recovered = new_registry.ensure(
+                stale,
+                "browser-a",
+                "203.0.113.1",
+            )
+            self.assertTrue(recovered)
+            self.assertNotEqual(rebound["session_id"], stale["session_id"])
+            with self.assertRaisesRegex(SessionError, "does not belong"):
+                new_registry.ensure(stale, "browser-b", "203.0.113.1")
+        finally:
+            new_registry.shutdown()
+
+    def test_concurrent_ensure_creates_one_rebound_session(self):
+        registry = SessionRegistry(secret=b"concurrent")
+        results = []
+        barrier = threading.Barrier(20)
+
+        def run():
+            barrier.wait()
+            results.append(registry.ensure(None, "browser-a", "203.0.113.1")[0])
+
+        threads = [threading.Thread(target=run) for _ in range(20)]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual({item["session_id"] for item in results}.__len__(), 1)
+            self.assertEqual(registry.snapshot()["count"], 1)
         finally:
             registry.shutdown()
 

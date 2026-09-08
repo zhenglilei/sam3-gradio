@@ -15,6 +15,7 @@ from PIL import Image
 
 from sam3_demo import app
 from sam3_demo.session_guard import SessionGuardError
+from sam3_demo.stitch_draft_store import StitchDraftStore
 
 
 def _request(session_hash: str, host: str = "10.70.0.10"):
@@ -191,6 +192,52 @@ class SessionIntegrationTests(unittest.TestCase):
                 published.parents[1],
                 public_root.resolve() / session_id / "stitch_exports",
             )
+
+    def test_stitch_draft_restores_with_new_server_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StitchDraftStore(Path(tmp), 60)
+            resume_id = "a" * 64
+            draft = app._stitch_cb.new_stitch_state("old-session", "old-owner")
+            draft.update(
+                {
+                    "resume_id": resume_id,
+                    "images": [Image.new("RGB", (4, 3), "white")],
+                    "shifts": [(7, 9)],
+                    "rotations": [1.5],
+                    "revision": 4,
+                }
+            )
+            store.save(resume_id, draft)
+            server_state = {
+                "session_id": "b" * 32,
+                "owner_token": "new-owner",
+                "resume_id": resume_id,
+            }
+            with mock.patch.object(app, "_STITCH_DRAFT_STORE", store):
+                restored = app._session_state_bundle(server_state)[10]
+            self.assertEqual(restored["session_id"], "b" * 32)
+            self.assertEqual(restored["owner_token"], "new-owner")
+            self.assertEqual(restored["shifts"], [[7, 9]])
+            self.assertEqual(restored["rotations"], [1.5])
+            self.assertEqual(len(restored["images"]), 1)
+            self.assertIsNone(restored["mosaic"])
+            self.assertIsNone(restored["generated_revision"])
+
+    def test_stitch_draft_save_failure_does_not_fail_edit_callback(self):
+        state = app._stitch_cb.new_stitch_state("c" * 32, "owner")
+        state["resume_id"] = "d" * 64
+        expected = (state, "layout")
+        with mock.patch.object(
+            app._stitch_cb,
+            "apply_layout",
+            return_value=expected,
+        ), mock.patch.object(
+            app._STITCH_DRAFT_STORE,
+            "save",
+            side_effect=OSError("disk full"),
+        ), self.assertLogs(app.logger, level="ERROR"):
+            result = app._apply_stitch_layout("horizontal", state)
+        self.assertIs(result, expected)
 
     def test_guarded_stitch_handoff_accepts_bootstrapped_state(self):
         browser_hash = "browser-stitch-" + uuid.uuid4().hex
