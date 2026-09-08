@@ -242,6 +242,13 @@ class LayoutTransformEditorGroupContractTests(unittest.TestCase):
         self.assertIn("#ff3fa4", overlap_body)
         self.assertNotIn("StatusTracker", self.index_source)
 
+    def test_async_group_mask_readiness_recomputes_controls(self) -> None:
+        self.assertIn("let groupRuntimeRevision = $state(0)", self.index_source)
+        self.assertIn("groupRuntimeRevision += 1", self.index_source)
+        editable = _function_body(self.index_source, "hasEditableMask")
+        self.assertIn("groupRuntimeRevision;", editable)
+        self.assertIn("groupRuntimeByKey.get(activeGroupKey)?.ready", editable)
+
     def test_alignment_proposal_never_rehydrates_local_geometry(self) -> None:
         self.assertIn(
             'incoming?.payload_kind === "alignment_proposal"',

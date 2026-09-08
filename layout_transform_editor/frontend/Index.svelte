@@ -46,6 +46,7 @@
 	let tintCanvas: HTMLCanvasElement | null = null;
 	let groupRuntimeByKey = new Map<string, GroupRuntime>();
 	let groupTransformByKey = new Map<string, LayoutTransform>();
+	let groupRuntimeRevision = $state(0);
 	let overlapCanvas: HTMLCanvasElement | null = null;
 	let baseReady = $state(false);
 	let maskReady = $state(false);
@@ -448,7 +449,8 @@
 				if (!current || current !== runtime) return;
 				current.image = img;
 				rebuildGroupMaskCanvases(current);
-				draw();
+				groupRuntimeRevision += 1;
+				requestDraw();
 			});
 		}
 		statusText = localValue.status || (
@@ -1100,7 +1102,10 @@
 
 	function hasEditableMask(): boolean {
 		if (!localValue.enabled) return false;
-		if (isGroupMode()) return !!activeGroupKey && !!groupRuntimeByKey.get(activeGroupKey)?.ready;
+		if (isGroupMode()) {
+			groupRuntimeRevision;
+			return !!activeGroupKey && !!groupRuntimeByKey.get(activeGroupKey)?.ready;
+		}
 		return maskReady && !!maskCanvas;
 	}
 
