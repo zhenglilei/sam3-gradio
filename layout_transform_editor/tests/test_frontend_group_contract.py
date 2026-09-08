@@ -249,6 +249,17 @@ class LayoutTransformEditorGroupContractTests(unittest.TestCase):
         self.assertIn("groupRuntimeRevision;", editable)
         self.assertIn("groupRuntimeByKey.get(activeGroupKey)?.ready", editable)
 
+    def test_ack_requires_exact_session_epoch_revision_and_payload_hash(self) -> None:
+        handler = _function_body(self.index_source, "handleServerAck")
+        self.assertIn("ackSession !== editorSessionId", handler)
+        self.assertIn("ackEpoch !== documentEpoch", handler)
+        self.assertIn("ackRevision !== syncInFlightRevision", handler)
+        self.assertIn("ackHash !== syncInFlightHash", handler)
+        self.assertIn("ackRevision !== clientRevision", handler)
+        self.assertIn("localValue.group_intent?.payload_hash", handler)
+        dispatch = _function_body(self.index_source, "dispatchLatestIntent")
+        self.assertIn("syncInFlightHash = String(intent.payload_hash", dispatch)
+
     def test_alignment_proposal_never_rehydrates_local_geometry(self) -> None:
         self.assertIn(
             'incoming?.payload_kind === "alignment_proposal"',

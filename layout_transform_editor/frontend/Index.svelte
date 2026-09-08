@@ -64,6 +64,7 @@
 	let changeSyncTimer: ReturnType<typeof setTimeout> | null = null;
 	let syncAckTimer: ReturnType<typeof setTimeout> | null = null;
 	let syncInFlightRevision: number | null = null;
+	let syncInFlightHash: string | null = null;
 	let syncRetryRevision: number | null = null;
 	let clientRevision = 0;
 	let serverAckRevision = 0;
@@ -392,6 +393,7 @@
 		clientRevision = Math.max(0, Math.trunc(finiteNumber(intent?.client_revision ?? intent?.transform_set_revision, 0)));
 		serverAckRevision = clientRevision;
 		syncInFlightRevision = null;
+		syncInFlightHash = null;
 		clearSyncAckTimer();
 		const groups = view?.allow_reorder === true && intentMatches
 			? restoreGroupOrder(serverGroups, intent?.ordered_group_ids)
@@ -464,6 +466,7 @@
 		clearQueuedSync();
 		clearSyncAckTimer();
 		syncInFlightRevision = null;
+		syncInFlightHash = null;
 		syncRetryRevision = null;
 		imageLoadGeneration += 1;
 		const generation = imageLoadGeneration;
@@ -560,25 +563,38 @@
 		const ackSession = String(value.editor_session_id || "");
 		const ackEpoch = String(value.document_epoch || "");
 		if (
-			(ackSession && ackSession !== editorSessionId)
-			|| (ackEpoch && ackEpoch !== documentEpoch)
+			ackSession !== editorSessionId
+			|| ackEpoch !== documentEpoch
 		) {
 			return;
 		}
-		clearSyncAckTimer();
 		if (value.payload_kind === "ack_error") {
+			clearSyncAckTimer();
 			syncInFlightRevision = null;
+			syncInFlightHash = null;
 			statusText = String(value.status || "同步失败；本地修改仍保留");
 			publishClientIntent();
 			draw();
 			return;
 		}
 		const ackRevision = Math.max(0, Math.trunc(finiteNumber(value.server_ack_revision, 0)));
+		const ackHash = String(value.payload_hash || "");
+		if (
+			syncInFlightRevision !== null
+			&& (ackRevision !== syncInFlightRevision || ackHash !== syncInFlightHash)
+		) return;
+		if (
+			syncInFlightRevision === null
+			&& (
+				ackRevision !== clientRevision
+				|| ackHash !== String(localValue.group_intent?.payload_hash || "")
+			)
+		) return;
+		clearSyncAckTimer();
 		serverAckRevision = Math.max(serverAckRevision, ackRevision);
 		syncRetryRevision = null;
-		if (syncInFlightRevision !== null && ackRevision >= syncInFlightRevision) {
-			syncInFlightRevision = null;
-		}
+		syncInFlightRevision = null;
+		syncInFlightHash = null;
 		statusText = clientRevision > serverAckRevision ? "本地修改待同步" : "已同步";
 		publishClientIntent();
 		if (clientRevision > serverAckRevision) scheduleIntentDispatch(0);
@@ -811,12 +827,14 @@
 		if (!intent || revision <= serverAckRevision || syncInFlightRevision !== null) return;
 		clearSyncAckTimer();
 		syncInFlightRevision = revision;
+		syncInFlightHash = String(intent.payload_hash || "");
 		statusText = "同步中…";
 		publishClientIntent();
 		gradio.dispatch("change");
 		syncAckTimer = setTimeout(() => {
 			if (syncInFlightRevision !== revision) return;
 			syncInFlightRevision = null;
+			syncInFlightHash = null;
 			const retry = syncRetryRevision !== revision;
 			syncRetryRevision = revision;
 			statusText = retry ? "同步超时，正在重试；本地修改仍保留" : "同步失败；可继续编辑或直接保存重试";
