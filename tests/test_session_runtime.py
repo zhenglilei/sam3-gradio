@@ -422,6 +422,29 @@ class SessionRecoveryTests(unittest.TestCase):
         finally:
             new_registry.shutdown()
 
+    def test_ensure_recovers_pre_upgrade_state_without_resume_id(self):
+        old_registry = SessionRegistry(secret=b"old")
+        legacy = old_registry.bind("browser-a", "203.0.113.1")
+        legacy.pop("resume_id")
+        live, recovered = old_registry.ensure(legacy, "browser-a", "203.0.113.1")
+        self.assertFalse(recovered)
+        self.assertEqual(live["session_id"], legacy["session_id"])
+        old_registry.shutdown()
+
+        new_registry = SessionRegistry(secret=b"new")
+        try:
+            rebound, recovered = new_registry.ensure(
+                legacy, "browser-a", "203.0.113.1"
+            )
+            self.assertTrue(recovered)
+            self.assertNotEqual(rebound["session_id"], legacy["session_id"])
+            self.assertEqual(
+                rebound["resume_id"],
+                resume_id_for_identity("browser-a", "203.0.113.1"),
+            )
+        finally:
+            new_registry.shutdown()
+
     def test_concurrent_ensure_creates_one_rebound_session(self):
         registry = SessionRegistry(secret=b"concurrent")
         results = []
