@@ -16,6 +16,7 @@ SCHEMA_VERSION = 1
 _MAX_HASH = 512
 _DIGEST_TAG = b"sam3-session-digest-v1"
 _TOKEN_TAG = b"sam3-session-owner-v1"
+_RESUME_TAG = b"sam3-session-resume-v1:"
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +36,7 @@ class SessionRecord:
     last_seen: float
     in_flight: int = 0
     close_requested: bool = False
+    resume_id: str = ""
     closed: bool = False
     operation_lock: threading.RLock = field(
         default_factory=threading.RLock,
@@ -125,6 +127,21 @@ def resolve_client_ip(
         if not _is_trusted(address, networks):
             return address.compressed
     return peer_text
+
+
+def _resume_id(session_hash: str, client_ip: str) -> str:
+    hash_bytes = session_hash.encode("utf-8")
+    ip_bytes = client_ip.encode("ascii")
+    payload = _RESUME_TAG + len(hash_bytes).to_bytes(4, "big") + hash_bytes + ip_bytes
+    return hashlib.sha256(payload).hexdigest()
+
+
+def resume_id_for_identity(session_hash: str, client_ip: str) -> str:
+    """Return the stable, non-authorizing key used for same-browser drafts."""
+
+    return _resume_id(_session_hash(session_hash), _ip(client_ip))
+
+
 def _digest(value: str, secret: bytes) -> str:
     return hmac.new(secret, _DIGEST_TAG + value.encode(), hashlib.sha256).hexdigest()
 def _owner_token(secret: bytes, record: SessionRecord) -> str:
@@ -203,6 +220,7 @@ class SessionRegistry:
             "owner_token": record.owner_token,
             "session_hash_digest": record.session_hash_digest,
             "client_ip_digest": record.client_ip_digest,
+            "resume_id": record.resume_id,
         }
     def _expired(self, record: SessionRecord, now: float) -> bool:
         return not record.close_requested and record.in_flight == 0 and now - record.last_seen >= self.idle_seconds
@@ -236,7 +254,7 @@ class SessionRegistry:
                         removed.append(item)
         return removed
     @staticmethod
-    def _state_fields(state: Mapping[str, Any]) -> tuple[str, int, str, str, str]:
+    def _state_fields(state: Mapping[str, Any]) -> tuple[str, int, str, str, str, Optional[str]]:
         if not isinstance(state, Mapping):
             raise SessionError("session state must be a mapping")
         try:
@@ -246,6 +264,7 @@ class SessionRegistry:
             token = state["owner_token"]
             hash_digest = state["session_hash_digest"]
             ip_digest = state["client_ip_digest"]
+            resume_id = state["resume_id"] if "resume_id" in state else None
         except (KeyError, TypeError) as exc:
             raise SessionError("incomplete session state") from exc
         if version != SCHEMA_VERSION or not isinstance(session_id, str) or not session_id:
@@ -254,9 +273,18 @@ class SessionRegistry:
             raise SessionError("invalid session generation")
         if not all(isinstance(value, str) for value in (token, hash_digest, ip_digest)):
             raise SessionError("invalid session state fields")
-        return session_id, generation, token, hash_digest, ip_digest
+        if (
+            resume_id is not None
+            and (
+                not isinstance(resume_id, str)
+                or len(resume_id) != hashlib.sha256().digest_size * 2
+                or any(char not in "0123456789abcdef" for char in resume_id)
+            )
+        ):
+            raise SessionError("invalid session resume id")
+        return session_id, generation, token, hash_digest, ip_digest, resume_id
     def _record_from_state(self, state: Mapping[str, Any]) -> SessionRecord:
-        session_id, generation, token, hash_digest, ip_digest = self._state_fields(state)
+        session_id, generation, token, hash_digest, ip_digest, resume_id = self._state_fields(state)
         record = self._records.get(session_id)
         if record is None or record.closed or record.close_requested:
             raise SessionExpired("session is closed or unknown")
@@ -264,6 +292,8 @@ class SessionRegistry:
             raise SessionError("session state does not match record")
         if not hmac.compare_digest(token, _owner_token(self._secret, record)):
             raise SessionError("invalid session owner token")
+        if resume_id is not None and not hmac.compare_digest(resume_id, record.resume_id):
+            raise SessionError("session resume id does not match record")
         return record
     def _record_for_identity(self, state: Mapping[str, Any], session_hash: str, client_ip: str) -> SessionRecord:
         record = self._record_from_state(state)
@@ -281,6 +311,7 @@ class SessionRegistry:
     def bind(self, session_hash: str, client_ip: str) -> dict[str, Any]:
         hash_value = _session_hash(session_hash)
         ip_value = _ip(client_ip)
+        resume_id = _resume_id(hash_value, ip_value)
         hash_digest = _digest(hash_value, self._secret)
         now = self._clock()
         cleanups = self._drop_idle(now)
@@ -305,6 +336,7 @@ class SessionRegistry:
                     record = SessionRecord(
                         session_id=uuid.uuid4().hex,
                         session_hash_digest=hash_digest,
+                        resume_id=resume_id,
                         client_ip=ip_value,
                         client_ip_digest=_digest(ip_value, self._secret),
                         generation=1,
@@ -319,6 +351,31 @@ class SessionRegistry:
         finally:
             self._callbacks(cleanups)
         return state
+
+    def ensure(
+        self,
+        state: Mapping[str, Any] | None,
+        session_hash: str,
+        client_ip: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Validate a live state or safely bind a replacement after restart."""
+
+        hash_value = _session_hash(session_hash)
+        ip_value = _ip(client_ip)
+        if state is None or (isinstance(state, Mapping) and not state):
+            return self.bind(hash_value, ip_value), True
+        if not isinstance(state, Mapping):
+            raise SessionError("session state must be a mapping")
+        try:
+            record = self.validate(state, hash_value, ip_value)
+        except SessionExpired:
+            resume_id = self._state_fields(state)[-1]
+            expected = _resume_id(hash_value, ip_value)
+            if resume_id is None or not hmac.compare_digest(resume_id, expected):
+                raise SessionError("stale session does not belong to this browser")
+            return self.bind(hash_value, ip_value), True
+        return self._state(record), False
+
     def validate(self, state: Mapping[str, Any], session_hash: str, client_ip: str) -> SessionRecord:
         cleanups: list[SessionRecord] = []
         try:

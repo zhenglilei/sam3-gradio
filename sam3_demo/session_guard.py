@@ -15,7 +15,13 @@ from typing import Any, Callable, Optional, Sequence, get_args, get_origin, get_
 
 import gradio as gr
 
-from .session_runtime import SessionError, SessionRecord, SessionRegistry, resolve_client_ip
+from .session_runtime import (
+    SessionError,
+    SessionExpired,
+    SessionRecord,
+    SessionRegistry,
+    resolve_client_ip,
+)
 
 
 class SessionGuardError(SessionError):
@@ -30,6 +36,7 @@ _IDENTITY_FIELDS = (
     "owner_token",
     "session_hash_digest",
     "client_ip_digest",
+    "resume_id",
 )
 _MISSING = object()
 _BUSINESS_STATE_MARKERS = frozenset(
@@ -228,6 +235,9 @@ def guard_callback(
     *,
     registry: SessionRegistry,
     trusted_proxy_cidrs: Optional[Sequence[str] | str] = None,
+    recovery_factory: Optional[
+        Callable[[Mapping[str, Any]], Mapping[str, Mapping[str, Any]]]
+    ] = None,
 ) -> Callable[..., Any]:
     """Wrap a callback with strict request/session ownership validation.
 
@@ -277,9 +287,57 @@ def guard_callback(
             raise SessionGuardError(
                 f"guarded callback expected {len(parameters)} component inputs and a Request"
             )
-        component_args = args[:-1]
+        component_args = list(args[:-1])
         request = args[-1]
         session_hash, client_ip = request_identity(request, trusted_proxy_cidrs)
+        state_positions = [
+            (index, parameter.name, component_args[index])
+            for index, parameter in enumerate(parameters)
+            if parameter.name == "state" or parameter.name.endswith("_state")
+        ]
+        missing_state = any(
+            value is None
+            or (isinstance(value, Mapping) and not value.get("session_id"))
+            for _, _, value in state_positions
+        )
+        candidates = _session_candidates(component_args)
+        full_states = [state for state, _ in candidates if _is_full_state(state)]
+        stale_state = False
+        if recovery_factory is not None and not missing_state and full_states:
+            try:
+                registry.validate(full_states[0], session_hash, client_ip)
+            except SessionExpired:
+                stale_state = True
+            except SessionError:
+                pass
+        if (missing_state or stale_state) and recovery_factory is not None:
+            if any(
+                value is not None and not isinstance(value, Mapping)
+                for _, _, value in state_positions
+            ):
+                raise SessionGuardError("state values must be mappings")
+            session_ids = {session_id for _, session_id in candidates}
+            if len(session_ids) > 1:
+                raise SessionGuardError("callback contains conflicting session states")
+            if candidates and not full_states:
+                raise SessionGuardError("stale callback has no recoverable session state")
+            try:
+                server_state, recovered = registry.ensure(
+                    full_states[0] if full_states else None,
+                    session_hash,
+                    client_ip,
+                )
+            except SessionError as exc:
+                raise SessionGuardError(str(exc)) from exc
+            fresh_states = recovery_factory(server_state)
+            for index, name, value in state_positions:
+                if recovered or value is None or not value.get("session_id"):
+                    replacement = fresh_states.get(name)
+                    if not isinstance(replacement, Mapping):
+                        raise SessionGuardError(
+                            f"recovery factory did not provide {name}"
+                        )
+                    component_args[index] = replacement
         required_states = _required_state_arguments(parameters, component_args)
         candidates = _session_candidates(component_args)
         if not candidates:

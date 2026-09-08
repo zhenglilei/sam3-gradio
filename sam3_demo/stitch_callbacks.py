@@ -74,6 +74,7 @@ def _fresh_owned_state(stitch_state: dict | None) -> dict[str, Any]:
         str(previous.get("session_id") or ""),
         str(previous.get("owner_token") or ""),
     )
+    state["resume_id"] = str(previous.get("resume_id") or "")
     state["revision"] = _as_revision(previous.get("revision")) + 1
     return state
 

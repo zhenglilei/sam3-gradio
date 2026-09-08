@@ -169,6 +169,61 @@ class SessionGuardTest(unittest.TestCase):
         result = guarded(self.state_a, _request("browser-a"))
         self.assertEqual(result["owner_token"], self.state_a["owner_token"])
 
+    def test_missing_states_are_rebound_with_fresh_business_data(self):
+        def callback(session_state, stitch_state):
+            return stitch_state
+
+        def recover(server_state):
+            fresh = {
+                "session_id": server_state["session_id"],
+                "owner_token": server_state["owner_token"],
+                "resume_id": server_state["resume_id"],
+                "images": [],
+            }
+            return {"session_state": server_state, "stitch_state": fresh}
+
+        guarded = guard_callback(
+            callback,
+            registry=self.registry,
+            recovery_factory=recover,
+        )
+        result = guarded(None, {}, _request("new-browser"))
+        self.assertEqual(result["images"], [])
+        self.assertTrue(result["session_id"])
+
+    def test_stale_same_browser_state_is_replaced_after_restart(self):
+        old_registry = SessionRegistry(secret=b"old-secret")
+        stale = old_registry.bind("browser-restart", "10.0.0.1")
+        stale_business = dict(stale, instances={"must": "discard"})
+        old_registry.shutdown()
+        new_registry = SessionRegistry(secret=b"new-secret")
+
+        def callback(session_state, pvs_state):
+            return pvs_state
+
+        def recover(server_state):
+            return {
+                "session_state": server_state,
+                "pvs_state": {
+                    "session_id": server_state["session_id"],
+                    "owner_token": server_state["owner_token"],
+                    "resume_id": server_state["resume_id"],
+                    "instances": {},
+                },
+            }
+
+        try:
+            guarded = guard_callback(
+                callback,
+                registry=new_registry,
+                recovery_factory=recover,
+            )
+            result = guarded(stale, stale_business, _request("browser-restart"))
+            self.assertEqual(result["instances"], {})
+            self.assertNotEqual(result["session_id"], stale["session_id"])
+        finally:
+            new_registry.shutdown()
+
     def test_callback_error_releases_lease(self):
         def callback(state):
             raise RuntimeError("boom")
