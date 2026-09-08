@@ -428,9 +428,17 @@
 		bindTargetImage();
 	}
 
+	function reconnectIfTargetHostChanged(): void {
+		const id = targetElemId();
+		const currentHost = id ? document.getElementById(id) : null;
+		if (currentHost !== targetHost) connectTarget();
+	}
+
 	onMount(() => {
 		mounted = true;
 		observedTargetId = targetElemId();
+		const targetReplacementObserver = new MutationObserver(reconnectIfTargetHostChanged);
+		targetReplacementObserver.observe(document.body, { childList: true, subtree: true });
 		connectTarget();
 		window.addEventListener("resize", measureTarget);
 		window.addEventListener("scroll", measureTarget, true);
@@ -442,6 +450,7 @@
 			window.removeEventListener("scroll", measureTarget, true);
 			window.visualViewport?.removeEventListener("resize", measureTarget);
 			window.visualViewport?.removeEventListener("scroll", measureTarget);
+			targetReplacementObserver.disconnect();
 			clearTargetObservers();
 		};
 	});
