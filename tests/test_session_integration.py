@@ -43,7 +43,7 @@ class SessionIntegrationTests(unittest.TestCase):
         before = app.SUPERVISOR.snapshot()
         bundle = self._bootstrap("browser-" + uuid.uuid4().hex)
         session_id = bundle[0]["session_id"]
-        self.assertEqual(len(bundle), 12)
+        self.assertEqual(len(bundle), 13)
         for state in bundle[1:]:
             self.assertEqual(state["session_id"], session_id)
             self.assertEqual(state["owner_token"], bundle[0]["owner_token"])
@@ -316,7 +316,7 @@ class SessionIntegrationTests(unittest.TestCase):
         self.assertEqual(len(load_dependencies), 1)
         dependency = load_dependencies[0]
         self.assertEqual(len(dependency["inputs"]), 0)
-        self.assertEqual(len(dependency["outputs"]), 12)
+        self.assertEqual(len(dependency["outputs"]), 13)
         self.assertFalse(dependency["queue"])
         self.assertEqual(dependency["show_progress"], "hidden")
         self.assertEqual(dependency["api_visibility"], "private")

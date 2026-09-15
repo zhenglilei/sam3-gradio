@@ -560,5 +560,149 @@ CUSTOM_CSS += """
 }
 """
 
+CUSTOM_CSS += """
+/* EL repair workspace: Gradio 6.x wrappers, native Canvas 2D editor. */
+#repair-workspace {
+    width: 100%;
+    min-width: 0;
+    gap: 10px;
+}
+#repair-main-row {
+    display: grid !important;
+    grid-template-columns: 220px minmax(520px, 1fr) 270px;
+    gap: 14px;
+    align-items: start;
+    min-width: 0;
+}
+#repair-main-row > * { min-width: 0 !important; }
+#repair-library, #repair-tools { gap: 10px; }
+#repair-library {
+    padding-right: 14px;
+    border-right: 1px solid #dfe3e8;
+}
+#repair-library .upload-container { min-height: 72px !important; }
+#repair-library .wrap:not([data-testid="status-tracker"]) { min-height: 0 !important; }
+#repair-gallery { border: 0; box-shadow: none; }
+#repair-gallery .grid-container {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-auto-rows: 92px;
+    gap: 7px;
+    overflow-y: auto;
+}
+#repair-gallery .gallery-item {
+    height: 92px !important;
+    min-width: 0;
+    aspect-ratio: auto !important;
+    border-radius: 4px;
+}
+#repair-gallery .caption-label { font-size: 12px; overflow-wrap: anywhere; }
+.repair-nav-row { gap: 8px; }
+.repair-nav-row button { min-width: 0 !important; }
+#repair-position, #repair-status {
+    padding: 7px 10px;
+    border-left: 3px solid #34865b;
+    background: #eef6f1;
+}
+#repair-position p, #repair-status p { margin: 0; overflow-wrap: anywhere; }
+#repair-canvas-column { min-width: 0; }
+#repair-canvas-pair {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    min-width: 0;
+}
+.repair-canvas-pane { min-width: 0; gap: 6px; }
+.repair-canvas-pane .prose h4 { margin: 0; font-size: 14px; }
+#repair-mask-editor, #repair-result {
+    width: 100%;
+    height: clamp(360px, 55vh, 560px) !important;
+    min-height: 360px !important;
+    background: #101827;
+    border: 1px solid #cad1da;
+    border-radius: 4px;
+    overflow: hidden;
+}
+#repair-result img { width: 100%; height: 100%; object-fit: contain; }
+#repair-tools {
+    padding-left: 14px;
+    border-left: 1px solid #dfe3e8;
+}
+.repair-tool-section {
+    border: 0 !important;
+    border-bottom: 1px solid #dfe3e8 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 0 12px !important;
+}
+.repair-tool-section:last-child { border-bottom: 0 !important; }
+.repair-tool-section button {
+    min-width: 0 !important;
+    min-height: 36px;
+    white-space: normal;
+}
+.repair-tool-radio .wrap {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+.repair-tool-radio label {
+    min-width: 0 !important;
+    padding: 7px 6px !important;
+    white-space: normal;
+}
+.repair-inline-warning {
+    color: #a12622;
+    border-left: 3px solid #c43c35;
+    padding: 8px 10px;
+}
+@media (max-width: 1120px) {
+    #repair-main-row { grid-template-columns: 210px minmax(0, 1fr); }
+    #repair-tools {
+        grid-column: 1 / -1;
+        display: grid !important;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+        padding: 14px 0 0;
+        border-left: 0;
+        border-top: 1px solid #dfe3e8;
+    }
+    .repair-tool-section {
+        border-bottom: 0 !important;
+        border-right: 1px solid #dfe3e8 !important;
+        padding-right: 14px !important;
+    }
+    .repair-tool-section:last-child {
+        border-right: 0 !important;
+        padding-right: 0 !important;
+    }
+}
+@media (max-width: 760px) {
+    #repair-main-row { grid-template-columns: minmax(0, 1fr); }
+    #repair-library {
+        padding-right: 0;
+        padding-bottom: 12px;
+        border-right: 0;
+        border-bottom: 1px solid #dfe3e8;
+    }
+    #repair-gallery .grid-container {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important;
+        grid-auto-rows: 104px;
+    }
+    #repair-gallery .gallery-item { height: 104px !important; }
+    #repair-canvas-pair { grid-template-columns: minmax(0, 1fr); }
+    #repair-mask-editor, #repair-result {
+        height: clamp(320px, 56vh, 540px) !important;
+        min-height: 320px !important;
+    }
+    #repair-tools { grid-template-columns: minmax(0, 1fr); }
+    .repair-tool-section {
+        border-right: 0 !important;
+        border-bottom: 1px solid #dfe3e8 !important;
+        padding-right: 0 !important;
+    }
+}
+"""
+
 def build_theme():
     return gr.themes.Soft(primary_hue="blue", secondary_hue="slate", font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"])

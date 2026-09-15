@@ -160,7 +160,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         expected = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         self.assertEqual(actual, expected)
 
-    def test_el_mask_only_exposes_image_and_periodic_stitch_tabs(self):
+    def test_el_mask_exposes_repair_image_and_periodic_stitch_tabs(self):
         tabs = {
             component["props"].get("id"): component["props"]
             for component in self.components
@@ -171,7 +171,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             for tab_id, props in tabs.items()
             if props.get("visible", True) and str(tab_id).startswith("tab_")
         }
-        self.assertEqual(visible_tabs, {"tab_image", "tab_stitch"})
+        self.assertEqual(visible_tabs, {"tab_repair", "tab_image", "tab_stitch"})
         self.assertFalse(tabs["tab_layout_mask"]["visible"])
         self.assertFalse(tabs["tab_template_stitch"]["visible"])
 
@@ -363,6 +363,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         self.assertIn("input", events_by_type["imagegestureoverlay"])
         self.assertIn("input", events_by_type["layoutregionannotator"])
         self.assertIn("change", events_by_type["layouttransformeditor"])
+        self.assertIn("change", events_by_type["repairmaskeditor"])
 
     def test_dependency_concurrency_and_public_api_contract(self):
         for name in (
@@ -381,7 +382,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         self.assertTrue(stateful)
         for block_fn in stateful:
             # Batch switching shares the image queue to avoid expired cache reads.
-            expected = (1, "1") if block_fn.fn.__name__.startswith("batch_") else (8, "8")
+            expected = (1, "1") if block_fn.fn.__name__.startswith(("batch_", "send_to_segmentation")) else (8, "8")
             self.assertIn(block_fn.concurrency_limit, expected)
 
 
