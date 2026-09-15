@@ -229,6 +229,74 @@ def bind_repair_events(
         api_visibility="private",
     )
 
+    def remove_current(
+        repair_state,
+        session_state,
+        selected,
+        tool,
+        brush_size,
+        alpha,
+    ):
+        state = core.owned_repair_state(repair_state, session_state)
+        item = core.active_item(state)
+        if item is None:
+            message = "当前没有可删除的图片，请先添加图片"
+        else:
+            removed = core.remove_repair_items(state, [item["id"]])
+            if removed:
+                message = f"已删除当前图片；剩余 {len(state['items'])} 张"
+            else:
+                message = "当前图片已不在队列，未删除任何内容；请刷新后重试"
+        return view(
+            state,
+            selected,
+            tool,
+            brush_size,
+            alpha,
+            message,
+        )
+
+    def remove_selected(
+        repair_state,
+        session_state,
+        selected,
+        tool,
+        brush_size,
+        alpha,
+    ):
+        state = core.owned_repair_state(repair_state, session_state)
+        values = selected_ids(state, selected)
+        if not values:
+            message = "未选择图片，未删除任何内容；请先选择图片"
+        else:
+            removed = core.remove_repair_items(state, values)
+            if removed:
+                message = f"已删除选中图片 {len(removed)} 张；剩余 {len(state['items'])} 张"
+            else:
+                message = "选中的图片已不在当前队列，未删除任何内容；请重新选择"
+        return view(
+            state,
+            state.get("selected_ids", selected),
+            tool,
+            brush_size,
+            alpha,
+            message,
+        )
+
+    for button, callback in (
+        (repair_refs.repair_remove_current_btn, remove_current),
+        (repair_refs.repair_remove_selected_btn, remove_selected),
+    ):
+        button.click(
+            guarded(callback),
+            inputs=navigation_inputs,
+            outputs=common_outputs,
+            concurrency_limit=1,
+            concurrency_id="ui-repair-state",
+            show_progress="hidden",
+            api_visibility="private",
+        )
+
     def editor_changed(repair_state, session_state, editor_value):
         state = core.owned_repair_state(repair_state, session_state)
         message = "当前修复区域已保存"
