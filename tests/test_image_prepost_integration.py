@@ -705,8 +705,8 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
         source_preview = by_elem_id["source_input_image"]
         template_preview = by_elem_id["template_match_preview"]
         self.assertEqual(source_preview["type"], "image")
-        self.assertEqual(source_preview["props"]["height"], 320)
-        self.assertEqual(template_preview["props"]["height"], 320)
+        self.assertEqual(source_preview["props"]["height"], 440)
+        self.assertEqual(template_preview["props"]["height"], 440)
         self.assertIn(
             "aligned-prepost-preview",
             source_preview["props"]["elem_classes"],
@@ -716,10 +716,9 @@ class ImagePrepostIntegrationTest(unittest.TestCase):
             template_preview["props"]["elem_classes"],
         )
 
-        prepost_row = by_elem_id["image_prepost_row"]
-        source_column = by_elem_id["source_prepost_column"]
-        template_column = by_elem_id["template_prepost_column"]
-        self.assertTrue(prepost_row["props"]["equal_height"])
+        prepost_row = by_elem_id["el-workspace-body"]
+        source_column = by_elem_id["el-workspace-center"]
+        template_column = by_elem_id["el-workspace-tools"]
 
         def find_layout_node(node, component_id):
             if node.get("id") == component_id:

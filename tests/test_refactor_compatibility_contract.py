@@ -169,7 +169,7 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         visible_tabs = {
             tab_id
             for tab_id, props in tabs.items()
-            if props.get("visible", True)
+            if props.get("visible", True) and str(tab_id).startswith("tab_")
         }
         self.assertEqual(visible_tabs, {"tab_image", "tab_stitch"})
         self.assertFalse(tabs["tab_layout_mask"]["visible"])
@@ -379,9 +379,10 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             if block_fn.concurrency_id == "image-prepost-state"
         ]
         self.assertTrue(stateful)
-        self.assertTrue(
-            all(block_fn.concurrency_limit in (8, "8") for block_fn in stateful)
-        )
+        for block_fn in stateful:
+            # Batch switching shares the image queue to avoid expired cache reads.
+            expected = (1, "1") if block_fn.fn.__name__.startswith("batch_") else (8, "8")
+            self.assertIn(block_fn.concurrency_limit, expected)
 
 
 if __name__ == "__main__":

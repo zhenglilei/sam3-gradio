@@ -597,6 +597,13 @@ def bind_demo_events(
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
+    image_refs.template_tab.select(
+        fn=_template_instance_choices,
+        inputs=[pvs_state],
+        outputs=[template_instance_selector],
+        queue=False,
+        show_progress="hidden",
+    )
     refresh_template_instances_btn.click(
         fn=_template_instance_choices,
         inputs=[pvs_state],
@@ -656,7 +663,7 @@ def bind_demo_events(
         )
     finish_polygon_event = finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    mode_event = mode.change(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, layout_point_refine_panel, *common, layout_editor], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    mode_event = mode.input(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, layout_point_refine_panel, *common, layout_editor], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     mode_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     click_tool_event = click_tool.change(fn=_switch_click_tool, inputs=[click_tool, mode], outputs=[pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel], concurrency_limit=1)
     click_tool_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
@@ -702,8 +709,14 @@ def bind_demo_events(
             concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
-    export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    pcs_export_event = export_pcs_btn.click(fn=_export_pcs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    pvs_export_event = export_pvs_btn.click(fn=_export_pvs, inputs=[image_state, pcs_state, pvs_state, mode, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file], outputs=[export_file, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    for event in (pcs_export_event, pvs_export_event):
+        event.then(
+            fn=lambda: {"__type__": "update", "selected": "export"},
+            inputs=[], outputs=[image_refs.workflow_tabs], queue=False,
+            show_progress="hidden", api_visibility="private",
+        )
     submit_feedback_btn.click(fn=_submit_feedback, inputs=[image_state, pcs_state, pvs_state, mode, feedback_rating, feedback_tags, feedback_comment], outputs=common, concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
 
     if stitch_refs is None:
@@ -733,6 +746,46 @@ def bind_demo_events(
     stitch_handoff_btn = stitch_refs.stitch_handoff_btn
     stitch_handoff_status = stitch_refs.stitch_handoff_status
 
+    queue_outputs = [
+        stitch_state, stitch_refs.annotated_gallery, stitch_refs.annotated_selection,
+        stitch_refs.annotated_status, image_refs.saved_tile_file,
+        stitch_mosaic_preview, stitch_mosaic_file, stitch_handoff_btn, stitch_handoff_status,
+        stitch_status,
+    ]
+    save_inputs = [image_state, pcs_state, pvs_state, mode, stitch_state,
+                   image_refs.stitch_tile_name, stitch_refs.annotated_selection]
+    for button, name in ((image_refs.save_stitch_tile_btn, "_save_stitch_tile"),
+                         (image_refs.update_stitch_tile_btn, "_update_stitch_tile")):
+        event = button.click(fn=callbacks[name], inputs=save_inputs, outputs=queue_outputs,
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+        event.success(fn=lambda message: message, inputs=[stitch_refs.annotated_status],
+                      outputs=[image_refs.save_tile_status])
+    stitch_refs.annotated_import_btn.click(
+        fn=callbacks["_import_stitch_annotations"],
+        inputs=[stitch_refs.annotated_files, stitch_state], outputs=queue_outputs,
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    for button, name in ((stitch_refs.annotated_up, "_stitch_queue_up"),
+                         (stitch_refs.annotated_down, "_stitch_queue_down"),
+                         (stitch_refs.annotated_remove, "_stitch_queue_remove")):
+        button.click(fn=callbacks[name], inputs=[stitch_state, stitch_refs.annotated_selection],
+            outputs=queue_outputs, concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+            concurrency_id="image-prepost-state")
+    stitch_refs.annotated_load.click(
+        fn=callbacks["_load_annotated_stitch"],
+        inputs=[stitch_state, stitch_layout, stitch_nudge_step, stitch_diff_mode, stitch_show_loupe,
+                stitch_blend, stitch_crop_periodic, stitch_remove_black_border,
+                stitch_refs.stitch_crop_top, stitch_refs.stitch_crop_bottom,
+                stitch_refs.stitch_crop_left, stitch_refs.stitch_crop_right],
+        outputs=[stitch_state, stitch_canvas, stitch_dx, stitch_dy, stitch_status,
+                 stitch_mosaic_preview, stitch_mosaic_file, stitch_handoff_btn,
+                 stitch_handoff_status, stitch_rotation],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    for component in (stitch_refs.annotated_visible, stitch_refs.annotated_alpha):
+        component.input(fn=callbacks["_stitch_annotation_display"],
+            inputs=[stitch_refs.annotated_visible, stitch_refs.annotated_alpha, stitch_state],
+            outputs=[stitch_state, stitch_canvas], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+            concurrency_id="image-prepost-state")
+
     stitch_load_btn.click(
         fn=_load_stitch_tiles,
         inputs=[
@@ -745,6 +798,10 @@ def bind_demo_events(
             stitch_blend,
             stitch_crop_periodic,
             stitch_remove_black_border,
+            stitch_refs.stitch_crop_top,
+            stitch_refs.stitch_crop_bottom,
+            stitch_refs.stitch_crop_left,
+            stitch_refs.stitch_crop_right,
         ],
         outputs=[
             stitch_state,
@@ -907,10 +964,20 @@ def bind_demo_events(
     )
     handoff_event = stitch_handoff_btn.click(
         fn=_handoff_stitch_mosaic,
-        inputs=[stitch_state, mode, session_state, layout_state],
+        inputs=[stitch_state, mode, session_state, layout_state, stitch_refs.stitch_handoff_confirm],
         outputs=[source_image_state, source_crop_overlay, source_crop_status, *workspace_init_outputs],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
+    )
+    handoff_event.success(
+        fn=callbacks["_apply_stitch_instances"],
+        inputs=[stitch_state, image_state, pcs_state, pvs_state, mode],
+        outputs=[pvs_state, mode, *common],
+        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+        concurrency_id="image-prepost-state",
+    )
+    handoff_event.success(
+        fn=lambda: False, inputs=None, outputs=[stitch_refs.stitch_handoff_confirm],
     )
     handoff_event.success(
         fn=_stitch_handoff_source_image,

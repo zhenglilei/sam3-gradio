@@ -5,6 +5,7 @@ SAM3 Interactive Vision Studio
 """
 
 import time
+import sys
 import io
 from pathlib import Path
 import tempfile
@@ -1841,6 +1842,19 @@ def _submit_feedback(image_state, pcs_state, pvs_state, mode, rating, feedback_t
 
 
 def _export_pool(image_state, pcs_state, pvs_state, mode, pool_name, coco_dataset, coco_image_name, coco_split, coco_eval_scope, annotation_json_file):
+    active = _active_instances(pcs_state if pool_name == "pcs" else pvs_state)
+    if any("annotation_provenance" in inst for inst in active):
+        items = []
+        for inst in active:
+            item = {"id": inst["id"], "category_name": inst.get("category_name") or f"{pool_name}_object",
+                    "mask": inst["mask_fullres_bool"], "provenance": inst.get("annotation_provenance") or {}}
+            if not inst.get("score_missing") and inst.get("score") is not None:
+                item["score"] = float(inst["score"])
+            items.append(item)
+        ws = _workspace(image_state)
+        path = _publish_annotated_image(ws["image"], items, image_state["session_id"],
+                                       {"kind": "edited_mosaic"})
+        return path, f"已导出 {len(items)} 个独立实例，保留类别和来源"
     return _export_pool_impl(
         {
             '_active_instances': _active_instances,
@@ -4019,6 +4033,9 @@ _SESSION_GUARDED_CALLBACKS = frozenset(
         "_export_pcs",
         "_export_pvs",
         "_submit_feedback",
+        "_save_stitch_tile", "_update_stitch_tile", "_import_stitch_annotations",
+        "_stitch_queue_up", "_stitch_queue_down", "_stitch_queue_remove",
+        "_load_annotated_stitch", "_stitch_annotation_display", "_apply_stitch_instances",
         "_load_stitch_tiles",
         "_apply_stitch_layout",
         "_auto_align_stitch",
@@ -4048,6 +4065,7 @@ def _cleanup_session_record(record: SessionRecord):
         prompt_epochs=_LAYOUT_PROMPT_EPOCHS,
         prompt_epoch_lock=_LAYOUT_PROMPT_EPOCH_LOCK,
         persistent_roots=(
+            runtime_dir / "batch_workspace",
             runtime_layout_dir,
             runtime_layout_region_dir,
             runtime_export_dir,
@@ -4193,6 +4211,149 @@ def _close_request_session(request: gr.Request):
         logger.info("Ignoring invalid session unload request: %s", exc)
 
 
+def _publish_annotated_image(image, instances, session_id, manifest):
+    from sam3_demo.annotated_stitch_io import export_bundle
+    session_id = validate_server_session_id(session_id)
+    folder = runtime_dir / "annotated_stitch" / session_id / uuid.uuid4().hex
+    path = export_bundle(image, instances, folder, manifest)
+    _prune_public_downloads()
+    published = _public_downloads.publish_files(
+        public_download_dir, "stitch_exports",
+        {"annotated_stitch.zip": path}, session_id=session_id)
+    return str(published / "annotated_stitch.zip")
+
+
+def _publish_annotated_stitch(state):
+    return _publish_annotated_image(
+        state["mosaic"], state.get("mosaic_instances") or [],
+        state["session_id"], state.get("annotation_manifest") or {})
+
+
+def _save_annotated_tile(image_state, pcs_state, pvs_state, mode, stitch_state, name, selected=None, update=False):
+    from sam3_demo import annotated_stitch as queue
+    from sam3_demo.annotated_stitch_io import make_tile
+    ws = _workspace(image_state)
+    pool_name = "pcs" if _is_pcs_mode(mode) else "pvs"
+    pool = pcs_state if pool_name == "pcs" else pvs_state
+    instances = []
+    for inst in _active_instances(pool):
+        item = {"id": inst["id"], "mask": inst["mask_fullres_bool"],
+                "category_name": inst.get("category_name") or (pcs_state.get("text_prompt") if pool_name == "pcs" else "") or f"{pool_name}_object",
+                "provenance": {"pool": pool_name, "source": inst.get("source"),
+                               "history": _history_json(inst.get("prompt_history") or [])}}
+        if not inst.get("score_missing") and inst.get("score") is not None:
+            item["score"] = float(inst["score"])
+        instances.append(item)
+    if not instances:
+        raise gr.Error("当前模式没有有效实例，请先完成小图标注")
+    tiles = list(stitch_state.get("saved_tiles") or [])
+    provenance = {"workspace_image_sha256": image_state["target_image_sha256"],
+                  "workspace_image_id": image_state["image_id"], "pool": pool_name}
+    target = None
+    if update:
+        matches = [tile for tile in tiles if tile.get("provenance", {}).get("workspace_image_sha256") == image_state["target_image_sha256"]]
+        chosen = next((tile for tile in matches if tile["tile_id"] == selected), None)
+        target = chosen or (matches[0] if len(matches) == 1 else None)
+        if target is None:
+            raise gr.Error("找不到唯一对应小图，请在拼接队列中选择对应项后更新")
+    tile = make_tile(ws["image"], str(name or (target or {}).get("name") or f"image_{image_state['image_id'][:8]}.png"),
+                     instances, tile_id=target["tile_id"] if target else None, provenance=provenance)
+    package = _publish_annotated_image(tile["image"], tile["instances"], image_state["session_id"],
+                                      {"kind": "tile", "tile_id": tile["tile_id"], "source_name": tile["name"], "provenance": provenance})
+    if target:
+        tiles = [tile if old["tile_id"] == target["tile_id"] else old for old in tiles]
+    else:
+        tiles.append(tile)
+    state = queue.change_queue(stitch_state, tiles)
+    return queue.queue_result(state, tile["tile_id"], f"已保存 {tile['name']}，{len(instances)} 个实例；队列共 {len(tiles)} 张", package)
+
+
+def _save_stitch_tile(image_state, pcs_state, pvs_state, mode, stitch_state, name, selected):
+    return _save_annotated_tile(image_state, pcs_state, pvs_state, mode, stitch_state, name, selected)
+
+
+def _update_stitch_tile(image_state, pcs_state, pvs_state, mode, stitch_state, name, selected):
+    return _save_annotated_tile(image_state, pcs_state, pvs_state, mode, stitch_state, name, selected, True)
+
+
+def _import_stitch_annotations(files, stitch_state):
+    from sam3_demo import annotated_stitch as queue
+    from sam3_demo.annotated_stitch_io import import_tiles
+    try:
+        tiles = import_tiles(files or [])
+        if not tiles:
+            raise ValueError("没有可导入的小图")
+        state = queue.append_tiles(stitch_state, tiles)
+        from sam3_demo.annotated_stitch_io import export_bundle
+        session_id = validate_server_session_id(state["session_id"])
+        for tile in state["saved_tiles"][-len(tiles):]:
+            export_bundle(tile["image"], tile["instances"],
+                          runtime_dir / "annotated_stitch" / session_id / tile["tile_id"],
+                          {"kind": "tile", "tile_id": tile["tile_id"],
+                           "source_name": tile["name"], "provenance": tile.get("provenance") or {}})
+        return queue.queue_result(state, None, f"已导入 {len(tiles)} 张；加载队列后可手动拼接")
+    except Exception as exc:
+        gallery, _selection = queue.queue_view(stitch_state)
+        message = ("队列中的小图无需再次导入，请点击加载标注队列。"
+                   if not files and stitch_state.get("saved_tiles")
+                   else f"未导入：{exc}")
+        return (stitch_state, gallery, gr.update(), message, gr.update(),
+                gr.update(), gr.update(), gr.update(), gr.update(), message)
+
+
+def _edit_stitch_queue(stitch_state, selected, action):
+    from sam3_demo import annotated_stitch as queue
+    try:
+        state = queue.edit_queue(stitch_state, selected, action)
+        return queue.queue_result(state, selected, "队列已更新；请重新加载标注队列")
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+
+
+def _stitch_queue_up(stitch_state, selected):
+    return _edit_stitch_queue(stitch_state, selected, "up")
+
+
+def _stitch_queue_down(stitch_state, selected):
+    return _edit_stitch_queue(stitch_state, selected, "down")
+
+
+def _stitch_queue_remove(stitch_state, selected):
+    return _edit_stitch_queue(stitch_state, selected, "remove")
+
+
+def _load_annotated_stitch(stitch_state, layout, step, diff, loupe, blend, periodic, black, top, bottom, left, right):
+    tiles = stitch_state.get("saved_tiles") or []
+    if not tiles:
+        raise gr.Error("请先保存或导入小图标注")
+    return _stitch_cb.load_tiles(None, layout, stitch_state, step, diff, loupe, blend, periodic,
+                                black, top, bottom, left, right, source_tiles=tiles)
+
+
+def _stitch_annotation_display(visible, alpha, stitch_state):
+    state = dict(stitch_state)
+    state.update(annotation_visible=bool(visible), annotation_alpha=float(alpha))
+    return state, _stitch_cb._payload(state)
+
+
+def _apply_stitch_instances(stitch_state, image_state, pcs_state, pvs_state, mode):
+    if not stitch_state.get("annotated_mode"):
+        return pvs_state, gr.update(), *_view(image_state, pcs_state, pvs_state, mode, "")
+    result = dict(pvs_state)
+    instances = {}
+    for number, source in enumerate(stitch_state.get("mosaic_instances") or [], 1):
+        mask = np.asarray(source["mask"], dtype=bool)
+        inst = _make_inst(number, "annotated_stitch", mask, _mask_box(mask),
+                          source.get("score", 0.0), history=[])
+        inst.update(category_name=source["category_name"], score_missing="score" not in source,
+                    annotation_provenance=source.get("provenance") or {})
+        instances[number] = inst
+    result.update(instances=instances, active_instance_id=1 if instances else None,
+                  next_instance_id=len(instances) + 1)
+    return result, MODE_PVS, *_view(image_state, pcs_state, result, MODE_PVS,
+                                    f"已导入 {len(instances)} 个独立标注实例，未重新运行模型")
+
+
 def _load_stitch_tiles(
     files,
     layout,
@@ -4203,6 +4364,10 @@ def _load_stitch_tiles(
     blend,
     crop_periodic,
     remove_black_border=True,
+    crop_top=0,
+    crop_bottom=0,
+    crop_left=0,
+    crop_right=0,
 ):
     return _persist_stitch_result(_stitch_cb.load_tiles(
         files,
@@ -4214,6 +4379,11 @@ def _load_stitch_tiles(
         blend,
         crop_periodic,
         remove_black_border,
+        crop_top,
+        crop_bottom,
+        crop_left,
+        crop_right,
+        source_tiles=(stitch_state.get("saved_tiles") or None) if not files else None,
     ))
 
 
@@ -4255,6 +4425,7 @@ def _generate_stitch_mosaic(stitch_state, blend, crop_periodic):
         blend,
         crop_periodic,
         publish_mosaic=_publish_stitch_mosaic,
+        publish_annotations=_publish_annotated_stitch,
     ))
 
 
@@ -4263,6 +4434,7 @@ def _crop_stitch_mosaic(gesture_payload, stitch_state):
         gesture_payload,
         stitch_state,
         publish_mosaic=_publish_stitch_mosaic,
+        publish_annotations=_publish_annotated_stitch,
     ))
 
 
@@ -4270,10 +4442,13 @@ def _restore_stitch_mosaic(stitch_state):
     return _persist_stitch_result(_stitch_cb.restore_full_mosaic(
         stitch_state,
         publish_mosaic=_publish_stitch_mosaic,
+        publish_annotations=_publish_annotated_stitch,
     ))
 
 
-def _handoff_stitch_mosaic(stitch_state, mode, session_state, layout_state):
+def _handoff_stitch_mosaic(stitch_state, mode, session_state, layout_state, confirmed=False):
+    if not confirmed:
+        raise gr.Error("请先确认替换当前工作区图片与实例")
     try:
         mosaic = _stitch_cb.mosaic_for_handoff(stitch_state)
     except ValueError as exc:
@@ -4360,7 +4535,7 @@ def create_demo():
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
 
-            with gr.Tabs(elem_id="main_tabs"):
+            with gr.Tabs(elem_id="main_tabs") as main_tabs:
                 image_ui = build_image_tab(
                     ImageGestureOverlay=ImageGestureOverlay,
                     _image_gesture_overlay_import_error=_image_gesture_overlay_import_error,
@@ -4394,6 +4569,7 @@ def create_demo():
                 )
 
             state_refs = ComponentRefs(
+                main_tabs=main_tabs,
                 session_state=session_state,
                 image_state=image_state,
                 source_image_state=source_image_state,
@@ -4415,6 +4591,11 @@ def create_demo():
                 stitch_refs=stitch_ui,
                 template_stitch_refs=template_stitch_ui,
                 callbacks=_session_callback_registry(),
+            )
+            from sam3_demo.batch_workspace import bind_batch_workspace
+            bind_batch_workspace(
+                state_refs, image_ui, stitch_ui, _session_callback_registry(),
+                sys.modules[__name__],
             )
             bootstrap_event = demo.load(
                 fn=_bootstrap_session,

@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+import cv2
 import gradio as gr
 import numpy as np
+
+
+def _instance_prompt_logits(inst, size):
+    logits = inst.get("pvs_lowres_logits")
+    if logits is not None or "annotation_provenance" not in inst:
+        return logits
+    mask = np.asarray(inst["mask_fullres_bool"], dtype=bool)
+    resized = cv2.resize(mask.astype(np.uint8), (int(size[1]), int(size[0])),
+                         interpolation=cv2.INTER_NEAREST)
+    return (resized.astype(np.float32) * 2.0 - 1.0) * 10.0
 
 
 def _workspace_gesture_payload_impl(_deps, image_state, mode, click_tool, status):
@@ -235,7 +246,8 @@ def _apply_polygon_to_pvs_impl(_deps, image_state, pvs_state, polygon, polygon_a
         raise ValueError("\u8bf7\u5148\u521b\u5efa\u6216\u9009\u62e9\u4e00\u4e2a PVS \u5b9e\u4f8b\uff0c\u6216\u5c06 polygon \u52a8\u4f5c\u6539\u4e3a\u201c\u521b\u5efa\u65b0\u5b9e\u4f8b\u201d")
     inst = pvs_state["instances"][int(active_id)]
     _pvs_progress(progress, 0.34, f"融合当前实例 logits: {combine}")
-    combined = _combine_logits(inst.get("pvs_lowres_logits"), polygon_logits, mode=combine)
+    previous_logits = _instance_prompt_logits(inst, polygon_logits.shape[-2:])
+    combined = _combine_logits(previous_logits, polygon_logits, mode=combine)
     before = _history_snapshot(inst)
     _pvs_progress(progress, 0.52, "SAM3 正在精修当前 PVS 实例", delay=0.12)
     pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=combined)
@@ -245,6 +257,8 @@ def _apply_polygon_to_pvs_impl(_deps, image_state, pvs_state, polygon, polygon_a
     inst["mask_fullres_bool"] = mask
     inst["box_xyxy_px"] = _mask_box(mask)
     inst["score"] = float(pred["scores"][idx])
+    if "score_missing" in inst:
+        inst["score_missing"] = False
     inst["pvs_lowres_logits"] = pred["lowres_logits"][idx]
     after = _history_snapshot(inst)
     _append_prompt_history(inst, {"op":"positive_polygon_refine","mode":combine,"prompt":{"type":"positive_polygon","points":polygon},"before":before,"after":after,"candidate_scores":pred["scores"].astype(float).tolist()})
@@ -544,10 +558,10 @@ def _refine_active_pvs_with_point_impl(_deps, image_state, pvs_state, point, poi
 
     previous_value = active_inst.get("pvs_lowres_logits")
     previous_status = active_inst.get("status")
-    if previous_value is None:
+    if previous_value is None and "annotation_provenance" not in active_inst:
         raise ValueError("active PVS instance 缺少上一轮 low-res logits")
-    previous_logits = np.asarray(previous_value)
     expected = _prompt_mask_size()
+    previous_logits = np.asarray(_instance_prompt_logits(active_inst, expected))
     valid_previous_shape = (
         previous_logits.ndim == 2
         or (previous_logits.ndim == 3 and previous_logits.shape[0] == 1)
@@ -614,6 +628,8 @@ def _refine_active_pvs_with_point_impl(_deps, image_state, pvs_state, point, poi
     updated_inst["mask_fullres_bool"] = mask
     updated_inst["box_xyxy_px"] = box
     updated_inst["score"] = score
+    if "score_missing" in updated_inst:
+        updated_inst["score_missing"] = False
     updated_inst["pvs_lowres_logits"] = selected_logits.copy()
     updated_inst["prompt_history"] = list(active_inst.get("prompt_history") or [])
     _append_prompt_history(

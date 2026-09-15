@@ -273,6 +273,7 @@ class SessionIntegrationTests(unittest.TestCase):
                 app.MODE_PVS,
                 bundle[0],
                 bundle[7],
+                True,
                 _request(browser_hash),
             )
         self.assertEqual(result, ("handoff-ok",))
@@ -291,6 +292,7 @@ class SessionIntegrationTests(unittest.TestCase):
             app.MODE_PVS,
             bundle[0],
             bundle[7],
+            True,
             _request(browser_hash),
         )
 
@@ -301,6 +303,24 @@ class SessionIntegrationTests(unittest.TestCase):
         self.assertTrue(result[2].startswith("已载入完整原图 9x7"))
         self.assertEqual(result[3]["width"], 9)
         self.assertEqual(result[3]["height"], 7)
+
+    def test_guarded_stitch_handoff_rejects_unconfirmed_request(self):
+        browser_hash = "browser-stitch-confirm-" + uuid.uuid4().hex
+        bundle = self._bootstrap(browser_hash)
+        stitch_state = bundle[10]
+        stitch_state.update(
+            mosaic=Image.new("RGB", (8, 6), "white"),
+            revision=1,
+            generated_revision=1,
+        )
+        guarded = app._session_callback_registry()["_handoff_stitch_mosaic"]
+        with mock.patch.object(app, "_source_upload_workspace") as source_upload:
+            with self.assertRaises(gr.Error):
+                guarded(
+                    stitch_state, app.MODE_PVS, bundle[0], bundle[7], False,
+                    _request(browser_hash),
+                )
+        source_upload.assert_not_called()
 
     def test_create_demo_has_private_nonqueued_bootstrap(self):
         demo = app.create_demo()
