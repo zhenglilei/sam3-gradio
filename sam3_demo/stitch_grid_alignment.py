@@ -25,7 +25,14 @@ def solve_grid_candidates(edges, tolerance):
 
 
 def match_grid_pair(a, b, axis):
-    from .stitch_workflow import _alignment_score, _resize_alignment_pair, detect_period
+    from .stitch_workflow import (
+        _alignment_evidence,
+        _alignment_quality,
+        _alignment_score,
+        _minimum_primary_extent,
+        _resize_alignment_pair,
+        detect_period,
+    )
 
     height, width = a[0].shape
     ar, br, sx, sy = _resize_alignment_pair(a[0], b[0], 192)
@@ -34,9 +41,11 @@ def match_grid_pair(a, b, axis):
     primary_size = height if axis == "vertical" else width
     cross_size = min(width, b[0].shape[1]) if axis == "vertical" else min(height, b[0].shape[0])
     primary_scale, cross_scale = (sy, sx) if axis == "vertical" else (sx, sy)
-    # Search only adjacent edge strips; the unconstrained phase peak can be
-    # almost zero for periodic textures, even when these are distinct tiles.
-    primary_lo = math.ceil(0.5 * primary_size * primary_scale)
+    px, py, _, _ = detect_period(a[0])
+    axis_period = py if axis == "vertical" else px
+    period_guard = axis_period if axis_period < 0.20 * primary_size else 0.0
+    minimum_primary = _minimum_primary_extent(primary_size, period_guard)
+    primary_lo = math.ceil(minimum_primary * primary_scale)
     primary_hi = math.floor((primary_size - 8) * primary_scale)
     cross_limit = math.floor(0.1 * cross_size * cross_scale)
     ranked = []
@@ -45,16 +54,15 @@ def match_grid_pair(a, b, axis):
             dx, dy = (cross, primary) if axis == "vertical" else (primary, cross)
             score = _alignment_score(small_a, small_b, dx, dy)
             ranked.append((score, int(round(dx / sx)), int(round(dy / sy))))
-    ranked.sort(reverse=True)
-    px, py, _, _ = detect_period(a[0])
-    separation = max(8.0, 0.3 * (py if axis == "vertical" else px))
+    ranked.sort(key=lambda item: (-item[0], item[2], item[1]))
+    separation = max(8.0, 0.3 * axis_period)
     seeds = []
     for score, dx, dy in ranked:
         if score < 0.2:
             break
         if all(math.hypot(dx - x, dy - y) >= separation for x, y in seeds):
             seeds.append((dx, dy))
-        if len(seeds) == 8:
+        if len(seeds) == 24:
             break
     result = []
     radius_x, radius_y = math.ceil(1 / sx), math.ceil(1 / sy)
@@ -63,7 +71,7 @@ def match_grid_pair(a, b, axis):
         for dy in range(y - radius_y, y + radius_y + 1):
             for dx in range(x - radius_x, x + radius_x + 1):
                 primary, cross = (dy, dx) if axis == "vertical" else (dx, dy)
-                if not (0.5 * primary_size <= primary <= primary_size - 8
+                if not (minimum_primary <= primary <= primary_size - 8
                         and abs(cross) <= 0.1 * cross_size):
                     continue
                 score = _alignment_score(a, b, dx, dy)
@@ -71,7 +79,21 @@ def match_grid_pair(a, b, axis):
                     best = (dx, dy, score)
         if best is not None and best[2] >= 0.35:
             result.append(best)
-    return sorted(result, key=lambda item: -item[2])
+
+    ranked_result = []
+    seen = set()
+    for dx, dy, score in result:
+        key = (dx, dy)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence = _alignment_evidence(a, b, dx, dy)
+        if not evidence["available"] and evidence["overlap_ratio"] < 0.40:
+            continue
+        quality = _alignment_quality(score, evidence)
+        ranked_result.append((quality, score, dx, dy))
+    ranked_result.sort(key=lambda item: (-item[0], -item[1], item[3], item[2]))
+    return [(dx, dy, quality) for quality, _score, dx, dy in ranked_result[:8]]
 
 
 def _grid_tolerance(prepared):
@@ -87,20 +109,32 @@ def _fetch_grid_candidates(cache, prepared, source, target, axis):
 
 
 def _edge_direction_error(prepared, source, target, dx, dy, axis):
+    from .stitch_workflow import _minimum_primary_extent, detect_period
+
     source_shape = prepared[source][0].shape[:2]
     target_shape = prepared[target][0].shape[:2]
     if axis == "vertical":
         extent = source_shape[0]
         cross_extent = min(source_shape[1], target_shape[1])
         primary, cross = dy, dx
+        period = detect_period(prepared[source][0])[1]
     else:
         extent = source_shape[1]
         cross_extent = min(source_shape[0], target_shape[0])
         primary, cross = dx, dy
+        period = detect_period(prepared[source][0])[0]
+    if float(np.std(prepared[source][0])) < 3.0:
+        period = 0.0
 
     tolerance = 2.0
-    if primary < 0.5 * extent - tolerance:
-        return f"主方向 {primary:.1f}px 小于前图尺寸一半 {0.5 * extent:.1f}px"
+    if period >= 0.20 * extent:
+        period = 0.0
+    minimum_primary = _minimum_primary_extent(extent, period)
+    if primary < minimum_primary - tolerance:
+        return (
+            f"主方向 {primary:.1f}px 小于可靠最小步长 "
+            f"{minimum_primary:.1f}px"
+        )
     if primary > extent + tolerance:
         return f"主方向 {primary:.1f}px 超过前图尺寸 {extent}px"
     if abs(cross) > 0.1 * cross_extent + tolerance:
@@ -152,32 +186,112 @@ def _joint_least_squares(prepared, edge_specs):
     return positions, None
 
 
-def align_four_tiles(prepared):
+def _topology_edge_specs(mapping):
+    return [
+        ("上边", mapping[0], mapping[1], "horizontal"),
+        ("左边", mapping[0], mapping[2], "vertical"),
+        ("右边", mapping[1], mapping[3], "vertical"),
+        ("下边", mapping[2], mapping[3], "horizontal"),
+    ]
+
+
+def _solve_grid_topology(prepared, mapping, cache, tolerance):
+    specs = _topology_edge_specs(mapping)
     edges = [
-        match_grid_pair(prepared[0], prepared[1], "horizontal"),
-        match_grid_pair(prepared[0], prepared[2], "vertical"),
-        match_grid_pair(prepared[1], prepared[3], "vertical"),
-        match_grid_pair(prepared[2], prepared[3], "horizontal"),
+        _fetch_grid_candidates(cache, prepared, source, target, axis)
+        for _label, source, target, axis in specs
     ]
+    if any(not edge for edge in edges):
+        return None
+
+    best = None
+    for choice in itertools.product(*edges):
+        top, left, right, bottom = choice
+        closure = math.hypot(
+            top[0] + right[0] - left[0] - bottom[0],
+            top[1] + right[1] - left[1] - bottom[1],
+        )
+        if closure > tolerance:
+            continue
+        edge_specs = [
+            (spec[0], spec[1], spec[2], spec[3], edge)
+            for spec, edge in zip(specs, choice)
+        ]
+        positions, validation_error = _joint_least_squares(
+            prepared,
+            edge_specs,
+        )
+        if positions is None:
+            continue
+        qualities = [float(edge[2]) for edge in choice]
+        joint_quality = sum(qualities)
+        key = (joint_quality, sum(float(edge[2]) for edge in choice), -closure)
+        if best is None or key > best["key"]:
+            best = {
+                "mapping": mapping,
+                "choice": choice,
+                "edge_specs": edge_specs,
+                "positions": positions,
+                "closure": closure,
+                "quality": joint_quality,
+                "key": key,
+            }
+    return best
+
+
+def _has_texture(prepared):
+    return sum(float(np.std(item[0])) > 3.0 for item in prepared) >= 2
+
+
+def align_four_tiles(prepared):
     tolerance = _grid_tolerance(prepared)
-    selected = solve_grid_candidates(edges, tolerance)
-    if selected is None:
-        return None, ["四条接缝没有可靠的一致解，保留规则网格；请检查图片顺序或手动微调。"]
-    edge_specs = [
-        ("1-2", 0, 1, "horizontal", selected[0]),
-        ("1-3", 0, 2, "vertical", selected[1]),
-        ("2-4", 1, 3, "vertical", selected[2]),
-        ("3-4", 2, 3, "horizontal", selected[3]),
+    cache = {}
+    row_mapping = (0, 1, 2, 3)
+    snake_mapping = (0, 1, 3, 2)
+    solutions = []
+    row_solution = _solve_grid_topology(
+        prepared, row_mapping, cache, tolerance
+    )
+    if row_solution is not None:
+        solutions.append(row_solution)
+    if _has_texture(prepared):
+        snake_solution = _solve_grid_topology(
+            prepared, snake_mapping, cache, tolerance
+        )
+        if snake_solution is not None:
+            solutions.append(snake_solution)
+    if not solutions:
+        return None, [
+            "四条接缝没有可靠的一致解，保留规则网格；请检查图片顺序或纹理。"
+        ]
+
+    if len(solutions) == 1:
+        chosen = solutions[0]
+    else:
+        solutions.sort(key=lambda item: item["key"], reverse=True)
+        chosen, alternate = solutions[0], solutions[1]
+        margin = max(0.04, 0.02 * abs(chosen["quality"]))
+        if chosen["quality"] - alternate["quality"] <= margin:
+            return None, [
+                "2×2 row-major 与 clockwise/snake 证据接近，拓扑有歧义；"
+                "保留规则网格。"
+            ]
+
+    labels = {
+        row_mapping: "row-major [TL,TR,BL,BR]",
+        snake_mapping: "clockwise/snake [TL,TR,BR,BL]",
+    }
+    topology = labels[chosen["mapping"]]
+    logs = [
+        f"2×2 选择拓扑：{topology}，联合质量={chosen['quality']:.3f}，"
+        f"闭环误差 {chosen['closure']:.2f}px",
     ]
-    positions, validation_error = _joint_least_squares(prepared, edge_specs)
-    if positions is None:
-        return None, [f"四条接缝联合位置验证失败：{validation_error}，保留规则网格。"]
-    observed = np.array([[edge[0], edge[1]] for edge in selected], dtype=float)
-    residual = np.linalg.norm(observed[0] + observed[2] - observed[1] - observed[3])
-    logs = [f"网格联合匹配：闭环误差 {residual:.2f}px"]
-    for label, edge in zip(("1-2", "1-3", "2-4", "3-4"), selected):
-        logs.append(f"接缝 {label}：位移 ({edge[0]}, {edge[1]})，NCC={edge[2]:.3f}")
-    return positions, logs
+    for label, _source, _target, _axis, edge in chosen["edge_specs"]:
+        logs.append(
+            f"接缝 {label}：位移 ({edge[0]}, {edge[1]})，"
+            f"quality={edge[2]:.3f}"
+        )
+    return chosen["positions"], logs
 
 
 def align_two_row_tiles(prepared):
@@ -339,7 +453,7 @@ def align_two_row_tiles(prepared):
         return None, [f"两行网格联合位置验证失败：{validation_error}，保留规则网格。"]
 
     path_score = final_state[1]["score"] + (float(tail[2]) if tail else 0.0)
-    logs = [f"两行网格联合匹配：{cols}列，路径NCC={path_score:.3f}"]
+    logs = [f"两行网格联合匹配：{cols}列，路径质量={path_score:.3f}"]
     for column in range(cell_count):
         top = selected[("top", column)]
         left = selected[("vertical", column)]
@@ -351,5 +465,5 @@ def align_two_row_tiles(prepared):
         )
         logs.append(f"单元 {column + 1}：闭环误差 {residual:.2f}px")
     for label, _source, _target, _axis, edge in edge_specs:
-        logs.append(f"接缝 {label}：位移 ({edge[0]}, {edge[1]})，NCC={edge[2]:.3f}")
+        logs.append(f"接缝 {label}：位移 ({edge[0]}, {edge[1]})，质量={edge[2]:.3f}")
     return positions, logs

@@ -426,6 +426,113 @@ def _alignment_score(
     )
 
 
+_ALIGN_MIN_PRIMARY_FRACTION = 0.35
+_ALIGN_MIN_PERIOD_CYCLES = 2.5
+_ALIGN_EVIDENCE_GRID = (3, 3)
+
+
+def _minimum_primary_extent(extent: int, period: float = 0.0) -> float:
+    """Keep a bounded, high-overlap search without near-zero collapse."""
+
+    extent = max(int(extent), 1)
+    period = max(float(period), 0.0)
+    return max(
+        _ALIGN_MIN_PRIMARY_FRACTION * extent,
+        _ALIGN_MIN_PERIOD_CYCLES * period,
+    )
+
+
+def _overlap_geometry(
+    a: np.ndarray,
+    b: np.ndarray,
+    dx: int,
+    dy: int,
+) -> Tuple[int, int, int, int, int]:
+    ha, wa = a.shape[:2]
+    hb, wb = b.shape[:2]
+    x0 = max(0, int(dx))
+    y0 = max(0, int(dy))
+    x1 = min(wa, int(dx) + wb)
+    y1 = min(ha, int(dy) + hb)
+    width = max(0, x1 - x0)
+    height = max(0, y1 - y0)
+    return x0, y0, width, height, width * height
+
+
+def _alignment_evidence(
+    a: Tuple[np.ndarray, np.ndarray],
+    b: Tuple[np.ndarray, np.ndarray],
+    dx: int,
+    dy: int,
+) -> dict:
+    """Measure support in disjoint overlap regions for one shift."""
+
+    a_raw, a_hp = a
+    b_raw, b_hp = b
+    x0, y0, width, height, area = _overlap_geometry(a_raw, b_raw, dx, dy)
+    min_area = max(1, min(a_raw.shape[0] * a_raw.shape[1],
+                          b_raw.shape[0] * b_raw.shape[1]))
+    overlap_ratio = area / float(min_area)
+    rows, cols = _ALIGN_EVIDENCE_GRID
+    raw_values: List[float] = []
+    hp_values: List[float] = []
+    if width >= 48 and height >= 48:
+        for row in range(rows):
+            cy0 = y0 + (row * height) // rows
+            cy1 = y0 + ((row + 1) * height) // rows
+            for col in range(cols):
+                cx0 = x0 + (col * width) // cols
+                cx1 = x0 + ((col + 1) * width) // cols
+                if cx1 - cx0 < 16 or cy1 - cy0 < 16:
+                    continue
+                raw_values.append(_ncc_overlap(
+                    a_raw[cy0:cy1, cx0:cx1],
+                    b_raw[cy0 - dy:cy1 - dy, cx0 - dx:cx1 - dx],
+                    0,
+                    0,
+                ))
+                hp_values.append(_ncc_overlap(
+                    a_hp[cy0:cy1, cx0:cx1],
+                    b_hp[cy0 - dy:cy1 - dy, cx0 - dx:cx1 - dx],
+                    0,
+                    0,
+                ))
+    values = raw_values + hp_values
+    consensus = (
+        sum(value >= 0.35 for value in values) / float(len(values))
+        if values else 0.0
+    )
+    return {
+        "available": bool(len(values) >= 8),
+        "overlap_ratio": float(overlap_ratio),
+        "overlap_area": int(area),
+        "overlap_width": int(width),
+        "overlap_height": int(height),
+        "raw_mean": float(np.mean(raw_values)) if raw_values else -1.0,
+        "raw_median": float(np.median(raw_values)) if raw_values else -1.0,
+        "raw_min": float(np.min(raw_values)) if raw_values else -1.0,
+        "highpass_mean": float(np.mean(hp_values)) if hp_values else -1.0,
+        "highpass_median": float(np.median(hp_values)) if hp_values else -1.0,
+        "highpass_min": float(np.min(hp_values)) if hp_values else -1.0,
+        "consensus": float(consensus),
+        "region_count": len(values),
+    }
+
+
+def _alignment_quality(score: float, evidence: dict) -> float:
+    """Combine score, support area, and region agreement for ranking only."""
+
+    score = float(score)
+    if not evidence.get("available"):
+        return score
+    return (
+        0.60 * score
+        + 0.15 * float(evidence["raw_median"])
+        + 0.05 * float(evidence["highpass_median"])
+        + 0.20 * min(1.0, max(0.0, float(evidence["overlap_ratio"])))
+    )
+
+
 def _highpass_alignment_score(
     a: Tuple[np.ndarray, np.ndarray],
     b: Tuple[np.ndarray, np.ndarray],
@@ -1288,19 +1395,25 @@ def auto_align_images(
         candidates = match_grid_pair(prepared[i - 1], prepared[i], axis)
         width, height = images[i - 1].size
         extent = height if axis == "vertical" else width
+        px, py, _, _ = detect_period(prepared[i - 1][0])
+        axis_period = py if axis == "vertical" else px
+        if (float(np.std(prepared[i - 1][0])) < 3.0
+                or axis_period >= 0.20 * extent):
+            axis_period = 0.0
+        minimum_primary = _minimum_primary_extent(extent, axis_period)
         cross_extent = min(im.width if axis == "vertical" else im.height for im in images[:i + 1])
         previous_cross = positions[-1][0] if axis == "vertical" else positions[-1][1]
         valid = []
         for dx, dy, score in candidates:
             primary, cross = (dy, dx) if axis == "vertical" else (dx, dy)
-            if (0.5 * extent <= primary <= extent
+            if (minimum_primary <= primary <= extent
                     and abs(cross) <= 0.1 * cross_extent
                     and abs(previous_cross + cross) <= 0.1 * cross_extent):
                 valid.append((dx, dy, score))
         if valid:
             valid.sort(key=lambda item: -item[2])
             dx, dy, score = valid[0]
-            message = f"邻接 图{i}-图{i + 1} 平移=({dx},{dy}) NCC={score:.3f}"
+            message = f"邻接 图{i}-图{i + 1} 平移=({dx},{dy}) 质量={score:.3f}"
             if len(valid) > 1 and score - valid[1][2] < 0.02:
                 message += "；周期纹理存在近似等分候选，位置仍有歧义"
         else:
