@@ -1,0 +1,40 @@
+[build-system]
+requires = [
+  "hatchling",
+  "hatch-requirements-txt",
+  "hatch-fancy-pypi-readme>=22.5.0",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "gradio_repair_mask_editor"
+version = "0.0.1"
+description = "Gradio 6 HTML Canvas 2D repair mask editor"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "Zhengqiyuan SAM3 Demo" }]
+keywords = [
+  "gradio-custom-component",
+  "sam3",
+  "mask",
+  "canvas",
+  "repair",
+]
+dependencies = ["gradio>=6.14,<7"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
+[tool.hatch.build]
+artifacts = ["/backend/gradio_repair_mask_editor/templates", "*.pyi"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["/backend/gradio_repair_mask_editor"]

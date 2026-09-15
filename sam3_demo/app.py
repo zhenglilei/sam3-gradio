@@ -79,6 +79,7 @@ import template_match_workflow as _template_matching
 from sam3_demo.ui.bindings import bind_demo_events
 from sam3_demo.ui.image_tab import build_image_tab
 from sam3_demo.ui.refs import ComponentRefs
+from sam3_demo.ui.repair_tab import build_repair_tab
 from sam3_demo.ui.layout_mask_tab import build_layout_mask_tab
 from sam3_demo.ui.stitch_tab import build_stitch_tab
 from sam3_demo.ui.template_stitch_tab import build_template_stitch_tab
@@ -87,6 +88,8 @@ from sam3_demo.ui.top_bar import build_top_bar
 from sam3_demo.model_supervisor import SUPERVISOR
 from sam3_demo import stitch_callbacks as _stitch_cb
 from sam3_demo import template_stitch_callbacks as _template_stitch_cb
+from sam3_demo.ui_repair import bind_repair_events
+from sam3_demo.ui_repair_core import empty_editor_payload, new_repair_state
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, request_identity
@@ -137,6 +140,14 @@ except Exception as exc:
     _stitch_canvas_import_error = exc
 else:
     _stitch_canvas_import_error = None
+
+try:
+    from gradio_repair_mask_editor import RepairMaskEditor
+except Exception as exc:
+    RepairMaskEditor = None
+    _repair_editor_import_error = exc
+else:
+    _repair_editor_import_error = None
 
 try:
     from scripts.layout_image_to_mask import extract_layout_mask as _layout_extract_mask
@@ -4066,6 +4077,7 @@ def _cleanup_session_record(record: SessionRecord):
         prompt_epoch_lock=_LAYOUT_PROMPT_EPOCH_LOCK,
         persistent_roots=(
             runtime_dir / "batch_workspace",
+            runtime_dir / "ui_repair",
             runtime_layout_dir,
             runtime_layout_region_dir,
             runtime_export_dir,
@@ -4146,6 +4158,7 @@ def _session_state_bundle(server_state):
         owned(_new_layout_mask_agent_state(session_id)),
         owned(stitch_state),
         owned(_template_stitch_cb.new_template_stitch_state(session_id)),
+        owned(new_repair_state(session_id)),
     )
 
 
@@ -4174,6 +4187,7 @@ def _session_recovery_states(server_state):
         "layout_mask_agent_state",
         "stitch_state",
         "template_stitch_state",
+        "repair_state",
     )
     states = dict(zip(names, bundle))
     states.update(
@@ -4534,8 +4548,14 @@ def create_demo():
             layout_mask_agent_state = gr.State(None)
             polygon_payload = gr.Textbox(label="polygon payload", elem_id="polygon_payload", elem_classes="hidden-payload")
             point_payload = gr.Textbox(label="point payload", elem_id="point_payload", elem_classes="hidden-payload")
+            repair_state = gr.State(None)
 
             with gr.Tabs(elem_id="main_tabs") as main_tabs:
+                repair_ui = build_repair_tab(
+                    RepairMaskEditor=RepairMaskEditor,
+                    editor_import_error=_repair_editor_import_error,
+                    empty_editor_payload=empty_editor_payload,
+                )
                 image_ui = build_image_tab(
                     ImageGestureOverlay=ImageGestureOverlay,
                     _image_gesture_overlay_import_error=_image_gesture_overlay_import_error,
@@ -4581,6 +4601,7 @@ def create_demo():
                 layout_region_state=layout_region_state,
                 bbox_payload=bbox_payload,
                 layout_mask_agent_state=layout_mask_agent_state,
+                repair_state=repair_state,
                 polygon_payload=polygon_payload,
                 point_payload=point_payload,
             )
@@ -4596,6 +4617,14 @@ def create_demo():
             bind_batch_workspace(
                 state_refs, image_ui, stitch_ui, _session_callback_registry(),
                 sys.modules[__name__],
+            )
+            bind_repair_events(
+                state_refs=state_refs,
+                repair_refs=repair_ui,
+                image_refs=image_ui,
+                app=sys.modules[__name__],
+                runtime_root=runtime_dir / "ui_repair",
+                model_path=current_dir / "models" / "big-lama.pt",
             )
             bootstrap_event = demo.load(
                 fn=_bootstrap_session,
@@ -4613,6 +4642,7 @@ def create_demo():
                     layout_mask_agent_state,
                     stitch_ui.stitch_state,
                     template_stitch_ui.template_stitch_state,
+                    repair_state,
                 ],
                 queue=False,
                 show_progress="hidden",
