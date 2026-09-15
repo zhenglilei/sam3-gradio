@@ -98,7 +98,8 @@ def _pvs_summary_impl(_deps, pvs_state):
         lines.append(f"pending#{idx} box={[round(v,1) for v in box]}")
     for inst in items[:80]:
         mark = "*" if str(inst["id"]) == str(active) else " "
-        lines.append(f"{mark}#{inst['id']} {inst['source']} score={inst['score']:.3f}")
+        score_text = "未提供" if inst.get("score_missing") else f"{inst['score']:.3f}"
+        lines.append(f"{mark}#{inst['id']} {inst['source']} score={score_text}")
     return "\n".join(lines)
 
 

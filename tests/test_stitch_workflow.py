@@ -105,7 +105,7 @@ class StitchWorkflowTest(unittest.TestCase):
         ]
         shifts, logs = auto_align_images(tiles, "grid_2x2")
         self.assertEqual(len(shifts), 4)
-        self.assertEqual(len(logs), 4)
+        self.assertEqual(len(logs), 5)
         self.assertEqual(shifts[0], (0, 0))
         expected_x = w - overlap_x
         expected_y = h - overlap_y

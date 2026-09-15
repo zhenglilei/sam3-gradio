@@ -329,23 +329,24 @@ class StitchCallbacksTest(unittest.TestCase):
         self.assertIn('elem_id="stitch_mosaic_preview"', tab_source)
         self.assertIn("visible=True", tab_source)
         self.assertIn("stitch_mosaic_crop_overlay", tab_source)
-        self.assertEqual(tab_source.count('elem_classes="stitch-step-page"'), 3)
-        self.assertIn('elem_classes="stitch-card stitch-step-shell"', tab_source)
-        self.assertIn('elem_classes="stitch-step-pager"', tab_source)
+        for tab_id in ("stitch_images", "stitch_alignment", "stitch_export"):
+            self.assertIn(f'id="{tab_id}"', tab_source)
+        self.assertIn('elem_classes="stitch-sidebar"', tab_source)
+        self.assertIn('elem_classes="stitch-control-tabs"', tab_source)
         self.assertNotIn("_load_stitch_layout_mask", binding_source)
         self.assertIn("handoff_event.success(", binding_source)
         self.assertIn("outputs=[source_image_upload]", binding_source)
         self.assertNotIn("handoff_event.then(", binding_source)
 
-    def test_stitch_steps_use_horizontal_scroll_snap(self):
+    def test_stitch_sidebar_uses_tabs_and_two_column_fields(self):
         root = Path(__file__).resolve().parents[1]
         style_source = (root / "sam3_demo" / "ui" / "styles.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn(".stitch-step-pager", style_source)
-        self.assertIn("overflow-x: auto !important;", style_source)
-        self.assertIn("scroll-snap-type: x mandatory;", style_source)
-        self.assertIn("flex: 0 0 100% !important;", style_source)
+        self.assertIn(".stitch-control-tabs", style_source)
+        self.assertIn(".stitch-crop-fields > .form", style_source)
+        self.assertIn("repeat(2, minmax(0, 1fr))", style_source)
+        self.assertIn(".stitch-crop-fields label.block", style_source)
 
 
 if __name__ == "__main__":

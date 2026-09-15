@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Any, Callable
 
 import gradio as gr
@@ -76,6 +77,9 @@ def _fresh_owned_state(stitch_state: dict | None) -> dict[str, Any]:
     )
     state["resume_id"] = str(previous.get("resume_id") or "")
     state["revision"] = _as_revision(previous.get("revision")) + 1
+    state["saved_tiles"] = list(previous.get("saved_tiles") or [])
+    state["annotation_visible"] = previous.get("annotation_visible", True)
+    state["annotation_alpha"] = previous.get("annotation_alpha", .35)
     return state
 
 
@@ -107,8 +111,9 @@ def _payload(state: dict, extra_status: str = "") -> dict:
         state["shifts"] = shifts
     rotations = normalize_rotations(state.get("rotations"), len(images))
     state["rotations"] = rotations
+    from .annotated_stitch import preview_images
     return canvas_payload(
-        images,
+        preview_images(state, images),
         shifts,
         rotations=rotations,
         selected=int(state.get("selected") or 0),
@@ -141,6 +146,10 @@ def _selected_rotation(state: dict) -> float:
 def _invalidate_mosaic(state: dict, *, bump_revision: bool = True) -> None:
     state["mosaic"] = None
     state["mosaic_full"] = None
+    state["mosaic_instances"] = []
+    state["mosaic_instances_full"] = []
+    state["annotation_manifest"] = {}
+    state["annotation_manifest_full"] = {}
     state["mosaic_crop_bbox_xyxy"] = None
     state["mosaic_view_revision"] = int(state.get("mosaic_view_revision") or 0) + 1
     state["generated_revision"] = None
@@ -232,14 +241,16 @@ def _validate_mosaic_crop_intent(payload, state: dict, mosaic: Image.Image):
     )
 
 
-def _publish_current_mosaic(state: dict, publish_mosaic: PublishMosaic | None):
+def _publish_current_mosaic(state: dict, publish_mosaic: PublishMosaic | None, publish_annotations=None):
+    if state.get("annotated_mode") and publish_annotations is not None:
+        return publish_annotations(state)
     mosaic = pil_rgb(state.get("mosaic"))
     if mosaic is None or publish_mosaic is None:
         return None
     return publish_mosaic(mosaic, str(state.get("session_id") or ""))
 
 
-def crop_mosaic_preview(gesture_payload, stitch_state, *, publish_mosaic=None):
+def crop_mosaic_preview(gesture_payload, stitch_state, *, publish_mosaic=None, publish_annotations=None):
     state = dict(stitch_state or new_stitch_state())
     mosaic = pil_rgb(state.get("mosaic"))
     try:
@@ -247,13 +258,21 @@ def crop_mosaic_preview(gesture_payload, stitch_state, *, publish_mosaic=None):
             raise ValueError("请先生成拼接结果")
         box = _validate_mosaic_crop_intent(gesture_payload, state, mosaic)
         cropped = _image_crop.crop_pil_image(mosaic, box)
+        if state.get("annotated_mode"):
+            from .annotated_stitch_geometry import crop_annotations
+            instances, dropped = crop_annotations(state.get("mosaic_instances") or [], box)
+            state["mosaic_instances"] = instances
+            manifest = dict(state.get("annotation_manifest") or {})
+            manifest["dropped_instances"] = list(manifest.get("dropped_instances") or []) + dropped
+            manifest["preview_crops"] = list(manifest.get("preview_crops") or []) + [list(box)]
+            state["annotation_manifest"] = manifest
         state["mosaic"] = cropped
         state["mosaic_crop_bbox_xyxy"] = list(box)
         state["mosaic_view_revision"] = _as_revision(state.get("mosaic_view_revision")) + 1
         path = None
         publish_warning = ""
         try:
-            path = _publish_current_mosaic(state, publish_mosaic)
+            path = _publish_current_mosaic(state, publish_mosaic, publish_annotations)
         except Exception as exc:
             publish_warning = f"；下载文件发布失败：{exc}"
         status = (
@@ -287,7 +306,7 @@ def crop_mosaic_preview(gesture_payload, stitch_state, *, publish_mosaic=None):
         )
 
 
-def restore_full_mosaic(stitch_state, *, publish_mosaic=None):
+def restore_full_mosaic(stitch_state, *, publish_mosaic=None, publish_annotations=None):
     state = dict(stitch_state or new_stitch_state())
     full = pil_rgb(state.get("mosaic_full"))
     generated = state.get("generated_revision")
@@ -299,13 +318,15 @@ def restore_full_mosaic(stitch_state, *, publish_mosaic=None):
             state, gr.update(), gr.update(), status, gr.update(), gr.update(),
             empty_mosaic_crop_payload(status), gr.update(interactive=False),
         )
+    state["mosaic_instances"] = list(state.get("mosaic_instances_full") or [])
+    state["annotation_manifest"] = dict(state.get("annotation_manifest_full") or {})
     state["mosaic"] = full.copy()
     state["mosaic_crop_bbox_xyxy"] = None
     state["mosaic_view_revision"] = _as_revision(state.get("mosaic_view_revision")) + 1
     path = None
     publish_warning = ""
     try:
-        path = _publish_current_mosaic(state, publish_mosaic)
+        path = _publish_current_mosaic(state, publish_mosaic, publish_annotations)
     except Exception as exc:
         publish_warning = f"；下载文件发布失败：{exc}"
     status = f"已恢复完整拼接图 {full.width}×{full.height}{publish_warning}"
@@ -322,6 +343,24 @@ def restore_full_mosaic(stitch_state, *, publish_mosaic=None):
     )
 
 
+def crop_tile_margins(images, top=0, bottom=0, left=0, right=0):
+    margins = []
+    for value in (top, bottom, left, right):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise gr.Error("裁剪像素必须是非负整数") from None
+        if not math.isfinite(number) or number < 0 or not number.is_integer():
+            raise gr.Error("裁剪像素必须是非负整数")
+        margins.append(int(number))
+    top, bottom, left, right = margins
+    for index, image in enumerate(images, 1):
+        if left + right >= image.width or top + bottom >= image.height:
+            raise gr.Error(f"第 {index} 张图片 {image.width}×{image.height}，裁剪后必须保留至少 1×1 像素")
+    return [image.crop((left, top, image.width - right, image.height - bottom))
+            for image in images]
+
+
 def load_tiles(
     files,
     layout,
@@ -332,10 +371,17 @@ def load_tiles(
     blend,
     crop_periodic,
     remove_black_border=True,
+    crop_top=0,
+    crop_bottom=0,
+    crop_left=0,
+    crop_right=0,
+    *,
+    source_tiles=None,
 ):
     state = _fresh_owned_state(stitch_state)
     layout_key = normalize_layout(layout)
-    images = load_images_from_files(files)
+    images = ([tile["image"].copy() for tile in source_tiles]
+              if source_tiles is not None else load_images_from_files(files))
     if not images:
         status = "没有读到图片。请上传 png/jpg/bmp/tif。"
         state["status"] = status
@@ -348,6 +394,7 @@ def load_tiles(
             *_cleared_result_updates(),
             0.0,
         )
+    images = crop_tile_margins(images, crop_top, crop_bottom, crop_left, crop_right)
     border_records = []
     border_warnings = []
     if remove_black_border:
@@ -364,9 +411,16 @@ def load_tiles(
             "crop_periodic": bool(crop_periodic),
             "remove_black_border": bool(remove_black_border),
             "black_border_records": border_records,
+            "crop_margins": dict(zip(("top", "bottom", "left", "right"), map(int, (crop_top, crop_bottom, crop_left, crop_right)))),
             "warnings": border_warnings,
         }
     )
+    state["annotated_mode"] = source_tiles is not None
+    state["queue_dirty"] = False
+    if source_tiles is not None:
+        from .annotated_stitch import prepare_annotations
+        state["annotations"], state["annotation_sources"] = prepare_annotations(
+            source_tiles, state["crop_margins"], border_records)
     try:
         shifts = default_shifts_for_layout(images, layout_key)
     except ValueError as exc:
@@ -385,6 +439,8 @@ def load_tiles(
     state["shifts"] = shifts
     state["rotations"] = [0.0] * len(images)
     load_log = f"已加载 {len(images)} 张，布局 {layout_key}，尚未自动对齐"
+    if any((crop_top, crop_bottom, crop_left, crop_right)):
+        load_log += f"；裁剪 上{crop_top} 下{crop_bottom} 左{crop_left} 右{crop_right} px"
     if remove_black_border:
         applied = [record for record in border_records if record.get("applied")]
         if applied:
@@ -692,12 +748,13 @@ def generate_mosaic(
     crop_periodic,
     *,
     publish_mosaic: PublishMosaic | None = None,
+    publish_annotations=None,
 ):
     state = dict(stitch_state or new_stitch_state())
     images = _images(state)
     shifts = list(state.get("shifts") or [])
-    if not images or len(shifts) != len(images):
-        status = "请先加载并对齐分块图"
+    if state.get("queue_dirty") or not images or len(shifts) != len(images):
+        status = "请先加载分块图；队列变更后需重新加载"
         state["status"] = status
         _invalidate_mosaic(state, bump_revision=False)
         return (
@@ -719,14 +776,27 @@ def generate_mosaic(
     state["blend"] = next_blend
     state["crop_periodic"] = next_crop
     try:
-        mosaic, warnings = export_mosaic(
-            images,
-            shifts,
-            layout=state.get("layout") or "horizontal",
-            blend=next_blend,
-            crop_periodic=next_crop,
-            rotations=state.get("rotations"),
-        )
+        if state.get("annotated_mode"):
+            from .annotated_stitch_geometry import compose_annotated_mosaic
+            mosaic, instances, manifest = compose_annotated_mosaic(
+                images, state.get("annotations") or [], shifts,
+                layout=state.get("layout") or "horizontal", blend=next_blend,
+                crop_periodic=next_crop, rotations=state.get("rotations"))
+            manifest["source_tiles"] = state.get("annotation_sources") or []
+            state["mosaic_instances"] = instances
+            state["mosaic_instances_full"] = list(instances)
+            state["annotation_manifest"] = manifest
+            state["annotation_manifest_full"] = dict(manifest)
+            warnings = [f"裁剪移除 {len(manifest['dropped_instances'])} 个空实例"] if manifest.get("dropped_instances") else []
+        else:
+            mosaic, warnings = export_mosaic(
+                images,
+                shifts,
+                layout=state.get("layout") or "horizontal",
+                blend=next_blend,
+                crop_periodic=next_crop,
+                rotations=state.get("rotations"),
+            )
     except Exception as exc:
         status = f"生成拼接失败：{exc}"
         state["status"] = status
@@ -749,9 +819,9 @@ def generate_mosaic(
     note = "；".join(warnings) if warnings else "已生成可交接结果"
     status = f"拼接完成 {mosaic.size[0]}×{mosaic.size[1]}。{note}"
     mosaic_file = None
-    if publish_mosaic is not None:
+    if publish_mosaic is not None or publish_annotations is not None:
         try:
-            mosaic_file = publish_mosaic(mosaic, str(state.get("session_id") or ""))
+            mosaic_file = _publish_current_mosaic(state, publish_mosaic, publish_annotations)
         except Exception as exc:
             status += f"；下载文件发布失败：{exc}"
     state["status"] = status

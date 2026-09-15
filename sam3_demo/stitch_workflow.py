@@ -88,16 +88,16 @@ def detect_period(gray_img: np.ndarray):
 def phase_offset(phase: float, period: float) -> float:
     offset = (-phase / (2.0 * np.pi)) * period
     return offset % period
-
-
-def crop_to_complete_periods(
-    img: Image.Image,
+def crop_to_complete_periods_bounds(
+    size: Tuple[int, int],
     px: float,
     py: float,
     x0: float,
     y0: float,
-) -> Image.Image:
-    W, H = img.size
+) -> Tuple[int, int, int, int]:
+    """Return the exact crop rectangle used for complete periodic cells."""
+
+    W, H = size
     m_min = math.ceil((-x0 - 0.5 * px) / px)
     m_max = math.floor((W - x0 - 0.5 * px) / px)
     n_min = math.ceil((-y0 - 0.5 * py) / py)
@@ -110,7 +110,20 @@ def crop_to_complete_periods(
     right = max(left, min(right, W))
     top = max(0, min(top, H))
     bottom = max(top, min(bottom, H))
-    return img.crop((left, top, right, bottom))
+    return left, top, right, bottom
+
+
+
+
+def crop_to_complete_periods(
+    img: Image.Image,
+    px: float,
+    py: float,
+    x0: float,
+    y0: float,
+) -> Image.Image:
+    return img.crop(crop_to_complete_periods_bounds(img.size, px, py, x0, y0))
+
 
 
 def highpass(img: np.ndarray, k: int = 21) -> np.ndarray:
@@ -651,6 +664,30 @@ def _validate_output_extent(
         )
 
 
+def _rotated_tile_geometry(
+    image: Image.Image,
+    shift: Shift,
+    rotation_deg: float,
+) -> Tuple[Image.Image, float, Image.Image, Shift]:
+    """Return the source RGB image and the exact rotated canvas geometry."""
+
+    rgb = image.convert("RGB")
+    angle = normalize_rotation_deg(rotation_deg)
+    rgba = rgb.convert("RGBA")
+    if angle:
+        rgba = rgba.rotate(
+            -angle,
+            resample=Image.Resampling.BICUBIC,
+            expand=True,
+            fillcolor=(0, 0, 0, 0),
+        )
+    origin = (
+        int(round(float(shift[0]) + (rgb.width - rgba.width) / 2.0)),
+        int(round(float(shift[1]) + (rgb.height - rgba.height) / 2.0)),
+    )
+    return rgb, angle, rgba, origin
+
+
 def _rotated_tile(
     image: Image.Image,
     shift: Shift,
@@ -658,9 +695,7 @@ def _rotated_tile(
 ) -> Tuple[Image.Image, Shift, np.ndarray]:
     """Rotate one tile about its center and return RGBA, origin, and edge weights."""
 
-    rgb = image.convert("RGB")
-    angle = normalize_rotation_deg(rotation_deg)
-    rgba = rgb.convert("RGBA")
+    rgb, angle, rgba, origin = _rotated_tile_geometry(image, shift, rotation_deg)
     edge = Image.fromarray(
         np.clip(_edge_weight_map(rgb.height, rgb.width) * 255.0, 0, 255).astype(
             np.uint8
@@ -668,25 +703,15 @@ def _rotated_tile(
         mode="L",
     )
     if angle:
-        # Match the existing layout-transform convention: y-down,
-        # clockwise-positive.  Pillow's positive angle is counter-clockwise.
-        rgba = rgba.rotate(
-            -angle,
-            resample=Image.Resampling.BICUBIC,
-            expand=True,
-            fillcolor=(0, 0, 0, 0),
-        )
         edge = edge.rotate(
             -angle,
             resample=Image.Resampling.BILINEAR,
             expand=True,
             fillcolor=0,
         )
-    left = int(round(float(shift[0]) + (rgb.width - rgba.width) / 2.0))
-    top = int(round(float(shift[1]) + (rgb.height - rgba.height) / 2.0))
     alpha = np.asarray(rgba.getchannel("A"), dtype=np.float32) / 255.0
     weight = np.asarray(edge, dtype=np.float32) / 255.0
-    return rgba, (left, top), weight * alpha
+    return rgba, origin, weight * alpha
 
 
 def _rotated_pieces(
@@ -799,7 +824,7 @@ def _intersect_paste(img: Image.Image, origin: Shift, cell: Tuple[int, int, int,
     return cropped, (x0, y0)
 
 
-def stitch_images_2d(
+def _stitch_images_2d_legacy(
     images: Sequence[Image.Image],
     shifts: Sequence[Shift],
     layout: str = "horizontal",
@@ -917,6 +942,140 @@ def stitch_images_overlay(
         canvas.paste(img, xy)
     return canvas
 
+def stitch_canvas_geometry(
+    images: Sequence[Image.Image],
+    shifts: Sequence[Shift],
+    *,
+    layout: str = "horizontal",
+    blend: bool = True,
+    rotations: Sequence[float] | None = None,
+) -> dict:
+    """Describe the exact integer tile placement used by mosaic export.
+
+    ``pieces`` records source crop bounds and normalized canvas origins.  It is
+    intentionally image-free so annotation masks can apply the same geometry
+    without changing the image export path.
+    """
+
+    if not images:
+        raise ValueError("images 为空")
+    if len(shifts) != len(images):
+        raise ValueError("shifts 数量与图片不一致")
+    normalized_rotations = normalize_rotations(rotations, len(images))
+    if any(normalized_rotations):
+        raw = []
+        for index, (image, shift, angle) in enumerate(
+            zip(images, shifts, normalized_rotations)
+        ):
+            _rgb, _angle, rgba, origin = _rotated_tile_geometry(image, shift, angle)
+            raw.append((index, image.size, angle, rgba.size, origin))
+        min_x = min(item[4][0] for item in raw)
+        min_y = min(item[4][1] for item in raw)
+        pieces = [
+            {
+                "tile_index": index,
+                "source_bbox_xyxy": (0, 0, size[0], size[1]),
+                "origin_xy": (origin[0] - min_x, origin[1] - min_y),
+                "raw_origin_xy": origin,
+                "rotation_deg": angle,
+                "expanded_size": expanded_size,
+            }
+            for index, size, angle, expanded_size, origin in raw
+        ]
+        canvas_size = (
+            max(piece["origin_xy"][0] + piece["expanded_size"][0] for piece in pieces),
+            max(piece["origin_xy"][1] + piece["expanded_size"][1] for piece in pieces),
+        )
+        return {
+            "pieces": pieces,
+            "canvas_size": canvas_size,
+            "canvas_normalization_xy": (min_x, min_y),
+            "rotated": True,
+        }
+
+    _validate_output_extent(images, shifts)
+    local = _local_positions(shifts)
+    layout = normalize_layout(layout)
+    pieces = []
+
+    def add(index: int, bbox: Tuple[int, int, int, int], origin: Shift) -> None:
+        pieces.append(
+            {
+                "tile_index": index,
+                "source_bbox_xyxy": bbox,
+                "origin_xy": origin,
+                "raw_origin_xy": shifts[index],
+                "rotation_deg": 0.0,
+                "expanded_size": (bbox[2] - bbox[0], bbox[3] - bbox[1]),
+            }
+        )
+
+    if blend:
+        for index, (image, origin) in enumerate(zip(images, local)):
+            add(index, (0, 0, image.width, image.height), origin)
+    elif layout == "horizontal":
+        add(0, (0, 0, images[0].width, images[0].height), local[0])
+        for index in range(1, len(images)):
+            x, y = local[index]
+            prev_x, _prev_y = local[index - 1]
+            crop_left = min(max(0, prev_x + images[index - 1].width - x), images[index].width)
+            if images[index].width - crop_left > 0:
+                add(index, (crop_left, 0, images[index].width, images[index].height), (x + crop_left, y))
+    elif layout == "vertical":
+        add(0, (0, 0, images[0].width, images[0].height), local[0])
+        for index in range(1, len(images)):
+            x, y = local[index]
+            _prev_x, prev_y = local[index - 1]
+            crop_top = min(max(0, prev_y + images[index - 1].height - y), images[index].height)
+            if images[index].height - crop_top > 0:
+                add(index, (0, crop_top, images[index].width, images[index].height), (x, y + crop_top))
+    elif layout == "grid_2x2":
+        if len(images) != 4:
+            raise ValueError("2×2 网格需要每组恰好 4 张图片")
+        max_x = max(local[i][0] + images[i].width for i in range(4))
+        max_y = max(local[i][1] + images[i].height for i in range(4))
+        cells = ((0, 0, local[1][0], local[2][1]), (local[1][0], 0, max_x, local[2][1]), (0, local[2][1], local[1][0], max_y), (local[1][0], local[2][1], max_x, max_y))
+        for index, cell in enumerate(cells):
+            x, y = local[index]
+            right, bottom = x + images[index].width, y + images[index].height
+            left, top = max(x, cell[0]), max(y, cell[1])
+            end_x, end_y = min(right, cell[2]), min(bottom, cell[3])
+            if end_x > left and end_y > top:
+                add(index, (left - x, top - y, end_x - x, end_y - y), (left, top))
+    elif layout == "grid_2xn":
+        count = len(images)
+        cols = max(1, math.ceil(count / 2))
+        max_x = max(local[i][0] + images[i].width for i in range(count))
+        max_y = max(local[i][1] + images[i].height for i in range(count))
+        xs = [0]
+        for column in range(1, cols):
+            top_i, bottom_i = column, cols + column
+            xs.append(local[top_i][0] if top_i < count else (local[bottom_i][0] if bottom_i < count else xs[-1]))
+        xs.append(max_x)
+        y_mid = local[cols][1] if cols < count else max_y
+        ys = (0, y_mid, max_y)
+        for index, image in enumerate(images):
+            row, column = divmod(index, cols)
+            cell = (xs[column], ys[row], xs[column + 1], ys[row + 1])
+            x, y = local[index]
+            left, top = max(x, cell[0]), max(y, cell[1])
+            end_x, end_y = min(x + image.width, cell[2]), min(y + image.height, cell[3])
+            if end_x > left and end_y > top:
+                add(index, (left - x, top - y, end_x - x, end_y - y), (left, top))
+    else:
+        raise ValueError(f"不支持的布局: {layout}")
+    if not pieces:
+        raise ValueError("拼接后没有有效图像")
+    return {
+        "pieces": pieces,
+        "canvas_size": (
+            max(piece["origin_xy"][0] + piece["expanded_size"][0] for piece in pieces),
+            max(piece["origin_xy"][1] + piece["expanded_size"][1] for piece in pieces),
+        ),
+        "canvas_normalization_xy": (-min(shift[0] for shift in shifts), -min(shift[1] for shift in shifts)),
+        "rotated": False,
+    }
+
 
 def _edge_weight_map(h: int, w: int, falloff: int = 48) -> np.ndarray:
     falloff = max(int(falloff), 1)
@@ -927,6 +1086,42 @@ def _edge_weight_map(h: int, w: int, falloff: int = 48) -> np.ndarray:
     # black output canvas.  Keep a tiny positive floor so those pixels remain
     # valid while the interior/overlap feathering is unchanged.
     return np.maximum(np.clip(wmap / falloff, 0.0, 1.0), 1e-3)
+
+
+def stitch_images_2d(
+    images: Sequence[Image.Image],
+    shifts: Sequence[Shift],
+    layout: str = "horizontal",
+    bg_color: Tuple[int, int, int] = (0, 0, 0),
+    warn: Optional[List[str]] = None,
+) -> Image.Image:
+    """Paste the shared layout geometry without recomputing crop coordinates."""
+
+    geometry = stitch_canvas_geometry(images, shifts, layout=layout, blend=False)
+    pieces = geometry["pieces"]
+    present = {piece["tile_index"] for piece in pieces}
+    normalized_layout = normalize_layout(layout)
+    if normalized_layout == "horizontal":
+        for index in range(1, len(images)):
+            if index not in present:
+                _warn(warn, f"图{index + 1}水平裁切后为空，已跳过")
+    elif normalized_layout == "vertical":
+        for index in range(1, len(images)):
+            if index not in present:
+                _warn(warn, f"图{index + 1}垂直裁切后为空，已跳过")
+    elif normalized_layout == "grid_2x2":
+        for index, name in enumerate(("左上", "右上", "左下", "右下")):
+            if index not in present:
+                _warn(warn, f"{name}裁切后为空，已跳过")
+    elif normalized_layout == "grid_2xn":
+        for index in range(len(images)):
+            if index not in present:
+                _warn(warn, f"图{index + 1}裁切后为空，已跳过")
+    canvas = Image.new("RGB", tuple(geometry["canvas_size"]), bg_color)
+    for piece in pieces:
+        left, top, right, bottom = piece["source_bbox_xyxy"]
+        canvas.paste(images[piece["tile_index"]].crop((left, top, right, bottom)), piece["origin_xy"])
+    return canvas
 
 
 def stitch_images_blend(
@@ -1070,74 +1265,50 @@ def auto_align_images(
     images: Sequence[Image.Image],
     layout: str = "horizontal",
 ) -> Tuple[List[Shift], List[str]]:
-    """Neighbor match_translation with T4 closed-loop averaging for 2x2 / 2xn."""
+    """Match neighbors under the selected acquisition topology."""
     layout = normalize_layout(layout)
-    logs: List[str] = []
     if not images:
-        return [], logs
-
-    # Grayscale/high-pass conversion is independent of the neighboring pair.
-    # Prepare each tile once so a grid does not repeatedly blur and convert the
-    # same pixels for every horizontal/vertical edge.
+        return [], []
     prepared = [_prepare_alignment_arrays(image) for image in images]
-
-    def pair(i: int, j: int, axis: str) -> Shift:
-        dx, dy, ncc, failed = _match_translation_prepared(
-            prepared[i], prepared[j], axis=axis, ncc_min=0.2
-        )
-        wa, ha = images[i].size
-        overlap = max(0, ha - dy) if axis == "vertical" else max(0, wa - dx)
-        msg = f"邻接 图{i + 1}-图{j + 1} 平移=({dx},{dy}) 重叠≈{overlap}px NCC={ncc:.3f}"
-        if failed:
-            msg = "警告：" + msg + "，已按零重叠紧挨兜底"
-        logs.append(msg)
-        return dx, dy
-
-    if layout == "vertical":
-        pos = [(0, 0)]
-        for i in range(1, len(images)):
-            dx, dy = pair(i - 1, i, "vertical")
-            pos.append((pos[-1][0] + dx, pos[-1][1] + dy))
-    elif layout == "grid_2x2":
-        if len(images) != 4:
+    if layout in ("grid_2x2", "grid_2xn"):
+        if layout == "grid_2x2" and len(images) != 4:
             raise ValueError("2×2 网格需要每组恰好 4 张图片")
-        p1 = pair(0, 1, "horizontal")
-        p2 = pair(0, 2, "vertical")
-        p13 = pair(1, 3, "vertical")
-        p23 = pair(2, 3, "horizontal")
-        pos3 = (
-            int(round((p1[0] + p13[0] + p2[0] + p23[0]) / 2.0)),
-            int(round((p1[1] + p13[1] + p2[1] + p23[1]) / 2.0)),
-        )
-        pos = [(0, 0), p1, p2, pos3]
-    elif layout == "grid_2xn":
-        n = len(images)
-        cols = max(1, math.ceil(n / 2))
-        pos = [(0, 0)] * n
-        for c in range(1, min(cols, n)):
-            dx, dy = pair(c - 1, c, "horizontal")
-            pos[c] = (pos[c - 1][0] + dx, pos[c - 1][1] + dy)
-        if cols < n:
-            dx, dy = pair(0, cols, "vertical")
-            pos[cols] = (pos[0][0] + dx, pos[0][1] + dy)
-        for c in range(1, cols):
-            i = cols + c
-            if i >= n:
-                break
-            dx_l, dy_l = pair(i - 1, i, "horizontal")
-            p_left = (pos[i - 1][0] + dx_l, pos[i - 1][1] + dy_l)
-            dx_t, dy_t = pair(c, i, "vertical")
-            p_top = (pos[c][0] + dx_t, pos[c][1] + dy_t)
-            pos[i] = (
-                int(round((p_left[0] + p_top[0]) / 2.0)),
-                int(round((p_left[1] + p_top[1]) / 2.0)),
-            )
-    else:
-        pos = [(0, 0)]
-        for i in range(1, len(images)):
-            dx, dy = pair(i - 1, i, "horizontal")
-            pos.append((pos[-1][0] + dx, pos[-1][1] + dy))
-    return pos, logs
+        from .stitch_grid_alignment import align_four_tiles, align_two_row_tiles
+
+        matcher = align_four_tiles if len(images) == 4 else align_two_row_tiles
+        positions, logs = matcher(prepared)
+        return (positions if positions is not None else default_shifts_for_layout(images, layout)), logs
+
+    from .stitch_grid_alignment import match_grid_pair
+
+    axis = "vertical" if layout == "vertical" else "horizontal"
+    positions = [(0, 0)]
+    logs = []
+    for i in range(1, len(images)):
+        candidates = match_grid_pair(prepared[i - 1], prepared[i], axis)
+        width, height = images[i - 1].size
+        extent = height if axis == "vertical" else width
+        cross_extent = min(im.width if axis == "vertical" else im.height for im in images[:i + 1])
+        previous_cross = positions[-1][0] if axis == "vertical" else positions[-1][1]
+        valid = []
+        for dx, dy, score in candidates:
+            primary, cross = (dy, dx) if axis == "vertical" else (dx, dy)
+            if (0.5 * extent <= primary <= extent
+                    and abs(cross) <= 0.1 * cross_extent
+                    and abs(previous_cross + cross) <= 0.1 * cross_extent):
+                valid.append((dx, dy, score))
+        if valid:
+            valid.sort(key=lambda item: -item[2])
+            dx, dy, score = valid[0]
+            message = f"邻接 图{i}-图{i + 1} 平移=({dx},{dy}) NCC={score:.3f}"
+            if len(valid) > 1 and score - valid[1][2] < 0.02:
+                message += "；周期纹理存在近似等分候选，位置仍有歧义"
+        else:
+            dx, dy = (0, height) if axis == "vertical" else (width, 0)
+            message = f"警告：图{i}-图{i + 1} 缺少符合排列方向的匹配证据，按零重叠相邻排列"
+        positions.append((positions[-1][0] + dx, positions[-1][1] + dy))
+        logs.append(message)
+    return positions, logs
 
 
 def select_worst_tile(shifts: Sequence[Shift], baseline: Sequence[Shift]) -> int:
