@@ -60,10 +60,10 @@ def add_images(batch, files):
 def save_snapshot(app, batch, source, image, pcs, pvs, prompt, layout, mode, tool, text, threshold):
     item = next((x for x in batch["items"] if x["id"] == batch.get("active_id")), None)
     if item is None or not image or not image.get("image_id"):
-        return
+        return False
     if (item.get("live_image_id") != image["image_id"]
             and item.get("live_source_id") != source.get("source_image_id")):
-        return
+        return False
     item["original"] = app._source_image_cache_get(source)
     item["snapshot"] = {
         "source": deepcopy(source), "image": app._workspace(image)["image"].copy(),
@@ -92,11 +92,13 @@ def save_snapshot(app, batch, source, image, pcs, pvs, prompt, layout, mode, too
     (folder / "metadata.json").write_text(json.dumps({
         "name": item["name"], "crop": source.get("crop_bbox_xyxy"),
         "mode": mode, "instances": metadata}, ensure_ascii=False), encoding="utf-8")
+    return True
 
 
-def restore_item(app, batch, item, session):
+def restore_item(app, batch, item, session, inherit_config=None):
     snap = item.get("snapshot") or {}
-    mode = snap.get("mode", "PVS Manual")
+    inherit_config = {} if snap else (inherit_config or {})
+    mode = snap.get("mode", inherit_config.get("mode", "PVS Manual"))
     layout = deepcopy(snap.get("layout") or {})
     loaded = list(app._source_upload_workspace(item["original"], mode, session, layout))
     source, image, pcs, pvs, prompt = loaded[0], loaded[3], loaded[4], loaded[5], loaded[6]
@@ -115,8 +117,10 @@ def restore_item(app, batch, item, session):
     item["live_image_id"] = image["image_id"]
     item["live_source_id"] = source["source_image_id"]
     batch["active_id"] = item["id"]
-    return (source, image, pcs, pvs, prompt, layout, mode, snap.get("tool", "bbox"),
-            snap.get("text", ""), snap.get("threshold", 0.4))
+    return (source, image, pcs, pvs, prompt, layout, mode,
+            snap.get("tool", inherit_config.get("tool", "bbox")),
+            snap.get("text", inherit_config.get("text", "")),
+            snap.get("threshold", inherit_config.get("threshold", 0.4)))
 
 
 def selected_for_run(batch, selected, retry=False):
@@ -233,9 +237,14 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
         message = ""
         if batch.get("running") and action not in ("step", "cancel"):
             return {r.batch_status: "批处理进行中；可取消后继续编辑"}
+        had_active = any(item["id"] == batch.get("active_id") for item in batch["items"])
         try:
             if action not in ("step", "cancel", "selection", "stitch"):
-                save_snapshot(app, batch, *values)
+                saved = save_snapshot(app, batch, *values)
+                if action in ("prev", "next", "select") and had_active and not saved:
+                    raise ValueError("\u5f53\u524d\u56fe\u7247\u4fdd\u5b58\u5931\u8d25\uff0c\u672a\u5207\u6362")
+                if action == "save" and not saved:
+                    raise ValueError("\u5f53\u524d\u56fe\u7247\u4fdd\u5b58\u5931")
             if action == "upload":
                 added = add_images(batch, files)
                 selected = list(dict.fromkeys([*(selected or []), *(i["id"] for i in added)]))
@@ -245,11 +254,19 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 message = f"已添加 {len(added)} 张图片"
             elif action in ("prev", "next", "select"):
                 ids = [i["id"] for i in batch["items"]]
-                current = ids.index(batch["active_id"]) if batch["active_id"] in ids else 0
+                current = ids.index(batch['active_id']) if batch['active_id'] in ids else (-1 if action == 'next' else 0)
                 dest = int(index) if action == "select" else current + (-1 if action == "prev" else 1)
                 if ids:
                     dest = min(max(dest, 0), len(ids)-1)
-                    values = restore_item(app, batch, batch["items"][dest], session_state)
+                    target = batch["items"][dest]
+                    inherit_config = None
+                    if action == "next" and not target.get("snapshot"):
+                        inherit_config = {
+                            "mode": mode, "tool": click_tool, "text": text,
+                            "threshold": threshold,
+                        }
+                    values = restore_item(app, batch, target, session_state,
+                                          inherit_config=inherit_config)
                     changed = True
                     message = f"{dest+1} / {len(ids)} · {batch['items'][dest]['name']}"
             elif action in ("select_all", "select_none", "selection"):
