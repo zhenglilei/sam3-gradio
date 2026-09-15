@@ -1,5 +1,5 @@
 {
-  "component_count": 435,
+  "component_count": 436,
   "components": [
     {
       "props": {
@@ -3710,6 +3710,10 @@
         "value": 0.5
       },
       "type": "timer"
+    },
+    {
+      "props": {},
+      "type": "state"
     },
     {
       "props": {},
@@ -10691,7 +10695,12 @@
         45,
         66,
         67,
-        68
+        68,
+        58,
+        59,
+        60,
+        61,
+        62
       ],
       "max_batch_size": 4,
       "outputs": [
@@ -10727,7 +10736,12 @@
         45,
         66,
         67,
-        68
+        68,
+        58,
+        59,
+        60,
+        61,
+        62
       ],
       "max_batch_size": 4,
       "outputs": [
@@ -10752,6 +10766,26 @@
       "trigger_only_on_success": false
     },
     {
+      "api_name": "js_fn",
+      "backend_fn": false,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [],
+      "queue": false,
+      "scroll_to_output": false,
+      "show_progress": "full",
+      "targets": [
+        [
+          75,
+          "click"
+        ]
+      ],
+      "trigger_after": null,
+      "trigger_only_on_success": false
+    },
+    {
       "api_name": "send_to_segmentation",
       "backend_fn": true,
       "batch": false,
@@ -10760,19 +10794,13 @@
         25,
         12,
         39,
-        45,
-        78,
-        88
+        45
       ],
       "max_batch_size": 4,
       "outputs": [
         25,
         76,
-        78,
-        83,
-        88,
-        90,
-        26
+        433
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -10785,6 +10813,212 @@
       ],
       "trigger_after": null,
       "trigger_only_on_success": false
+    },
+    {
+      "api_name": "wait_for_segmentation_tab",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [],
+      "max_batch_size": 4,
+      "outputs": [],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "success"
+        ]
+      ],
+      "trigger_after": 198,
+      "trigger_only_on_success": true
+    },
+    {
+      "api_name": "batch_upload_1",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        78,
+        12,
+        14,
+        13,
+        15,
+        16,
+        18,
+        19,
+        101,
+        137,
+        153,
+        154,
+        88,
+        433,
+        358
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        78,
+        83,
+        88,
+        90,
+        432,
+        14,
+        13,
+        15,
+        16,
+        18,
+        19,
+        209,
+        214,
+        140,
+        168,
+        107,
+        111,
+        254,
+        160,
+        188,
+        202,
+        145,
+        167,
+        238,
+        21,
+        23,
+        24,
+        101,
+        137,
+        153,
+        154,
+        97,
+        82,
+        92,
+        94,
+        93,
+        95,
+        96,
+        98,
+        86,
+        87,
+        212,
+        213,
+        155,
+        169,
+        182,
+        177,
+        149,
+        129,
+        204,
+        205,
+        157,
+        144,
+        358,
+        369,
+        370,
+        17,
+        218,
+        234,
+        231,
+        138,
+        151,
+        163,
+        200,
+        253,
+        190,
+        112,
+        165,
+        174,
+        179,
+        147
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "success"
+        ]
+      ],
+      "trigger_after": 199,
+      "trigger_only_on_success": true
+    },
+    {
+      "api_name": "batch_refresh_workspace_overlay",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        12,
+        13,
+        101,
+        137
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        108
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "success"
+        ]
+      ],
+      "trigger_after": 200,
+      "trigger_only_on_success": true
+    },
+    {
+      "api_name": "batch_refresh_source_overlay",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        12,
+        14
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        210
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "success"
+        ]
+      ],
+      "trigger_after": 201,
+      "trigger_only_on_success": true
+    },
+    {
+      "api_name": "batch_refresh_layout_editor",
+      "backend_fn": true,
+      "batch": false,
+      "cancels": [],
+      "inputs": [
+        12,
+        13,
+        101
+      ],
+      "max_batch_size": 4,
+      "outputs": [
+        114
+      ],
+      "queue": true,
+      "scroll_to_output": false,
+      "show_progress": "hidden",
+      "targets": [
+        [
+          null,
+          "success"
+        ]
+      ],
+      "trigger_after": 202,
+      "trigger_only_on_success": true
     },
     {
       "api_name": "_bootstrap_session",
@@ -10842,7 +11076,7 @@
           "success"
         ]
       ],
-      "trigger_after": 198,
+      "trigger_after": 204,
       "trigger_only_on_success": true
     },
     {
@@ -10866,7 +11100,7 @@
       "trigger_only_on_success": false
     }
   ],
-  "dependency_count": 201,
+  "dependency_count": 207,
   "layout": {
     "children": [
       {
@@ -10954,7 +11188,7 @@
                 "component": 24
               }
             ],
-            "component": 433
+            "component": 434
           },
           {
             "component": 22
@@ -12486,12 +12720,15 @@
           },
           {
             "component": 432
+          },
+          {
+            "component": 433
           }
         ],
         "component": 0
       },
       {
-        "component": 434
+        "component": 435
       }
     ],
     "component": "root"

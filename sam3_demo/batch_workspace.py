@@ -391,7 +391,8 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
 
     options = dict(inputs=shared, outputs=outputs, concurrency_limit=1,
                    concurrency_id="image-prepost-state", show_progress="hidden", api_visibility="private")
-    r.batch_upload.upload(wrap("upload"), **options)
+    upload_callback = wrap("upload")
+    r.batch_upload.upload(upload_callback, **options)
     r.batch_selection.input(wrap("selection"), **options)
     for component, action in ((r.batch_prev_btn,"prev"),(r.batch_next_btn,"next"),
                               (r.batch_save_btn,"save"),(r.batch_run_btn,"run"),
@@ -416,3 +417,92 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
     r.batch_gallery.select(guard_callback(batch_select, registry=app._SESSION_REGISTRY,
                             trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
                             recovery_factory=app._session_recovery_states), **options)
+
+    def bind_external_upload(event, files_component):
+        external_inputs = [
+            files_component if component is r.batch_upload else component
+            for component in shared
+        ]
+        # Hidden custom editors can enter a Svelte update loop during a cross-tab restore.
+        hidden_custom_outputs = {s.main_tabs, r.source_crop_overlay, r.workspace_gesture_overlay, r.layout_editor}
+        external_outputs = [
+            component for component in outputs
+            if component not in hidden_custom_outputs
+        ]
+        external_upload_callback = wrap("upload", external_outputs)
+        restore_event = event.success(
+            fn=external_upload_callback,
+            inputs=external_inputs,
+            outputs=external_outputs,
+            concurrency_limit=1,
+            concurrency_id="image-prepost-state",
+            show_progress="hidden",
+            api_visibility="private",
+        )
+
+        def batch_refresh_workspace_overlay(
+            session_state,
+            image_state,
+            mode,
+            click_tool,
+        ):
+            del session_state
+            return app._workspace_gesture_payload(image_state, mode, click_tool)
+
+        workspace_event = restore_event.success(
+            fn=guard_callback(
+                batch_refresh_workspace_overlay,
+                registry=app._SESSION_REGISTRY,
+                trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
+                recovery_factory=app._session_recovery_states,
+            ),
+            inputs=[s.session_state, s.image_state, r.mode, r.click_tool],
+            outputs=[r.workspace_gesture_overlay],
+            concurrency_limit=1,
+            concurrency_id="image-prepost-state",
+            show_progress="hidden",
+            api_visibility="private",
+        )
+
+        def batch_refresh_source_overlay(session_state, source_image_state):
+            del session_state
+            return app._source_gesture_payload(source_image_state)
+
+        source_event = workspace_event.success(
+            fn=guard_callback(
+                batch_refresh_source_overlay,
+                registry=app._SESSION_REGISTRY,
+                trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
+                recovery_factory=app._session_recovery_states,
+            ),
+            inputs=[s.session_state, s.source_image_state],
+            outputs=[r.source_crop_overlay],
+            concurrency_limit=1,
+            concurrency_id="image-prepost-state",
+            show_progress="hidden",
+            api_visibility="private",
+        )
+
+        def batch_refresh_layout_editor(session_state, image_state, mode):
+            del session_state
+            if mode != "Layout Mask":
+                return gr.skip()
+            return app._layout_editor_empty(image_state)
+
+        layout_event = source_event.success(
+            fn=guard_callback(
+                batch_refresh_layout_editor,
+                registry=app._SESSION_REGISTRY,
+                trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
+                recovery_factory=app._session_recovery_states,
+            ),
+            inputs=[s.session_state, s.image_state, r.mode],
+            outputs=[r.layout_editor],
+            concurrency_limit=1,
+            concurrency_id="image-prepost-state",
+            show_progress="hidden",
+            api_visibility="private",
+        )
+        return layout_event
+
+    return bind_external_upload
