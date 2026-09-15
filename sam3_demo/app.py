@@ -4606,17 +4606,18 @@ def create_demo():
                 callbacks=_session_callback_registry(),
             )
             from sam3_demo.batch_workspace import bind_batch_workspace
-            bind_batch_workspace(
+            bind_batch_upload = bind_batch_workspace(
                 state_refs, image_ui, stitch_ui, _session_callback_registry(),
                 sys.modules[__name__],
             )
+            state_refs.repair_handoff_paths = gr.State([])
             bind_repair_events(
                 state_refs=state_refs,
                 repair_refs=repair_ui,
-                image_refs=image_ui,
                 app=sys.modules[__name__],
                 runtime_root=runtime_dir / "ui_repair",
                 model_path=current_dir / "models" / "big-lama.pt",
+                bind_batch_upload=bind_batch_upload,
             )
             bootstrap_event = demo.load(
                 fn=_bootstrap_session,

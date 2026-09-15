@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import gradio as gr
 
-from sam3_demo import batch_workspace
 from sam3_demo.lama_runtime import get_lama_runtime
 from sam3_demo.session_guard import guard_callback
 from sam3_demo import ui_repair_core as core
@@ -16,10 +16,10 @@ def bind_repair_events(
     *,
     state_refs,
     repair_refs,
-    image_refs,
     app,
     runtime_root,
     model_path,
+    bind_batch_upload,
 ):
     state_component = state_refs.repair_state
     session_component = state_refs.session_state
@@ -403,6 +403,11 @@ def bind_repair_events(
         repair_refs.repair_tool,
         repair_refs.repair_brush_size,
         repair_refs.repair_alpha,
+        repair_refs.detect_saturation,
+        repair_refs.detect_value,
+        repair_refs.detect_min_area,
+        repair_refs.detect_padding,
+        repair_refs.detect_merge,
     ]
 
     def repair_callback(batch):
@@ -414,6 +419,11 @@ def bind_repair_events(
             tool,
             brush_size,
             alpha,
+            saturation,
+            value,
+            min_area,
+            padding,
+            merge_distance,
         ):
             state = core.owned_repair_state(repair_state, session_state)
             try:
@@ -425,6 +435,19 @@ def bind_repair_events(
                     else [state.get("active_id")]
                 )
                 targets = [target for target in targets if target]
+                detected_images = 0
+                detected_regions = 0
+                if batch:
+                    detected_images, detected_regions = core.apply_color_detection(
+                        state,
+                        targets,
+                        ("red", "yellow"),
+                        saturation=int(saturation),
+                        value=int(value),
+                        min_area=int(min_area),
+                        padding=int(padding),
+                        merge_distance=int(merge_distance),
+                    )
                 if not targets:
                     raise ValueError("当前没有待修复图片")
                 completed, failures = core.repair_items(
@@ -433,6 +456,10 @@ def bind_repair_events(
                     get_lama_runtime(model_path),
                 )
                 message = f"修复完成：{completed}/{len(targets)} 张"
+                if batch:
+                    message = (
+                        f"自动检测：{detected_images} 张、{detected_regions} 个红黄区域；{message}"
+                    )
                 if failures:
                     message += "；" + "；".join(failures[:3])
                     gr.Warning(message)
@@ -466,8 +493,6 @@ def bind_repair_events(
         session_state,
         selected,
         editor_value,
-        batch,
-        batch_selected,
     ):
         state = core.owned_repair_state(repair_state, session_state)
         try:
@@ -475,64 +500,58 @@ def bind_repair_events(
                 core.commit_editor_value(state, editor_value)
             targets = selected_ids(state, selected, default_active=True)
             paths = core.repaired_paths(state, targets)
-            image_batch = batch_workspace.owned_batch(batch, session_state)
-            added = batch_workspace.add_images(image_batch, paths)
-            image_selection = list(
-                dict.fromkeys([*(batch_selected or []), *(item["id"] for item in added)])
-            )
-            image_batch["selected_ids"] = image_selection
-            gallery, selection_update = batch_workspace.queue_display(
-                image_batch,
-                image_selection,
-            )
-            message = f"已将 {len(added)} 张修复结果加入智能图像分割"
+            message = f"正在将 {len(paths)} 张修复结果送往智能图像分割"
             gr.Info(message)
-            return (
-                state,
-                message,
-                image_batch,
-                gallery,
-                selection_update,
-                message,
-                gr.update(selected="tab_image"),
-            )
+            return state, message, paths
         except Exception as exc:
             message = str(exc)
             gr.Warning(message)
-            return (
-                state,
-                message,
-                batch,
-                gr.skip(),
-                gr.skip(),
-                gr.skip(),
-                gr.skip(),
-            )
+            return state, message, []
 
     repair_refs.send_repaired_btn.click(
+        fn=None,
+        inputs=[],
+        outputs=[],
+        js="""() => {
+            const tabs = Array.from(document.querySelectorAll('#main_tabs [role=\"tab\"]'));
+            if (tabs[1] instanceof HTMLElement) requestAnimationFrame(() => tabs[1].click());
+            return [];
+        }""",
+        queue=False,
+        api_visibility="private",
+    )
+
+    send_event = repair_refs.send_repaired_btn.click(
         guarded(send_to_segmentation),
         inputs=[
             state_component,
             session_component,
             repair_refs.repair_selection,
             repair_refs.repair_editor,
-            image_refs.batch_state,
-            image_refs.batch_selection,
         ],
         outputs=[
             state_component,
             repair_refs.repair_status,
-            image_refs.batch_state,
-            image_refs.batch_gallery,
-            image_refs.batch_selection,
-            image_refs.batch_status,
-            state_refs.main_tabs,
+            state_refs.repair_handoff_paths,
         ],
         concurrency_limit=1,
+        concurrency_id="ui-repair-state",
+        show_progress="hidden",
+        api_visibility="private",
+    )
+    def wait_for_segmentation_tab():
+        # Let Gradio mount the custom canvases before restoring their state.
+        time.sleep(0.5)
+
+    settle_event = send_event.success(
+        fn=wait_for_segmentation_tab,
+        inputs=[],
+        outputs=[],
+        concurrency_limit=8,
         concurrency_id="image-prepost-state",
         show_progress="hidden",
         api_visibility="private",
     )
-
+    bind_batch_upload(settle_event, state_refs.repair_handoff_paths)
 
 __all__ = ["bind_repair_events"]

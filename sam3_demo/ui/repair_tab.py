@@ -45,6 +45,7 @@ def build_repair_tab(
                             choices=[],
                             value=[],
                             multiselect=True,
+                            allow_custom_value=True,
                             label="选中的图片",
                         )
 
