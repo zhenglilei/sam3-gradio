@@ -87,7 +87,7 @@ class BatchWorkspaceStateInheritanceTests(unittest.TestCase):
         self.assertEqual(restored[3]["pending_boxes"], [])
         self.assertEqual(restored[3]["instances"], {})
         self.assertEqual(restored[4]["polygon_points"], [])
-        self.assertEqual(restored[5], {})
+        self.assertEqual(restored[5], app._new_layout_state(self.session["session_id"]))
         self.assertNotEqual(restored[0]["source_image_id"], first_values[0]["source_image_id"])
         self.assertNotEqual(restored[1]["image_id"], first_values[1]["image_id"])
 

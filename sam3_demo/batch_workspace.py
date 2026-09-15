@@ -99,7 +99,9 @@ def restore_item(app, batch, item, session, inherit_config=None):
     snap = item.get("snapshot") or {}
     inherit_config = {} if snap else (inherit_config or {})
     mode = snap.get("mode", inherit_config.get("mode", "PVS Manual"))
-    layout = deepcopy(snap.get("layout") or {})
+    layout = app._new_layout_state(session["session_id"])
+    layout.update(deepcopy(snap.get("layout") or {}))
+    layout["session_id"] = session["session_id"]
     loaded = list(app._source_upload_workspace(item["original"], mode, session, layout))
     source, image, pcs, pvs, prompt = loaded[0], loaded[3], loaded[4], loaded[5], loaded[6]
     saved_source = snap.get("source") or {}
@@ -181,6 +183,28 @@ def send_tiles(app, batch, selected, stitch, live_values=None):
     return change_queue(stitch, tiles), count
 
 
+def remove_images(batch, image_ids):
+    if batch.get("running"):
+        raise ValueError("请先取消批处理，再删除图片")
+    targets = set(image_ids or [])
+    items = batch["items"]
+    removed = [item for item in items if item["id"] in targets]
+    if not removed:
+        return 0, False
+    old_active = batch.get("active_id")
+    old_index = next((i for i, item in enumerate(items) if item["id"] == old_active), 0)
+    remaining = [item for item in items if item["id"] not in targets]
+    active_removed = old_active in targets
+    batch["items"] = remaining
+    if active_removed:
+        batch["active_id"] = remaining[min(old_index, len(remaining) - 1)]["id"] if remaining else None
+    valid = {item["id"] for item in remaining}
+    batch["selected_ids"] = [key for key in batch.get("selected_ids", []) if key in valid]
+    batch["pending"] = [key for key in batch.get("pending", []) if key in valid]
+    # Published annotations and stitch tiles are independent saved copies.
+    return len(removed), active_removed
+
+
 def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
     s, r, t = state_refs, image_refs, stitch_refs
     timer = gr.Timer(0.5, active=False)
@@ -191,6 +215,7 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
     common = [r.image_upload, r.result_image, r.analysis_report, r.pcs_summary,
               r.pvs_summary, r.active_pvs, r.interaction_info, r.pvs_pending_count]
     controls = [r.batch_upload, r.batch_prev_btn, r.batch_next_btn, r.batch_save_btn,
+                r.batch_delete_current_btn, r.batch_delete_selected_btn,
                 r.batch_run_btn, r.batch_retry_btn, r.batch_stitch_btn,
                 r.batch_select_all_btn, r.batch_select_none_btn, r.batch_selection,
                 r.source_image_upload, r.apply_crop_btn, r.use_full_image_btn,
@@ -239,7 +264,7 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
             return {r.batch_status: "批处理进行中；可取消后继续编辑"}
         had_active = any(item["id"] == batch.get("active_id") for item in batch["items"])
         try:
-            if action not in ("step", "cancel", "selection", "stitch"):
+            if action not in ("step", "cancel", "selection", "stitch", "delete_current", "delete_selected"):
                 saved = save_snapshot(app, batch, *values)
                 if action in ("prev", "next", "select") and had_active and not saved:
                     raise ValueError("\u5f53\u524d\u56fe\u7247\u4fdd\u5b58\u5931\u8d25\uff0c\u672a\u5207\u6362")
@@ -252,6 +277,21 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                     values = restore_item(app, batch, added[0], session_state)
                     changed = True
                 message = f"已添加 {len(added)} 张图片"
+            elif action in ("delete_current", "delete_selected"):
+                targets = [batch.get("active_id")] if action == "delete_current" else selected
+                count, active_removed = remove_images(batch, targets)
+                selected = batch.get("selected_ids", [])
+                message = f"已删除 {count} 张图片；当前队列共 {len(batch['items'])} 张" if count else "请先选择要删除的图片"
+                if active_removed:
+                    target = next((item for item in batch["items"] if item["id"] == batch["active_id"]), None)
+                    if target is not None:
+                        values = restore_item(app, batch, target, session_state)
+                    else:
+                        layout = app._new_layout_state(session_state["session_id"])
+                        loaded = app._source_upload_workspace(None, mode, session_state, layout)
+                        values = (loaded[0], loaded[3], loaded[4], loaded[5], loaded[6],
+                                  layout, mode, click_tool, text, threshold)
+                    changed = True
             elif action in ("prev", "next", "select"):
                 ids = [i["id"] for i in batch["items"]]
                 current = ids.index(batch['active_id']) if batch['active_id'] in ids else (-1 if action == 'next' else 0)
@@ -351,7 +391,9 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                                     s.pvs_state, s.prompt_state, s.layout_state], values[:6])))
             result.update(dict(zip(common, app._view(image, pcs, pvs, mode, message, prompt, layout))))
             result.update({
-                r.source_image_upload: gr.update(value=app._source_image_cache_get(source), interactive=not batch["running"]),
+                r.source_image_upload: gr.update(
+                    value=app._source_image_cache_get(source) if source.get("source_image_id") else None,
+                    interactive=not batch["running"]),
                 r.source_crop_overlay: app._source_gesture_payload(source),
                 r.source_crop_status: message,
                 r.workspace_gesture_overlay: app._workspace_gesture_payload(image, mode, tool),
@@ -363,7 +405,8 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 r.click_tool: {**result.get(r.click_tool, {}), **gr.update(value=tool, interactive=not batch["running"])},
                 r.text_prompt: gr.update(value=text, interactive=not batch["running"]),
                 r.confidence_threshold: gr.update(value=threshold, interactive=not batch["running"]),
-                s.template_match_state: {}, r.template_match_preview: None,
+                s.template_match_state: app._new_template_match_state(session_state["session_id"]),
+                r.template_match_preview: None,
                 r.template_match_file: None, r.template_match_status: "",
             })
         if batch.get("running"):
@@ -395,6 +438,8 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
     r.batch_upload.upload(upload_callback, **options)
     r.batch_selection.input(wrap("selection"), **options)
     for component, action in ((r.batch_prev_btn,"prev"),(r.batch_next_btn,"next"),
+                              (r.batch_delete_current_btn,"delete_current"),
+                              (r.batch_delete_selected_btn,"delete_selected"),
                               (r.batch_save_btn,"save"),(r.batch_run_btn,"run"),
                               (r.batch_retry_btn,"retry"),(r.batch_cancel_btn,"cancel"),
                               (r.batch_select_all_btn,"select_all"),

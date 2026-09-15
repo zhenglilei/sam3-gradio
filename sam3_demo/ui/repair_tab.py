@@ -38,9 +38,14 @@ def build_repair_tab(
                     with gr.Row(elem_classes="repair-nav-row"):
                         repair_prev_btn = gr.Button("上一张", size="sm")
                         repair_next_btn = gr.Button("下一张", size="sm")
+                        repair_remove_current_btn = gr.Button(
+                            "删除当前图片", variant="secondary", size="sm"
+                        )
                     repair_position = gr.Markdown("尚未添加图片", elem_id="repair-position")
                     with gr.Accordion("批量范围", open=False):
-                        repair_select_all_btn = gr.Button("全选", size="sm")
+                        with gr.Row():
+                            repair_select_all_btn = gr.Button("全选", size="sm")
+                            repair_remove_selected_btn = gr.Button("删除选中图片", size="sm")
                         repair_selection = gr.Dropdown(
                             choices=[],
                             value=[],
@@ -173,8 +178,10 @@ def build_repair_tab(
         repair_gallery=repair_gallery,
         repair_prev_btn=repair_prev_btn,
         repair_next_btn=repair_next_btn,
+        repair_remove_current_btn=repair_remove_current_btn,
         repair_position=repair_position,
         repair_select_all_btn=repair_select_all_btn,
+        repair_remove_selected_btn=repair_remove_selected_btn,
         repair_selection=repair_selection,
         repair_editor=repair_editor,
         repair_result=repair_result,

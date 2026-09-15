@@ -165,6 +165,65 @@ def move_active(state: dict[str, Any], delta: int) -> dict[str, Any]:
     return select_item(state, current + int(delta))
 
 
+def remove_repair_items(
+    state: dict[str, Any],
+    image_ids: Iterable[str] | None,
+) -> list[str]:
+    if isinstance(image_ids, str):
+        image_ids = [image_ids]
+    requested = {
+        str(image_id)
+        for image_id in (image_ids or ())
+        if image_id is not None
+    }
+    if not requested:
+        return []
+
+    items = state.get("items", [])
+    active_id = state.get("active_id")
+    active_index = next(
+        (
+            index
+            for index, item in enumerate(items)
+            if str(item.get("id") or "") == str(active_id or "")
+        ),
+        None,
+    )
+    removed_ids = [
+        str(item.get("id") or "")
+        for item in items
+        if str(item.get("id") or "") in requested
+    ]
+    if not removed_ids:
+        return []
+
+    removed = set(removed_ids)
+    remaining = [
+        item
+        for item in items
+        if str(item.get("id") or "") not in removed
+    ]
+    state["items"] = remaining
+    remaining_ids = {
+        str(item.get("id") or "")
+        for item in remaining
+    }
+    state["selected_ids"] = [
+        image_id
+        for image_id in state.get("selected_ids", [])
+        if str(image_id) in remaining_ids
+    ]
+    if str(active_id or "") in removed:
+        if remaining:
+            state["active_id"] = remaining[
+                min(active_index or 0, len(remaining) - 1)
+            ]["id"]
+        else:
+            state["active_id"] = None
+            state["selected_ids"] = []
+    return removed_ids
+
+
 def queue_view(
     state: dict[str, Any],
 ) -> tuple[list[tuple[Image.Image, str]], list[tuple[str, str]]]:
@@ -420,6 +479,7 @@ __all__ = [
     "new_repair_state",
     "owned_repair_state",
     "queue_view",
+    "remove_repair_items",
     "repair_items",
     "repaired_paths",
     "result_image",

@@ -36,10 +36,12 @@ def build_image_tab(
                         object_fit="contain", show_label=False, scale=5, min_width=220,
                         elem_id="el-image-gallery",
                     )
-                with gr.Accordion("选择批处理 / 拼接图片", open=False):
+                with gr.Accordion("图片选择与删除", open=False):
                     with gr.Row(elem_classes="el-selection-actions"):
                         batch_select_all_btn = gr.Button("全选", size="sm", min_width=80)
                         batch_select_none_btn = gr.Button("取消全选", size="sm", min_width=80)
+                        batch_delete_current_btn = gr.Button("删除当前图片", size="sm", min_width=100)
+                        batch_delete_selected_btn = gr.Button("删除选中图片", size="sm", min_width=100)
                     batch_selection = gr.CheckboxGroup(
                         choices=[], label="处理范围", elem_id="el-batch-selection",
                     )
@@ -318,6 +320,7 @@ def build_image_tab(
         batch_state=batch_state, batch_upload=batch_upload, batch_gallery=batch_gallery,
         batch_selection=batch_selection, batch_status=batch_status,
         batch_select_all_btn=batch_select_all_btn, batch_select_none_btn=batch_select_none_btn,
+        batch_delete_current_btn=batch_delete_current_btn, batch_delete_selected_btn=batch_delete_selected_btn,
         workflow_tabs=workflow_tabs, template_tab=template_tab,
         batch_prev_btn=batch_prev_btn, batch_save_btn=batch_save_btn, batch_next_btn=batch_next_btn,
         batch_run_btn=batch_run_btn, batch_retry_btn=batch_retry_btn,
