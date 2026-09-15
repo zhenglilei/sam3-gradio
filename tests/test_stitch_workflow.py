@@ -76,7 +76,7 @@ class StitchWorkflowTest(unittest.TestCase):
         self.assertLessEqual(abs(dy), 2)
 
     def test_auto_align_horizontal_chain(self):
-        overlap = 40
+        overlap = 24
         h, w = 48, 80
         canvas = _texture(h, w * 3 - overlap * 2, 11)
         tiles = [
@@ -92,7 +92,7 @@ class StitchWorkflowTest(unittest.TestCase):
         self.assertLessEqual(abs(shifts[2][0] - 2 * (w - overlap)), 6)
 
     def test_grid_2x2_closed_loop_average(self):
-        overlap_x, overlap_y = 36, 28
+        overlap_x, overlap_y = 24, 18
         h, w = 56, 72
         canvas = _texture(h * 2 - overlap_y, w * 2 - overlap_x, 19)
         y1 = h - overlap_y

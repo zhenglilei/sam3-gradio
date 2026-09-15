@@ -88,7 +88,7 @@ def match_grid_pair(a, b, axis):
             continue
         seen.add(key)
         evidence = _alignment_evidence(a, b, dx, dy)
-        if not evidence["available"] and evidence["overlap_ratio"] < 0.40:
+        if not evidence["available"]:
             continue
         quality = _alignment_quality(score, evidence)
         ranked_result.append((quality, score, dx, dy))
@@ -132,7 +132,7 @@ def _edge_direction_error(prepared, source, target, dx, dy, axis):
     minimum_primary = _minimum_primary_extent(extent, period)
     if primary < minimum_primary - tolerance:
         return (
-            f"主方向 {primary:.1f}px 小于可靠最小步长 "
+            f"主方向 {primary:.1f}px 小于邻边拼接最小步长 "
             f"{minimum_primary:.1f}px"
         )
     if primary > extent + tolerance:
@@ -262,7 +262,7 @@ def align_four_tiles(prepared):
             solutions.append(snake_solution)
     if not solutions:
         return None, [
-            "四条接缝没有可靠的一致解，保留规则网格；请检查图片顺序或纹理。"
+            "四条接缝在主方向重叠不超过 35% 的范围内没有一致解，保留规则网格；未完成配准。"
         ]
 
     if len(solutions) == 1:
@@ -284,7 +284,7 @@ def align_four_tiles(prepared):
     topology = labels[chosen["mapping"]]
     logs = [
         f"2×2 选择拓扑：{topology}，联合质量={chosen['quality']:.3f}，"
-        f"闭环误差 {chosen['closure']:.2f}px",
+        f"闭环误差 {chosen['closure']:.2f}px；邻边拼接估计，非物理位置确认",
     ]
     for label, _source, _target, _axis, edge in chosen["edge_specs"]:
         logs.append(

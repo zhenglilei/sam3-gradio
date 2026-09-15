@@ -426,13 +426,13 @@ def _alignment_score(
     )
 
 
-_ALIGN_MIN_PRIMARY_FRACTION = 0.35
+_ALIGN_MIN_PRIMARY_FRACTION = 0.65
 _ALIGN_MIN_PERIOD_CYCLES = 2.5
 _ALIGN_EVIDENCE_GRID = (3, 3)
 
 
 def _minimum_primary_extent(extent: int, period: float = 0.0) -> float:
-    """Keep a bounded, high-overlap search without near-zero collapse."""
+    """Reserve at least 65% new extent for adjacent-tile stitching."""
 
     extent = max(int(extent), 1)
     period = max(float(period), 0.0)
@@ -473,17 +473,18 @@ def _alignment_evidence(
     min_area = max(1, min(a_raw.shape[0] * a_raw.shape[1],
                           b_raw.shape[0] * b_raw.shape[1]))
     overlap_ratio = area / float(min_area)
-    rows, cols = _ALIGN_EVIDENCE_GRID
+    rows = min(_ALIGN_EVIDENCE_GRID[0], height // 8)
+    cols = min(_ALIGN_EVIDENCE_GRID[1], width // 8)
     raw_values: List[float] = []
     hp_values: List[float] = []
-    if width >= 48 and height >= 48:
+    if rows > 0 and cols > 0:
         for row in range(rows):
             cy0 = y0 + (row * height) // rows
             cy1 = y0 + ((row + 1) * height) // rows
             for col in range(cols):
                 cx0 = x0 + (col * width) // cols
                 cx1 = x0 + ((col + 1) * width) // cols
-                if cx1 - cx0 < 16 or cy1 - cy0 < 16:
+                if cx1 - cx0 < 8 or cy1 - cy0 < 8:
                     continue
                 raw_values.append(_ncc_overlap(
                     a_raw[cy0:cy1, cx0:cx1],
@@ -503,7 +504,7 @@ def _alignment_evidence(
         if values else 0.0
     )
     return {
-        "available": bool(len(values) >= 8),
+        "available": bool(len(values) >= 6),
         "overlap_ratio": float(overlap_ratio),
         "overlap_area": int(area),
         "overlap_width": int(width),
@@ -520,16 +521,15 @@ def _alignment_evidence(
 
 
 def _alignment_quality(score: float, evidence: dict) -> float:
-    """Combine score, support area, and region agreement for ranking only."""
+    """Rank image agreement, not the amount of duplicated image area."""
 
     score = float(score)
     if not evidence.get("available"):
         return score
     return (
-        0.60 * score
-        + 0.15 * float(evidence["raw_median"])
+        0.75 * score
+        + 0.20 * float(evidence["raw_median"])
         + 0.05 * float(evidence["highpass_median"])
-        + 0.20 * min(1.0, max(0.0, float(evidence["overlap_ratio"])))
     )
 
 
@@ -1372,7 +1372,7 @@ def auto_align_images(
     images: Sequence[Image.Image],
     layout: str = "horizontal",
 ) -> Tuple[List[Shift], List[str]]:
-    """Match neighbors under the selected acquisition topology."""
+    """Estimate adjacent seams with at most 35% primary overlap, not global registration."""
     layout = normalize_layout(layout)
     if not images:
         return [], []
@@ -1414,6 +1414,8 @@ def auto_align_images(
             valid.sort(key=lambda item: -item[2])
             dx, dy, score = valid[0]
             message = f"邻接 图{i}-图{i + 1} 平移=({dx},{dy}) 质量={score:.3f}"
+            primary = dy if axis == "vertical" else dx
+            message += f"；主方向重叠约 {100 * (extent - primary) / extent:.1f}%"
             if len(valid) > 1 and score - valid[1][2] < 0.02:
                 message += "；周期纹理存在近似等分候选，位置仍有歧义"
         else:

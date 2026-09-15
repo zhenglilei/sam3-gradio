@@ -98,7 +98,7 @@ class StitchLayoutTopologyTest(unittest.TestCase):
     def test_horizontal_chain_bounds_cross_offset_from_first_tile(self):
         images = [Image.new("RGB", (40, 40), (127, 127, 127)) for _ in range(4)]
         candidates = [
-            [(20, 4, 0.95), (20, -4, 0.90)]
+            [(28, 4, 0.95), (28, -4, 0.90)]
             for _ in range(3)
         ]
 
@@ -108,13 +108,13 @@ class StitchLayoutTopologyTest(unittest.TestCase):
         ):
             shifts, _logs = auto_align_images(images, "horizontal")
 
-        self.assertEqual(shifts, [(0, 0), (20, 4), (40, 0), (60, 4)])
+        self.assertEqual(shifts, [(0, 0), (28, 4), (56, 0), (84, 4)])
         for _x, y in shifts:
             self.assertLessEqual(abs(y), 0.1 * images[0].height)
 
     def test_grid_2xn_six_overlapping_tiles_follow_row_major_loop(self):
         tile_width, tile_height = 48, 44
-        step_x, step_y = 28, 25
+        step_x, step_y = 34, 31
         positions = [
             (column * step_x, row * step_y)
             for row in range(2)
