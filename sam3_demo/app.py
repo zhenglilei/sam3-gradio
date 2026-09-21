@@ -63,6 +63,7 @@ from sam3_demo.config import (
     runtime_layout_dir,
     runtime_layout_region_dir,
     runtime_log_dir,
+    runtime_observability_dir,
     runtime_tmp_dir,
 )
 
@@ -95,6 +96,10 @@ from sam3_demo.session_cleanup import cleanup_session_resources, validate_server
 from sam3_demo.session_guard import guard_callback, request_identity
 from sam3_demo.session_runtime import SessionError, SessionRecord, SessionRegistry
 from sam3_demo.stitch_draft_store import StitchDraftStore
+from sam3_demo.observability import Observability, resolve_git_sha
+
+
+_OBSERVABILITY = None
 
 def _model_lease_wrapper(reason):
     """Preserve callback signatures while holding a reentrant model lease."""
@@ -102,7 +107,13 @@ def _model_lease_wrapper(reason):
     def decorate(function):
         @functools.wraps(function)
         def wrapped(*args, **kwargs):
+            wait_started = time.monotonic()
             with SUPERVISOR.lease(reason=reason):
+                if _OBSERVABILITY is not None:
+                    _OBSERVABILITY.record_model_wait(
+                        reason,
+                        time.monotonic() - wait_started,
+                    )
                 return function(*args, **kwargs)
         return wrapped
     return decorate
@@ -4514,6 +4525,7 @@ def _session_callback_registry():
             callbacks[name],
             registry=_SESSION_REGISTRY,
             trusted_proxy_cidrs=_SESSION_TRUSTED_PROXY_CIDRS,
+            observability=_OBSERVABILITY,
             recovery_factory=_session_recovery_states,
         )
     return callbacks
@@ -4668,10 +4680,19 @@ def create_demo():
 # --- end PCS/PVS single-workspace override ---
 
 
-def create_application(settings=None, *, server_name="0.0.0.0", server_port=7890):
+def create_application(
+    settings=None,
+    *,
+    server_name="0.0.0.0",
+    server_port=7890,
+    observability=None,
+):
     """Create the single-worker FastAPI application used for deployment."""
-    from fastapi import FastAPI
+    import ipaddress
+
+    from fastapi import FastAPI, Request
     from starlette.middleware.sessions import SessionMiddleware
+    from starlette.responses import JSONResponse, PlainTextResponse
 
     from sam3_demo.session_web import (
         COOKIE_MAX_AGE_SECONDS,
@@ -4682,11 +4703,24 @@ def create_application(settings=None, *, server_name="0.0.0.0", server_port=7890
         protect_gradio_state_holder,
     )
 
-    global _SESSION_REGISTRY
+    global _OBSERVABILITY, _SESSION_REGISTRY
     settings = settings or load_session_cookie_settings()
     previous_registry = _SESSION_REGISTRY
     if previous_registry.snapshot()["count"]:
         raise RuntimeError("cannot replace an active session registry")
+    if observability is None:
+        observability = Observability(
+            runtime_observability_dir,
+            deployment_id=settings.deployment_id,
+            secret=settings.secret,
+            git_sha=resolve_git_sha(current_dir),
+        )
+    previous_observability = _OBSERVABILITY
+    if previous_observability is not None and previous_observability is not observability:
+        previous_observability.close()
+    _OBSERVABILITY = observability
+    SUPERVISOR.set_observability(observability)
+    atexit.register(observability.close)
     previous_registry.shutdown()
     _SESSION_REGISTRY = _new_session_registry(
         secret=settings.secret,
@@ -4698,10 +4732,81 @@ def create_application(settings=None, *, server_name="0.0.0.0", server_port=7890
     demo.queue(default_concurrency_limit=1)
     claims = OwnerClaimRegistry(max_hashes=max(_SESSION_MAX_ENTRIES * 4, 128))
     application = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @application.get("/healthz", include_in_schema=False)
+    async def healthz():
+        return {
+            "status": "ok",
+            "deployment_id": settings.deployment_id,
+            "git_sha": observability.git_sha,
+            "uptime_seconds": round(observability.uptime_seconds(), 3),
+        }
+
+    @application.get("/readyz", include_in_schema=False)
+    async def readyz():
+        model = SUPERVISOR.snapshot()
+        sessions = _SESSION_REGISTRY.snapshot()
+        ready = model.get("state") not in {"ERROR", "STOPPING"}
+        payload = {
+            "status": "ready" if ready else "not_ready",
+            "deployment_id": settings.deployment_id,
+            "git_sha": observability.git_sha,
+            "model": {
+                "state": model.get("state"),
+                "generation": int(model.get("generation", 0) or 0),
+                "active_requests": int(model.get("active_requests", 0) or 0),
+                "pending_requests": int(model.get("pending_requests", 0) or 0),
+            },
+            "sessions": {
+                "active": int(sessions.get("count", 0) or 0),
+                "capacity": int(_SESSION_MAX_ENTRIES),
+            },
+        }
+        return JSONResponse(payload, status_code=200 if ready else 503)
+
+    @application.get("/metrics", include_in_schema=False)
+    async def metrics(request: Request):
+        host = request.client.host if request.client is not None else ""
+        try:
+            allowed = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            allowed = False
+        if not allowed:
+            return JSONResponse(
+                {"error": {"code": "METRICS_LOCAL_ONLY"}},
+                status_code=403,
+            )
+        return PlainTextResponse(
+            observability.render_metrics(
+                supervisor_snapshot=SUPERVISOR.snapshot(),
+                session_snapshot=_SESSION_REGISTRY.snapshot(),
+            ),
+            media_type="text/plain; version=0.0.4",
+        )
+
+    @application.exception_handler(Exception)
+    async def unhandled_exception_handler(_request: Request, exc: Exception):
+        error_id = observability.record_callback_failure(
+            "http_request",
+            0.0,
+            exc,
+        )
+        return JSONResponse(
+            {
+                "error": {
+                    "code": "INTERNAL",
+                    "message": "服务内部错误",
+                    "error_id": error_id,
+                }
+            },
+            status_code=500,
+        )
+
     application.add_middleware(
         SessionSecurityMiddleware,
         settings=settings,
         claims=claims,
+        observability=observability,
     )
     application.add_middleware(
         SessionMiddleware,
@@ -4730,6 +4835,8 @@ def create_application(settings=None, *, server_name="0.0.0.0", server_port=7890
     application.state.session_cookie_settings = settings
     application.state.session_owner_claims = claims
     application.state.gradio_blocks = demo
+    application.state.observability = observability
+    observability.emit("service_initialized")
     return application
 
 
@@ -4777,6 +4884,7 @@ def main():
         port=server_port,
         workers=1,
         reload=False,
+        access_log=False,
     )
 
 

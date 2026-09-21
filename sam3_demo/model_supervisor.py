@@ -193,6 +193,7 @@ class ModelRuntimeSupervisor:
             raise ValueError("SAM3_GPU_SELECTION currently supports only 'auto'")
 
         self._monitor_thread = None
+        self._observability = None
         if start_monitor:
             self._monitor_thread = threading.Thread(
                 target=self._monitor_loop,
@@ -200,6 +201,12 @@ class ModelRuntimeSupervisor:
                 daemon=True,
             )
             self._monitor_thread.start()
+
+    def set_observability(self, observability):
+        """Attach the process-local metrics sink without coupling worker code to it."""
+
+        with self._condition:
+            self._observability = observability
 
     def _snapshot_locked(self):
         return {
@@ -448,6 +455,10 @@ class ModelRuntimeSupervisor:
                             self._last_inference_completed_at = self._clock()
                             self._load_future = None
                             self._condition.notify_all()
+                        if self._observability is not None:
+                            self._observability.record_model_restart(
+                                "initial_load" if next_generation == 1 else "restart"
+                            )
                         future.set_result(self.snapshot())
                         return
                     except ModelWorkerError as exc:
@@ -470,9 +481,18 @@ class ModelRuntimeSupervisor:
                 raise last_error or ModelWorkerError("Unable to start a SAM3 worker", code="INTERNAL")
         except Exception as exc:
             error = exc if isinstance(exc, ModelWorkerError) else ModelWorkerError(str(exc))
+            error_id = None
+            if self._observability is not None and not self._closed:
+                error_id = self._observability.record_callback_failure(
+                    "model_start",
+                    0.0,
+                    error,
+                )
             with self._condition:
                 self._state = UNLOADED if self._closed else ERROR
                 self._last_error = "" if self._closed else str(error)
+                if self._last_error and error_id:
+                    self._last_error += f"（错误编号：{error_id}）"
                 self._last_start_failure_at = (
                     None if self._closed else self._clock()
                 )
@@ -770,6 +790,7 @@ class ModelRuntimeSupervisor:
         while not self._monitor_stop.wait(self._idle_check_seconds):
             process_to_stop = None
             log_to_close = None
+            unexpected_exit = False
             with self._condition:
                 if self._worker is not None and self._worker.poll() is not None:
                     dead = self._worker
@@ -777,6 +798,7 @@ class ModelRuntimeSupervisor:
                     self._state = ERROR
                     self._last_error = "SAM3 worker exited unexpectedly"
                     self._last_start_failure_at = self._clock()
+                    unexpected_exit = True
                     self._condition.notify_all()
                 elif (
                     self._state == READY
@@ -792,6 +814,19 @@ class ModelRuntimeSupervisor:
                     self._condition.notify_all()
             if log_to_close is not None and not log_to_close.closed:
                 log_to_close.close()
+            if unexpected_exit and self._observability is not None:
+                failure = ModelWorkerError(
+                    "SAM3 worker exited unexpectedly",
+                    code="WORKER_EXIT",
+                )
+                error_id = self._observability.record_callback_failure(
+                    "model_worker",
+                    0.0,
+                    failure,
+                )
+                with self._condition:
+                    if self._state == ERROR:
+                        self._last_error += f"（错误编号：{error_id}）"
             if process_to_stop is None:
                 continue
             self._stop_process(process_to_stop, graceful=True)
