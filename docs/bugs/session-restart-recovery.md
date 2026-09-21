@@ -6,6 +6,10 @@
 - 影响范围：需要同步评估并修复 PVS-demo、sam3-el-mask、overlap-prediction 三个分支
 - 现场服务：7891
 
+> 关联问题：`SESSION-COOKIE-001`（`session-cookie-owner.md`）负责将本页旧有的
+> IP 身份基础替换为签名 Cookie owner。该变更保留本 Bug 的重启、TTL 和草稿
+> 恢复语义，但 IP 只作诊断，不再参与授权；两项 Bug 的关闭状态相互独立。
+
 ## 1. 问题摘要
 
 服务进程重启后，浏览器页面没有重新建立服务端会话。浏览器仍保留旧的

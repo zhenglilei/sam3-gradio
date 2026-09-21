@@ -14,6 +14,7 @@ import copy
 import functools
 import hashlib
 import atexit
+import os
 
 from sam3_demo.config import (
     MODE_LAYOUT,
@@ -4085,13 +4086,23 @@ def _cleanup_session_record(record: SessionRecord):
         )
 
 
-_SESSION_REGISTRY = SessionRegistry(
-    idle_seconds=_SESSION_IDLE_SECONDS,
-    max_sessions=_SESSION_MAX_ENTRIES,
-    cleanup_callback=_cleanup_session_record,
-    start_sweeper=True,
-    sweep_interval=_SESSION_SWEEP_INTERVAL_SECONDS,
-)
+def _new_session_registry(
+    *,
+    secret=None,
+    deployment_id="test",
+):
+    return SessionRegistry(
+        idle_seconds=_SESSION_IDLE_SECONDS,
+        max_sessions=_SESSION_MAX_ENTRIES,
+        cleanup_callback=_cleanup_session_record,
+        secret=secret,
+        deployment_id=deployment_id,
+        start_sweeper=True,
+        sweep_interval=_SESSION_SWEEP_INTERVAL_SECONDS,
+    )
+
+
+_SESSION_REGISTRY = _new_session_registry()
 _STITCH_DRAFT_STORE = StitchDraftStore(
     runtime_dir / "stitch_drafts",
     ttl_seconds=24 * 60 * 60,
@@ -4182,8 +4193,8 @@ def _session_recovery_states(server_state):
 
 
 def _bootstrap_session(request: gr.Request):
-    session_hash, client_ip = request_identity(request, _SESSION_TRUSTED_PROXY_CIDRS)
-    return _session_state_bundle(_SESSION_REGISTRY.bind(session_hash, client_ip))
+    identity = request_identity(request, _SESSION_TRUSTED_PROXY_CIDRS)
+    return _session_state_bundle(_SESSION_REGISTRY.bind(identity))
 
 
 def _enable_source_controls():
@@ -4344,10 +4355,7 @@ def _session_callback_registry():
 
 def create_demo():
     """Create the PCS/PVS Gradio interface while preserving the original demo layout."""
-    theme = build_theme()
     with gr.Blocks(
-        theme=theme,
-        css=CUSTOM_CSS,
         title="SAM3 \u4ea4\u4e92\u5f0f\u89c6\u89c9\u5de5\u4f5c\u53f0",
         delete_cache=(3600, _PUBLIC_DOWNLOAD_TTL_SECONDS),
     ) as demo:
@@ -4488,6 +4496,71 @@ def create_demo():
 # --- end PCS/PVS single-workspace override ---
 
 
+def create_application(settings=None, *, server_name="0.0.0.0", server_port=7890):
+    """Create the single-worker FastAPI application used for deployment."""
+    from fastapi import FastAPI
+    from starlette.middleware.sessions import SessionMiddleware
+
+    from sam3_demo.session_web import (
+        COOKIE_MAX_AGE_SECONDS,
+        OwnerClaimRegistry,
+        SessionSecurityMiddleware,
+        load_session_cookie_settings,
+        owner_from_request,
+        protect_gradio_state_holder,
+    )
+
+    global _SESSION_REGISTRY
+    settings = settings or load_session_cookie_settings()
+    previous_registry = _SESSION_REGISTRY
+    if previous_registry.snapshot()["count"]:
+        raise RuntimeError("cannot replace an active session registry")
+    previous_registry.shutdown()
+    _SESSION_REGISTRY = _new_session_registry(
+        secret=settings.secret,
+        deployment_id=settings.deployment_id,
+    )
+    atexit.register(_SESSION_REGISTRY.shutdown)
+
+    demo = create_demo()
+    demo.queue(default_concurrency_limit=1)
+    claims = OwnerClaimRegistry(max_hashes=max(_SESSION_MAX_ENTRIES * 4, 128))
+    application = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    application.add_middleware(
+        SessionSecurityMiddleware,
+        settings=settings,
+        claims=claims,
+    )
+    application.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.signer_secret,
+        session_cookie=settings.cookie_name,
+        max_age=COOKIE_MAX_AGE_SECONDS,
+        path="/",
+        same_site="lax",
+        https_only=settings.secure_cookie,
+        domain=None,
+    )
+    application = gr.mount_gradio_app(
+        application,
+        demo,
+        path="/",
+        server_name=server_name,
+        server_port=server_port,
+        auth_dependency=lambda request: owner_from_request(request, settings),
+        allowed_paths=_gradio_allowed_paths(),
+        blocked_paths=_gradio_blocked_paths(),
+        show_error=True,
+        theme=build_theme(),
+        css=CUSTOM_CSS,
+    )
+    protect_gradio_state_holder(demo.app, claims)
+    application.state.session_cookie_settings = settings
+    application.state.session_owner_claims = claims
+    application.state.gradio_blocks = demo
+    return application
+
+
 def main():
     """主函数"""
     # 检查模型文件
@@ -4518,15 +4591,20 @@ def main():
     print("🚀 正在启动 SAM3 交互式视觉工作台...")
     _public_downloads.ensure_public_download_dirs(public_download_dir)
     _prune_public_downloads()
-    demo = create_demo()
-    demo.queue(default_concurrency_limit=1)
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7890,
-        share=False,
-        debug=False,
-        allowed_paths=_gradio_allowed_paths(),
-        blocked_paths=_gradio_blocked_paths(),
+    server_name = os.environ.get("SAM3_SERVER_NAME", "0.0.0.0")
+    server_port = int(os.environ.get("SAM3_SERVER_PORT", "7890"))
+    application = create_application(
+        server_name=server_name,
+        server_port=server_port,
+    )
+    import uvicorn
+
+    uvicorn.run(
+        application,
+        host=server_name,
+        port=server_port,
+        workers=1,
+        reload=False,
     )
 
 
