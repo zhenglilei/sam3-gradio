@@ -3,9 +3,10 @@
 ## P1 SESSION-COOKIE-001
 
 - [ ] Replace IP authorization with a signed deployment-specific cookie owner.
-  - Shared identity source `e2f0976` was cherry-picked with `-x` as `4a4ca28`.
-  - EL regression: 566 total, 565 passed and 1 opt-in paid VLM smoke skipped;
-    integrated as `4a4ca28` plus `923eadd`.
+  - Shared identity is committed once as `b5f21f1` on `Zhengqiyuan/PVS-demo`;
+    `EL_Mask` inherits it through the PVS branch history.
+  - EL regression: 567 total, 566 passed and 1 opt-in paid VLM smoke skipped;
+    EL-specific coverage is integrated as `714f1db`.
   - PVS regression: 428 total, 427 passed and 1 opt-in paid VLM smoke skipped;
     integrated as `b5f21f1` plus `b41271d`.
   - Browser acceptance remains partial because upload-dependent UI workflows
