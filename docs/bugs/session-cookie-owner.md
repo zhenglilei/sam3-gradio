@@ -48,7 +48,7 @@ persistence.
 |---|---|---|---|
 | Shared identity layer | `b5f21f1` on `Zhengqiyuan/PVS-demo`; inherited by `EL_Mask` | shared session tests pass with both branch adapters | not deployed |
 | PVS-demo integration | `b5f21f1` plus `b41271d` | 428 total: 427 passed, 1 opt-in paid VLM smoke skipped | not deployed |
-| EL_Mask integration | PVS ancestry plus EL-specific `714f1db` | 567 total: 566 passed, 1 opt-in paid VLM smoke skipped | not deployed |
+| EL_Mask integration | PVS ancestry plus branch-specific owner handoff coverage | 567 total: 566 passed, 1 opt-in paid VLM smoke skipped | not deployed |
 
 The HTTP suite covers cookie issuance and rejection, IP change for the same
 owner/hash, different-owner denial before registry mutation, queue SSE, event

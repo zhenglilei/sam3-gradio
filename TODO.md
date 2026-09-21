@@ -5,10 +5,10 @@
 - [ ] Replace IP authorization with a signed deployment-specific cookie owner.
   - Shared identity is committed once as `b5f21f1` on `Zhengqiyuan/PVS-demo`;
     `EL_Mask` inherits it through the PVS branch history.
-  - EL regression: 567 total, 566 passed and 1 opt-in paid VLM smoke skipped;
-    EL-specific coverage is integrated as `714f1db`.
-  - PVS regression: 428 total, 427 passed and 1 opt-in paid VLM smoke skipped;
+  - PVS regression: 428 total, 427 passed and 1 paid VLM smoke skipped;
     integrated as `b5f21f1` plus `b41271d`.
+  - EL regression: 567 total, 566 passed and 1 opt-in paid VLM smoke skipped;
+    branch-specific handoff coverage is applied after the shared PVS node.
   - Browser acceptance remains partial because upload-dependent UI workflows
     and browser error presentation are not accepted.
   - Deployment pending; no formal service has been restarted.
