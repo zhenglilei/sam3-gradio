@@ -3,12 +3,11 @@
 ## P1 SESSION-COOKIE-001
 
 - [ ] Replace IP authorization with a signed deployment-specific cookie owner.
-  - Shared identity commit: `e2f0976`; 63 shared session tests and 8 real HTTP
-    tests pass with the PVS adapter.
-  - PVS regression: 428 total, 427 passed and 1 paid VLM smoke skipped;
-    integrated as `b5f21f1` plus `b41271d`.
-  - EL regression: 566 total, 565 passed and 1 paid VLM smoke skipped;
+  - Shared identity source `e2f0976` was cherry-picked with `-x` as `4a4ca28`.
+  - EL regression: 566 total, 565 passed and 1 opt-in paid VLM smoke skipped;
     integrated as `4a4ca28` plus `923eadd`.
+  - PVS regression: 428 total, 427 passed and 1 opt-in paid VLM smoke skipped;
+    integrated as `b5f21f1` plus `b41271d`.
   - Browser acceptance remains partial because upload-dependent UI workflows
     and browser error presentation are not accepted.
   - Deployment pending; no formal service has been restarted.

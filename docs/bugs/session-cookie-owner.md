@@ -46,7 +46,7 @@ persistence.
 
 | Branch/stage | Commit | Tests | Deployment |
 |---|---|---|---|
-| Shared identity layer | `e2f0976` | 63 shared session tests and 8 real FastAPI/Gradio HTTP tests pass with the PVS adapter | not deployed |
+| Shared identity layer | source `e2f0976`, cherry-picked with `-x` as `4a4ca28` | shared session tests pass with the EL adapter | not deployed |
 | PVS-demo integration | `b5f21f1` plus `b41271d` | 428 total: 427 passed, 1 opt-in paid VLM smoke skipped | not deployed |
 | EL_Mask integration | `4a4ca28` plus `923eadd` | 566 total: 565 passed, 1 opt-in paid VLM smoke skipped | not deployed |
 

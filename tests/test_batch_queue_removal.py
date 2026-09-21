@@ -11,6 +11,7 @@ import gradio as gr
 from PIL import Image
 
 from sam3_demo import app, batch_workspace
+from sam3_demo.session_guard import SessionGuardError
 
 
 class BatchQueueRemovalTests(unittest.TestCase):
@@ -21,9 +22,14 @@ class BatchQueueRemovalTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
         session_hash = uuid.uuid4().hex
-        self.session = app._SESSION_REGISTRY.bind(session_hash, "10.0.0.1")
+        self.request = gr.Request(
+            username="batch-owner",
+            session_hash=session_hash,
+            client=SimpleNamespace(host="10.0.0.1"),
+            headers={},
+        )
+        self.session = app._SESSION_REGISTRY.bind(app.request_identity(self.request))
         self.addCleanup(app._SESSION_REGISTRY.close, self.session)
-        self.request = gr.Request(session_hash=session_hash, client=SimpleNamespace(host="10.0.0.1"), headers={})
         self.demo = app.create_demo()
         self.paths = []
         for index in range(4):
@@ -35,7 +41,7 @@ class BatchQueueRemovalTests(unittest.TestCase):
     def event(self, name):
         return [e for e in self.demo.fns.values() if getattr(e.fn, "__name__", "") == name][-1]
 
-    def invoke(self, name, **overrides):
+    def invoke(self, name, _request=None, **overrides):
         event = self.event(name)
         names = list(inspect.signature(inspect.unwrap(event.fn)).parameters)
         for key, component in zip(names, event.inputs):
@@ -43,7 +49,7 @@ class BatchQueueRemovalTests(unittest.TestCase):
                 self.values[component._id] = overrides[key]
         args = [overrides.get(key, self.values.get(component._id))
                 for key, component in zip(names, event.inputs)]
-        result = event.fn(*args, self.request)
+        result = event.fn(*args, _request or self.request)
         result = result if isinstance(result, tuple) else (result,)
         for component, value in zip(event.outputs, result):
             if isinstance(value, dict) and value.get("__type__") == "update":
@@ -77,6 +83,19 @@ class BatchQueueRemovalTests(unittest.TestCase):
         after = self.business_states()
         self.assertEqual(before["image_state"], after["image_state"])
         self.assertEqual(before["prompt_state"], after["prompt_state"])
+
+    def test_different_owner_cannot_send_annotation_queue_to_stitch(self):
+        batch = self.upload()
+        before = deepcopy(batch)
+        wrong_request = gr.Request(
+            username="different-owner",
+            session_hash=self.request.session_hash,
+            client=SimpleNamespace(host="10.0.0.1"),
+            headers={},
+        )
+        with self.assertRaises(SessionGuardError):
+            self.invoke("batch_stitch", _request=wrong_request)
+        self.assertEqual(batch, before)
 
     def test_delete_current_selects_next_and_preserves_remaining_ids(self):
         batch = self.upload()

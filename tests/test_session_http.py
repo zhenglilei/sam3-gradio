@@ -22,7 +22,7 @@ from sam3_demo.session_web import (
 
 
 ORIGIN = "http://testserver"
-COOKIE_NAME = "sam3_pvs_http_test"
+COOKIE_NAME = "sam3_el_http_test"
 
 
 class SessionHttpTests(unittest.TestCase):
@@ -34,7 +34,7 @@ class SessionHttpTests(unittest.TestCase):
         secret_path.chmod(0o600)
         cls.settings = load_session_cookie_settings(
             {
-                "SAM3_SESSION_DEPLOYMENT_ID": "pvs-http-test",
+                "SAM3_SESSION_DEPLOYMENT_ID": "el-http-test",
                 "SAM3_SESSION_COOKIE_NAME": COOKIE_NAME,
                 "SAM3_SESSION_SECRET_FILE": str(secret_path),
                 "SAM3_ALLOWED_ORIGINS": ORIGIN,
@@ -161,7 +161,7 @@ class SessionHttpTests(unittest.TestCase):
                 {
                     "owner_id": "o" * 43,
                     "schema": 1,
-                    "deployment_id": "el-other-deployment",
+                    "deployment_id": "pvs-other-deployment",
                 }
             ),
         }
