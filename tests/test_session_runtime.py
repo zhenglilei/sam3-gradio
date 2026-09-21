@@ -3,6 +3,7 @@ import time
 import unittest
 
 from sam3_demo.session_runtime import (
+    RequestIdentity,
     SessionError,
     SessionExpired,
     SessionRegistry,
@@ -10,6 +11,14 @@ from sam3_demo.session_runtime import (
     resolve_client_ip,
     validate_trusted_proxy_cidrs,
 )
+
+
+def _identity(owner_id, session_hash, client_ip="203.0.113.1"):
+    return RequestIdentity(owner_id, session_hash, client_ip)
+
+
+def _browser(session_hash, client_ip="203.0.113.1"):
+    return _identity(session_hash, session_hash, client_ip)
 
 
 class FakeClock:
@@ -107,54 +116,61 @@ class SessionRegistryTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         SessionRegistry(**kwargs)
 
-    def test_state_is_opaque_and_identity_tuple_isolated(self):
-        first = self.registry.bind("browser-a", "203.0.113.1")
-        same = self.registry.bind("browser-a", "203.0.113.1")
-        other_ip = self.registry.bind("browser-a", "203.0.113.2")
-        other_hash = self.registry.bind("browser-b", "203.0.113.1")
+    def test_state_is_opaque_and_cookie_hash_identity_isolated(self):
+        first = self.registry.bind(_identity("owner-a", "browser-a"))
+        same = self.registry.bind(_identity("owner-a", "browser-a"))
+        other_ip = self.registry.bind(
+            _identity("owner-a", "browser-a", "203.0.113.2")
+        )
+        other_hash = self.registry.bind(_identity("owner-a", "browser-b"))
+        other_owner = self.registry.bind(_identity("owner-b", "browser-a"))
         self.assertEqual(first["session_id"], same["session_id"])
-        self.assertNotEqual(first["session_id"], other_ip["session_id"])
+        self.assertEqual(first["session_id"], other_ip["session_id"])
         self.assertNotEqual(first["session_id"], other_hash["session_id"])
+        self.assertNotEqual(first["session_id"], other_owner["session_id"])
         self.assertNotIn("browser-a", repr(first))
         self.assertNotIn("203.0.113.1", repr(first))
         self.assertNotEqual(first["session_id"], first["owner_token"])
         self.assertEqual(self.registry.snapshot()["count"], 3)
 
-    def test_validate_rejects_wrong_ip_hash_and_token(self):
-        state = self.registry.bind("browser-a", "203.0.113.1")
+    def test_validate_allows_ip_change_but_rejects_owner_hash_and_token(self):
+        state = self.registry.bind(_identity("owner-a", "browser-a"))
         self.assertEqual(
-            self.registry.validate(state, "browser-a", "203.0.113.1").session_id,
+            self.registry.validate(
+                state,
+                _identity("owner-a", "browser-a", "203.0.113.2"),
+            ).session_id,
             state["session_id"],
         )
-        for supplied_hash, supplied_ip in (
-            ("browser-b", "203.0.113.1"),
-            ("browser-a", "203.0.113.2"),
+        for identity in (
+            _identity("owner-a", "browser-b"),
+            _identity("owner-b", "browser-a"),
         ):
             with self.assertRaises(SessionError):
-                self.registry.validate(state, supplied_hash, supplied_ip)
+                self.registry.validate(state, identity)
         tampered = dict(state)
         tampered["owner_token"] = "0" * len(state["owner_token"])
         with self.assertRaises(SessionError):
-            self.registry.validate(tampered, "browser-a", "203.0.113.1")
+            self.registry.validate(tampered, _identity("owner-a", "browser-a"))
 
     def test_validate_owner_and_owner_lease_require_bound_identity(self):
-        a = self.registry.bind("browser-a", "203.0.113.1")
-        b = self.registry.bind("browser-b", "203.0.113.1")
+        a = self.registry.bind(_browser("browser-a", "203.0.113.1"))
+        b = self.registry.bind(_browser("browser-b", "203.0.113.1"))
         self.assertEqual(
-            self.registry.validate_owner(a["session_id"], "browser-a", "203.0.113.1").session_id,
+            self.registry.validate_owner(a["session_id"], _browser("browser-a", "203.0.113.1")).session_id,
             a["session_id"],
         )
         with self.assertRaises(SessionError):
-            self.registry.validate_owner(a["session_id"], "browser-b", "203.0.113.1")
+            self.registry.validate_owner(a["session_id"], _browser("browser-b", "203.0.113.1"))
         with self.assertRaises(SessionError):
-            self.registry.validate_owner(b["session_id"], "browser-a", "203.0.113.1")
-        with self.registry.owner_lease(a["session_id"], "browser-a", "203.0.113.1") as record:
+            self.registry.validate_owner(b["session_id"], _browser("browser-a", "203.0.113.1"))
+        with self.registry.owner_lease(a["session_id"], _browser("browser-a", "203.0.113.1")) as record:
             self.assertEqual(record.in_flight, 1)
 
     def test_reentrant_lease_and_active_record_is_not_reaped(self):
-        state = self.registry.bind("browser-a", "203.0.113.1")
-        with self.registry.lease(state, "browser-a", "203.0.113.1") as record:
-            with self.registry.lease(state, "browser-a", "203.0.113.1") as nested:
+        state = self.registry.bind(_browser("browser-a", "203.0.113.1"))
+        with self.registry.lease(state, _browser("browser-a", "203.0.113.1")) as record:
+            with self.registry.lease(state, _browser("browser-a", "203.0.113.1")) as nested:
                 self.assertIs(record, nested)
                 self.assertEqual(record.in_flight, 1)
             self.clock.advance(100)
@@ -164,24 +180,24 @@ class SessionRegistryTests(unittest.TestCase):
         self.assertEqual(self.registry.reap_expired(), 1)
         self.assertEqual(len(self.cleaned), 1)
         with self.assertRaises(SessionExpired):
-            self.registry.validate(state, "browser-a", "203.0.113.1")
+            self.registry.validate(state, _browser("browser-a", "203.0.113.1"))
 
     def test_same_session_leases_serialize_across_threads(self):
-        state = self.registry.bind("browser-a", "203.0.113.1")
+        state = self.registry.bind(_browser("browser-a", "203.0.113.1"))
         first_entered = threading.Event()
         release_first = threading.Event()
         second_attempting = threading.Event()
         second_entered = threading.Event()
 
         def first():
-            with self.registry.lease(state, "browser-a", "203.0.113.1"):
+            with self.registry.lease(state, _browser("browser-a", "203.0.113.1")):
                 first_entered.set()
                 release_first.wait(2)
 
         def second():
             first_entered.wait(2)
             second_attempting.set()
-            with self.registry.lease(state, "browser-a", "203.0.113.1"):
+            with self.registry.lease(state, _browser("browser-a", "203.0.113.1")):
                 second_entered.set()
 
         first_thread = threading.Thread(target=first)
@@ -199,14 +215,14 @@ class SessionRegistryTests(unittest.TestCase):
         self.assertTrue(second_entered.is_set())
 
     def test_different_session_leases_run_in_parallel(self):
-        first = self.registry.bind("browser-a", "203.0.113.1")
-        second = self.registry.bind("browser-b", "203.0.113.1")
+        first = self.registry.bind(_browser("browser-a", "203.0.113.1"))
+        second = self.registry.bind(_browser("browser-b", "203.0.113.1"))
         first_entered = threading.Event()
         second_entered = threading.Event()
         release = threading.Event()
 
         def worker(state, browser_hash, entered):
-            with self.registry.lease(state, browser_hash, "203.0.113.1"):
+            with self.registry.lease(state, _browser(browser_hash, "203.0.113.1")):
                 entered.set()
                 release.wait(2)
 
@@ -224,16 +240,16 @@ class SessionRegistryTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
 
     def test_ttl_boundary_and_validation_touch(self):
-        state = self.registry.bind("browser-a", "203.0.113.1")
+        state = self.registry.bind(_browser("browser-a", "203.0.113.1"))
         self.clock.advance(9.9)
-        self.registry.validate(state, "browser-a", "203.0.113.1")
+        self.registry.validate(state, _browser("browser-a", "203.0.113.1"))
         self.clock.advance(9.9)
         self.assertEqual(self.registry.reap_expired(), 0)
         self.clock.advance(0.1)
         self.assertEqual(self.registry.reap_expired(), 1)
 
     def test_close_state_is_strict_and_cleanup_is_idempotent(self):
-        state = self.registry.bind("browser-a", "203.0.113.1")
+        state = self.registry.bind(_browser("browser-a", "203.0.113.1"))
         tampered = dict(state)
         tampered["generation"] = 2
         self.assertFalse(self.registry.close_state(tampered))
@@ -241,56 +257,59 @@ class SessionRegistryTests(unittest.TestCase):
         self.assertTrue(self.registry.close_state(state))
         self.assertFalse(self.registry.close_state(state))
         self.assertEqual(len(self.cleaned), 1)
-    def test_close_with_state_requires_exact_hash_and_ip(self):
-        state = self.registry.bind("browser-a", "203.0.113.1")
-        self.assertFalse(self.registry.close(state, "browser-b", "203.0.113.1"))
-        self.assertFalse(self.registry.close(state, "browser-a", "203.0.113.2"))
-        self.assertTrue(self.registry.close(state, "browser-a", "203.0.113.1"))
-        self.assertFalse(self.registry.close(state, "browser-a", "203.0.113.1"))
+    def test_close_with_state_requires_owner_and_hash_not_ip(self):
+        identity = _identity("owner-a", "browser-a")
+        state = self.registry.bind(identity)
+        self.assertFalse(self.registry.close(state, _identity("owner-a", "browser-b")))
+        self.assertFalse(self.registry.close(state, _identity("owner-b", "browser-a")))
+        self.assertTrue(
+            self.registry.close(
+                state,
+                _identity("owner-a", "browser-a", "203.0.113.2"),
+            )
+        )
+        self.assertFalse(self.registry.close(state, identity))
         with self.assertRaises(SessionExpired):
-            self.registry.validate(state, "browser-a", "203.0.113.1")
-
-
+            self.registry.validate(state, identity)
 
     def test_stale_delete_callback_cannot_close_rebound_session(self):
-        old_state = self.registry.bind("browser-a", "203.0.113.1")
+        old_state = self.registry.bind(_browser("browser-a", "203.0.113.1"))
         self.assertTrue(self.registry.close_state(old_state))
-        rebound = self.registry.bind("browser-a", "203.0.113.1")
+        rebound = self.registry.bind(_browser("browser-a", "203.0.113.1"))
         self.assertNotEqual(old_state["session_id"], rebound["session_id"])
         self.assertFalse(self.registry.close_state(old_state))
         self.assertEqual(
             self.registry.validate(
                 rebound,
-                "browser-a",
-                "203.0.113.1",
+                _browser("browser-a", "203.0.113.1"),
             ).session_id,
             rebound["session_id"],
         )
 
     def test_close_active_defers_cleanup_until_lease_release(self):
-        state = self.registry.bind("browser-a", "203.0.113.1")
-        with self.registry.lease(state, "browser-a", "203.0.113.1"):
+        state = self.registry.bind(_browser("browser-a", "203.0.113.1"))
+        with self.registry.lease(state, _browser("browser-a", "203.0.113.1")):
             self.assertTrue(self.registry.close_state(state))
             self.assertEqual(self.registry.snapshot()["count"], 1)
             self.assertEqual(self.cleaned, [])
             with self.assertRaises(SessionError):
-                self.registry.validate(state, "browser-a", "203.0.113.1")
+                self.registry.validate(state, _browser("browser-a", "203.0.113.1"))
         self.assertEqual(self.registry.snapshot()["count"], 0)
         self.assertEqual(len(self.cleaned), 1)
 
     def test_capacity_evicts_oldest_inactive_only(self):
         registry = SessionRegistry(clock=self.clock, max_sessions=2, secret=b"capacity")
         try:
-            first = registry.bind("a", "203.0.113.1")
+            first = registry.bind(_browser("a", "203.0.113.1"))
             self.clock.advance(1)
-            second = registry.bind("b", "203.0.113.1")
+            second = registry.bind(_browser("b", "203.0.113.1"))
             self.clock.advance(1)
-            third = registry.bind("c", "203.0.113.1")
+            third = registry.bind(_browser("c", "203.0.113.1"))
             self.assertEqual(registry.snapshot()["count"], 2)
             with self.assertRaises(SessionExpired):
-                registry.validate(first, "a", "203.0.113.1")
-            self.assertEqual(registry.validate(second, "b", "203.0.113.1").session_id, second["session_id"])
-            self.assertEqual(registry.validate(third, "c", "203.0.113.1").session_id, third["session_id"])
+                registry.validate(first, _browser("a", "203.0.113.1"))
+            self.assertEqual(registry.validate(second, _browser("b", "203.0.113.1")).session_id, second["session_id"])
+            self.assertEqual(registry.validate(third, _browser("c", "203.0.113.1")).session_id, third["session_id"])
         finally:
             registry.shutdown()
 
@@ -304,13 +323,13 @@ class SessionRegistryTests(unittest.TestCase):
             cleanup_callback=cleaned.append,
         )
         try:
-            expired = registry.bind("a", "203.0.113.1")
-            active = registry.bind("b", "203.0.113.1")
-            with registry.lease(active, "b", "203.0.113.1"):
+            expired = registry.bind(_browser("a", "203.0.113.1"))
+            active = registry.bind(_browser("b", "203.0.113.1"))
+            with registry.lease(active, _browser("b", "203.0.113.1")):
                 self.clock.advance(10)
                 registry.max_sessions = 1
                 with self.assertRaisesRegex(SessionError, "capacity"):
-                    registry.bind("c", "203.0.113.1")
+                    registry.bind(_browser("c", "203.0.113.1"))
                 self.assertEqual(
                     [record.session_id for record in cleaned],
                     [expired["session_id"]],
@@ -321,10 +340,10 @@ class SessionRegistryTests(unittest.TestCase):
     def test_capacity_never_evicts_an_active_session(self):
         registry = SessionRegistry(clock=self.clock, max_sessions=1, secret=b"capacity-active")
         try:
-            state = registry.bind("a", "203.0.113.1")
-            with registry.lease(state, "a", "203.0.113.1"):
+            state = registry.bind(_browser("a", "203.0.113.1"))
+            with registry.lease(state, _browser("a", "203.0.113.1")):
                 with self.assertRaisesRegex(SessionError, "capacity"):
-                    registry.bind("b", "203.0.113.1")
+                    registry.bind(_browser("b", "203.0.113.1"))
                 self.assertEqual(registry.snapshot()["count"], 1)
         finally:
             registry.shutdown()
@@ -340,7 +359,7 @@ class SessionRegistryTests(unittest.TestCase):
                 self.registry._lock.release()
 
         self.registry._cleanup_callback = callback
-        state = self.registry.bind("browser-a", "203.0.113.1")
+        state = self.registry.bind(_browser("browser-a", "203.0.113.1"))
         self.assertTrue(self.registry.close_state(state))
         self.assertEqual(lock_states, [True])
 
@@ -349,7 +368,7 @@ class SessionRegistryTests(unittest.TestCase):
             secret=b"cleanup-log",
             cleanup_callback=lambda record: (_ for _ in ()).throw(RuntimeError("boom")),
         )
-        state = registry.bind("browser-a", "203.0.113.1")
+        state = registry.bind(_browser("browser-a", "203.0.113.1"))
         try:
             with self.assertLogs("sam3_demo.session_runtime", level="ERROR") as captured:
                 self.assertTrue(registry.close_state(state))
@@ -366,84 +385,92 @@ class SessionRegistryTests(unittest.TestCase):
             cleanup_callback=lambda record: cleaned.set(),
             start_sweeper=True,
         )
-        state = registry.bind("browser-a", "203.0.113.1")
+        state = registry.bind(_browser("browser-a", "203.0.113.1"))
         try:
             self.assertTrue(cleaned.wait(1.0))
             self.assertEqual(registry.snapshot()["count"], 0)
             registry.shutdown()
             registry.shutdown()
             with self.assertRaises(SessionError):
-                registry.bind("browser-a", "203.0.113.1")
+                registry.bind(_browser("browser-a", "203.0.113.1"))
             with self.assertRaises(SessionError):
-                registry.validate(state, "browser-a", "203.0.113.1")
+                registry.validate(state, _browser("browser-a", "203.0.113.1"))
         finally:
             registry.shutdown()
 
 
 class SessionRecoveryTests(unittest.TestCase):
-    def test_resume_id_is_stable_across_registry_restarts_and_identity_scoped(self):
-        first = SessionRegistry(secret=b"first")
-        second = SessionRegistry(secret=b"second")
+    def test_resume_id_is_stable_across_restart_and_ip_changes(self):
+        secret = b"persistent-resume-secret"
+        first = SessionRegistry(secret=secret, deployment_id="pvs")
+        second = SessionRegistry(secret=secret, deployment_id="pvs")
         try:
-            a = first.bind("browser-a", "203.0.113.1")
-            b = second.bind("browser-a", "203.0.113.1")
+            a = first.bind(_identity("owner-a", "browser-a"))
+            b = second.bind(_identity("owner-a", "browser-a", "203.0.113.2"))
             self.assertEqual(a["resume_id"], b["resume_id"])
             self.assertEqual(
                 a["resume_id"],
-                resume_id_for_identity("browser-a", "203.0.113.1"),
+                resume_id_for_identity(
+                    "browser-a",
+                    "owner-a",
+                    deployment_id="pvs",
+                    secret=secret,
+                ),
             )
             self.assertNotEqual(
                 a["resume_id"],
-                resume_id_for_identity("browser-b", "203.0.113.1"),
+                resume_id_for_identity(
+                    "browser-b",
+                    "owner-a",
+                    deployment_id="pvs",
+                    secret=secret,
+                ),
             )
             self.assertNotEqual(
                 a["resume_id"],
-                resume_id_for_identity("browser-a", "203.0.113.2"),
+                resume_id_for_identity(
+                    "browser-a",
+                    "owner-b",
+                    deployment_id="pvs",
+                    secret=secret,
+                ),
             )
         finally:
             first.shutdown()
             second.shutdown()
 
-    def test_ensure_recovers_restart_but_rejects_other_browser(self):
-        old_registry = SessionRegistry(secret=b"old")
-        stale = old_registry.bind("browser-a", "203.0.113.1")
+    def test_ensure_recovers_restart_but_rejects_other_owner(self):
+        secret = b"persistent-restart-secret"
+        old_registry = SessionRegistry(secret=secret, deployment_id="pvs")
+        stale = old_registry.bind(_identity("owner-a", "browser-a"))
         old_registry.shutdown()
-        new_registry = SessionRegistry(secret=b"new")
+        new_registry = SessionRegistry(secret=secret, deployment_id="pvs")
         try:
             rebound, recovered = new_registry.ensure(
                 stale,
-                "browser-a",
-                "203.0.113.1",
+                _identity("owner-a", "browser-a", "203.0.113.2"),
             )
             self.assertTrue(recovered)
             self.assertNotEqual(rebound["session_id"], stale["session_id"])
             with self.assertRaisesRegex(SessionError, "does not belong"):
-                new_registry.ensure(stale, "browser-b", "203.0.113.1")
+                new_registry.ensure(
+                    stale,
+                    _identity("owner-b", "browser-a"),
+                )
         finally:
             new_registry.shutdown()
 
-    def test_ensure_recovers_pre_upgrade_state_without_resume_id(self):
-        old_registry = SessionRegistry(secret=b"old")
-        legacy = old_registry.bind("browser-a", "203.0.113.1")
+    def test_pre_upgrade_state_is_not_auto_claimed(self):
+        registry = SessionRegistry(secret=b"legacy-state-secret")
+        legacy = registry.bind(_identity("owner-a", "browser-a"))
+        legacy["schema_version"] = 1
+        legacy.pop("owner_id_digest")
         legacy.pop("resume_id")
-        live, recovered = old_registry.ensure(legacy, "browser-a", "203.0.113.1")
-        self.assertFalse(recovered)
-        self.assertEqual(live["session_id"], legacy["session_id"])
-        old_registry.shutdown()
-
-        new_registry = SessionRegistry(secret=b"new")
         try:
-            rebound, recovered = new_registry.ensure(
-                legacy, "browser-a", "203.0.113.1"
-            )
-            self.assertTrue(recovered)
-            self.assertNotEqual(rebound["session_id"], legacy["session_id"])
-            self.assertEqual(
-                rebound["resume_id"],
-                resume_id_for_identity("browser-a", "203.0.113.1"),
-            )
+            with self.assertRaises(SessionError):
+                registry.ensure(legacy, _identity("owner-a", "browser-a"))
         finally:
-            new_registry.shutdown()
+            registry.shutdown()
 
     def test_concurrent_ensure_creates_one_rebound_session(self):
         registry = SessionRegistry(secret=b"concurrent")
@@ -452,7 +479,7 @@ class SessionRecoveryTests(unittest.TestCase):
 
         def run():
             barrier.wait()
-            results.append(registry.ensure(None, "browser-a", "203.0.113.1")[0])
+            results.append(registry.ensure(None, _browser("browser-a", "203.0.113.1"))[0])
 
         threads = [threading.Thread(target=run) for _ in range(20)]
         try:

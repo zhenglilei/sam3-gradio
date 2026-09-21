@@ -14,11 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sam3_demo.session_guard import SessionGuardError, guard_callback, request_identity
-from sam3_demo.session_runtime import SessionRegistry
+from sam3_demo.session_runtime import RequestIdentity, SessionRegistry
 
 
-def _request(session_hash: str | None, host: str = "10.0.0.1", headers=None):
+def _request(
+    session_hash: str | None,
+    host: str = "10.0.0.1",
+    headers=None,
+    owner_id: str | None = None,
+):
     return gr.Request(
+        username=owner_id or session_hash,
         session_hash=session_hash,
         client=SimpleNamespace(host=host),
         headers=headers or {},
@@ -28,19 +34,21 @@ def _request(session_hash: str | None, host: str = "10.0.0.1", headers=None):
 class SessionGuardTest(unittest.TestCase):
     def setUp(self):
         self.registry = SessionRegistry(secret=b"test-secret", start_sweeper=False)
-        self.state_a = self.registry.bind("browser-a", "10.0.0.1")
-        self.state_b = self.registry.bind("browser-b", "10.0.0.1")
+        self.state_a = self.registry.bind(RequestIdentity("browser-a", "browser-a", "10.0.0.1"))
+        self.state_b = self.registry.bind(RequestIdentity("browser-b", "browser-b", "10.0.0.1"))
 
     def tearDown(self):
         self.registry.shutdown()
 
     def test_request_identity_and_trusted_proxy(self):
-        session_hash, client_ip = request_identity(
+        identity = request_identity(
             _request("browser-a", "10.0.0.2"),
             trusted_proxy_cidrs=["10.0.0.0/24"],
         )
-        self.assertEqual((session_hash, client_ip), ("browser-a", "10.0.0.2"))
-        session_hash, client_ip = request_identity(
+        self.assertEqual(identity.owner_id, "browser-a")
+        self.assertEqual(identity.session_hash, "browser-a")
+        self.assertEqual(identity.client_ip, "10.0.0.2")
+        identity = request_identity(
             _request(
                 "browser-a",
                 "10.0.0.2",
@@ -48,7 +56,9 @@ class SessionGuardTest(unittest.TestCase):
             ),
             trusted_proxy_cidrs=["10.0.0.0/24"],
         )
-        self.assertEqual((session_hash, client_ip), ("browser-a", "198.51.100.8"))
+        self.assertEqual(identity.owner_id, "browser-a")
+        self.assertEqual(identity.session_hash, "browser-a")
+        self.assertEqual(identity.client_ip, "198.51.100.8")
 
     def test_missing_request_identity_is_rejected(self):
         with self.assertRaises(SessionGuardError):
@@ -192,11 +202,14 @@ class SessionGuardTest(unittest.TestCase):
         self.assertTrue(result["session_id"])
 
     def test_stale_same_browser_state_is_replaced_after_restart(self):
-        old_registry = SessionRegistry(secret=b"old-secret")
-        stale = old_registry.bind("browser-restart", "10.0.0.1")
+        secret = b"persistent-guard-secret"
+        old_registry = SessionRegistry(secret=secret)
+        stale = old_registry.bind(
+            RequestIdentity("browser-restart", "browser-restart", "10.0.0.1")
+        )
         stale_business = dict(stale, instances={"must": "discard"})
         old_registry.shutdown()
-        new_registry = SessionRegistry(secret=b"new-secret")
+        new_registry = SessionRegistry(secret=secret)
 
         def callback(session_state, pvs_state):
             return pvs_state
@@ -270,8 +283,7 @@ class SessionGuardTest(unittest.TestCase):
         self.assertEqual(
             self.registry.validate(
                 self.state_a,
-                "browser-a",
-                "10.0.0.1",
+                RequestIdentity("browser-a", "browser-a", "10.0.0.1"),
             ).session_id,
             self.state_a["session_id"],
         )
@@ -281,7 +293,10 @@ class SessionGuardTest(unittest.TestCase):
 
         def callback(state):
             calls.append(True)
-            self.assertTrue(self.registry.close(self.state_a, "browser-a", "10.0.0.1"))
+            self.assertTrue(self.registry.close(
+                self.state_a,
+                RequestIdentity("browser-a", "browser-a", "10.0.0.1"),
+            ))
             return "stale"
 
         guarded = guard_callback(callback, registry=self.registry)

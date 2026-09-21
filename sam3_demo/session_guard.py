@@ -16,6 +16,7 @@ from typing import Any, Callable, Optional, Sequence, get_args, get_origin, get_
 import gradio as gr
 
 from .session_runtime import (
+    RequestIdentity,
     SessionError,
     SessionExpired,
     SessionRecord,
@@ -34,6 +35,7 @@ _IDENTITY_FIELDS = (
     "session_id",
     "generation",
     "owner_token",
+    "owner_id_digest",
     "session_hash_digest",
     "client_ip_digest",
     "resume_id",
@@ -96,7 +98,7 @@ def _peer_host(request: Any) -> str:
 def request_identity(
     request: Any,
     trusted_proxy_cidrs: Optional[Sequence[str] | str] = None,
-) -> tuple[str, str]:
+) -> RequestIdentity:
     """Extract and validate the browser/network identity from a Gradio request."""
 
     if request is None:
@@ -104,6 +106,9 @@ def request_identity(
     session_hash = getattr(request, "session_hash", None)
     if not isinstance(session_hash, str) or not session_hash.strip():
         raise SessionGuardError("request session_hash is required")
+    owner_id = getattr(request, "username", None)
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        raise SessionGuardError("signed cookie owner is required")
     peer = _peer_host(request)
     try:
         headers = getattr(request, "headers", {})
@@ -111,7 +116,11 @@ def request_identity(
         client_ip = resolve_client_ip(peer, headers_dict, trusted_proxy_cidrs)
     except (TypeError, ValueError, AttributeError) as exc:
         raise SessionGuardError("request client identity is invalid") from exc
-    return session_hash, client_ip
+    return RequestIdentity(
+        owner_id=owner_id,
+        session_hash=session_hash,
+        client_ip=client_ip,
+    )
 
 
 def _session_candidates(values: Sequence[Any]) -> list[tuple[Mapping[str, Any], str]]:
@@ -189,8 +198,7 @@ def _validate_candidates(
     candidates: Sequence[tuple[Mapping[str, Any], str]],
     *,
     registry: SessionRegistry,
-    session_hash: str,
-    client_ip: str,
+    identity: RequestIdentity,
 ) -> tuple[Mapping[str, Any] | None, str, SessionRecord]:
     session_ids = {session_id for _, session_id in candidates}
     if len(session_ids) != 1:
@@ -200,13 +208,13 @@ def _validate_candidates(
     if full_states:
         record: SessionRecord | None = None
         for state in full_states:
-            checked = registry.validate(state, session_hash, client_ip)
+            checked = registry.validate(state, identity)
             if checked.session_id != session_id:
                 raise SessionGuardError("session state does not match record")
             record = checked
         assert record is not None
         return full_states[0], session_id, record
-    record = registry.validate_owner(session_id, session_hash, client_ip)
+    record = registry.validate_owner(session_id, identity)
     if record.session_id != session_id:
         raise SessionGuardError("session state does not match record")
     return None, session_id, record
@@ -216,18 +224,17 @@ def _lease_for(
     registry: SessionRegistry,
     full_state: Mapping[str, Any] | None,
     session_id: str,
-    session_hash: str,
-    client_ip: str,
+    identity: RequestIdentity,
 ):
     if full_state is not None:
         lease = getattr(registry, "lease", None)
         if lease is None:
             raise SessionGuardError("session registry does not support state leases")
-        return lease(full_state, session_hash, client_ip)
+        return lease(full_state, identity)
     owner_lease = getattr(registry, "owner_lease", None)
     if owner_lease is None:
         raise SessionGuardError("session registry does not support owner leases")
-    return owner_lease(session_id, session_hash, client_ip)
+    return owner_lease(session_id, identity)
 
 
 def guard_callback(
@@ -289,7 +296,7 @@ def guard_callback(
             )
         component_args = list(args[:-1])
         request = args[-1]
-        session_hash, client_ip = request_identity(request, trusted_proxy_cidrs)
+        identity = request_identity(request, trusted_proxy_cidrs)
         state_positions = [
             (index, parameter.name, component_args[index])
             for index, parameter in enumerate(parameters)
@@ -305,7 +312,7 @@ def guard_callback(
         stale_state = False
         if recovery_factory is not None and not missing_state and full_states:
             try:
-                registry.validate(full_states[0], session_hash, client_ip)
+                registry.validate(full_states[0], identity)
             except SessionExpired:
                 stale_state = True
             except SessionError:
@@ -324,8 +331,7 @@ def guard_callback(
             try:
                 server_state, recovered = registry.ensure(
                     full_states[0] if full_states else None,
-                    session_hash,
-                    client_ip,
+                    identity,
                 )
             except SessionError as exc:
                 raise SessionGuardError(str(exc)) from exc
@@ -346,11 +352,10 @@ def guard_callback(
             full_state, session_id, record = _validate_candidates(
                 candidates,
                 registry=registry,
-                session_hash=session_hash,
-                client_ip=client_ip,
+                identity=identity,
             )
             _validate_state_owner_tokens(required_states, record)
-            with _lease_for(registry, full_state, session_id, session_hash, client_ip):
+            with _lease_for(registry, full_state, session_id, identity):
                 identity_snapshots = [
                     (
                         state,
@@ -376,9 +381,9 @@ def guard_callback(
                                 state[field] = value
                     raise
                 if full_state is not None:
-                    record = registry.validate(full_state, session_hash, client_ip)
+                    record = registry.validate(full_state, identity)
                 else:
-                    record = registry.validate_owner(session_id, session_hash, client_ip)
+                    record = registry.validate_owner(session_id, identity)
                 if record.session_id != session_id:
                     raise SessionGuardError("session closed or changed during callback")
                 return _stamp_owned_outputs(result, record)
