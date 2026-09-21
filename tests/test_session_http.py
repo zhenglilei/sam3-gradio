@@ -42,11 +42,17 @@ class SessionHttpTests(unittest.TestCase):
                 "SAM3_ALLOW_INSECURE_COOKIE": "1",
             }
         )
-        cls.web = app.create_application(
-            cls.settings,
-            server_name="testserver",
-            server_port=80,
-        )
+        with mock.patch.object(
+            app.gr,
+            "mount_gradio_app",
+            wraps=app.gr.mount_gradio_app,
+        ) as mount_gradio_app:
+            cls.web = app.create_application(
+                cls.settings,
+                server_name="testserver",
+                server_port=80,
+            )
+        cls.mount_gradio_app_kwargs = mount_gradio_app.call_args.kwargs
         cls.web_registry = app._SESSION_REGISTRY
         cls.lifespan_client = TestClient(
             cls.web,
@@ -107,6 +113,13 @@ class SessionHttpTests(unittest.TestCase):
             return signer.sign(encoded).decode("ascii")
         with mock.patch("itsdangerous.timed.time.time", return_value=timestamp):
             return signer.sign(encoded).decode("ascii")
+
+    def test_mount_preserves_demo_theme_and_css(self):
+        self.assertEqual(
+            self.mount_gradio_app_kwargs["css"],
+            app.CUSTOM_CSS,
+        )
+        self.assertIsNotNone(self.mount_gradio_app_kwargs["theme"])
 
     def test_homepage_issues_minimal_host_only_http_cookie(self):
         client, response = self._new_owner()
