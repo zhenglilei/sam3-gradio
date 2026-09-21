@@ -283,31 +283,48 @@ class PublicDownloadSecurityTests(unittest.TestCase):
                     prune_public_downloads(self.root, invalid_ttl)
 
 
-    def test_main_launch_only_allows_public_downloads_and_sets_blocklist(self):
+    def test_fastapi_mount_preserves_download_allowlist_and_main_is_single_worker(self):
         source = (ROOT / "sam3_demo" / "app.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
+        factory = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "create_application"
+        )
+        mount = next(
+            node
+            for node in ast.walk(factory)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "mount_gradio_app"
+        )
+        mount_keywords = {keyword.arg: keyword.value for keyword in mount.keywords}
+        self.assertEqual(
+            ast.unparse(mount_keywords["allowed_paths"]),
+            "_gradio_allowed_paths()",
+        )
+        self.assertEqual(
+            ast.unparse(mount_keywords["blocked_paths"]),
+            "_gradio_blocked_paths()",
+        )
+
         main = next(
             node
             for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name == "main"
         )
-        launch = next(
+        uvicorn_run = next(
             node
             for node in ast.walk(main)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "launch"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "uvicorn"
+            and node.func.attr == "run"
         )
-        keywords = {keyword.arg: keyword.value for keyword in launch.keywords}
-        self.assertEqual(ast.literal_eval(keywords["debug"]), False)
-        self.assertEqual(
-            ast.unparse(keywords["allowed_paths"]),
-            "_gradio_allowed_paths()",
-        )
-        self.assertEqual(
-            ast.unparse(keywords["blocked_paths"]),
-            "_gradio_blocked_paths()",
-        )
+        run_keywords = {keyword.arg: keyword.value for keyword in uvicorn_run.keywords}
+        self.assertEqual(ast.literal_eval(run_keywords["workers"]), 1)
+        self.assertEqual(ast.literal_eval(run_keywords["reload"]), False)
         self.assertNotIn("allowed_paths=[str(current_dir)]", source)
         self.assertIn(
             "public_downloads/",

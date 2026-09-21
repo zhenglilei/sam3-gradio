@@ -18,8 +18,13 @@ from sam3_demo.session_guard import SessionGuardError
 from sam3_demo.stitch_draft_store import StitchDraftStore
 
 
-def _request(session_hash: str, host: str = "10.70.0.10"):
+def _request(
+    session_hash: str,
+    host: str = "10.70.0.10",
+    owner_id: str | None = None,
+):
     return gr.Request(
+        username=owner_id or session_hash,
         session_hash=session_hash,
         client=SimpleNamespace(host=host),
         headers={},
@@ -34,8 +39,13 @@ class SessionIntegrationTests(unittest.TestCase):
         for state in self.states:
             app._SESSION_REGISTRY.close_state(state)
 
-    def _bootstrap(self, session_hash: str, host: str = "10.70.0.10"):
-        bundle = app._bootstrap_session(_request(session_hash, host))
+    def _bootstrap(
+        self,
+        session_hash: str,
+        host: str = "10.70.0.10",
+        owner_id: str | None = None,
+    ):
+        bundle = app._bootstrap_session(_request(session_hash, host, owner_id))
         self.states.append(bundle[0])
         return bundle
 
@@ -55,13 +65,19 @@ class SessionIntegrationTests(unittest.TestCase):
         self.assertEqual(after["worker_pid"], before["worker_pid"])
         self.assertEqual(after["generation"], before["generation"])
 
-    def test_same_ip_distinct_browser_hashes_and_ip_change_are_isolated(self):
+    def test_same_owner_ip_change_preserves_session_and_tabs_stay_isolated(self):
         first_hash = "browser-a-" + uuid.uuid4().hex
         first = self._bootstrap(first_hash)
         second = self._bootstrap("browser-b-" + uuid.uuid4().hex)
         moved = self._bootstrap(first_hash, "10.70.0.11")
         ids = {first[0]["session_id"], second[0]["session_id"], moved[0]["session_id"]}
-        self.assertEqual(len(ids), 3)
+        self.assertEqual(len(ids), 2)
+
+    def test_same_hash_different_cookie_owner_is_isolated(self):
+        browser_hash = "shared-hash-" + uuid.uuid4().hex
+        first = self._bootstrap(browser_hash, owner_id="owner-a")
+        second = self._bootstrap(browser_hash, owner_id="owner-b")
+        self.assertNotEqual(first[0]["session_id"], second[0]["session_id"])
 
     def test_guard_rejects_cross_user_segmentation_state(self):
         first_hash = "browser-a-" + uuid.uuid4().hex
@@ -351,8 +367,7 @@ class SessionIntegrationTests(unittest.TestCase):
         app._close_request_session(_request(browser_hash))
         record = app._SESSION_REGISTRY.validate(
             bundle[0],
-            browser_hash,
-            "10.70.0.10",
+            app.request_identity(_request(browser_hash)),
         )
         self.assertEqual(record.session_id, bundle[0]["session_id"])
 
