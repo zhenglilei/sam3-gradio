@@ -21,6 +21,7 @@ runtime_layout_dir = runtime_dir / "layout_masks"
 runtime_layout_agent_golden_dir = runtime_dir / "layout_agent_goldens"
 runtime_layout_region_dir = runtime_dir / "layout_regions"
 runtime_log_dir = runtime_dir / "logs"
+runtime_observability_dir = runtime_log_dir / "observability"
 public_download_dir = current_dir / "public_downloads"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
 ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
@@ -108,6 +109,7 @@ for path in (
     runtime_layout_region_dir,
     runtime_layout_agent_golden_dir,
     runtime_log_dir,
+    runtime_observability_dir,
     public_download_dir,
     current_dir / ".gradio",
     qiyuan_cache_dir,
