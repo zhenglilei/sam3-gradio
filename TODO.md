@@ -5,10 +5,13 @@
 - [ ] Replace IP authorization with a signed deployment-specific cookie owner.
   - Shared identity commit: `e2f0976`; 63 shared session tests and 8 real HTTP
     tests pass with the PVS adapter.
-  - PVS bugfix-worktree regression: 428 passed, 1 paid VLM smoke skipped;
-    integration into the dirty PVS target worktree is pending.
-  - EL_Mask cherry-pick with `-x` and branch-specific regression: pending.
-  - Browser acceptance and deployment: pending; no service has been restarted.
+  - PVS regression: 428 total, 427 passed and 1 paid VLM smoke skipped;
+    integrated as `b5f21f1` plus `b41271d`.
+  - EL regression: 566 total, 565 passed and 1 paid VLM smoke skipped;
+    integrated as `4a4ca28` plus `923eadd`.
+  - Browser acceptance remains partial because upload-dependent UI workflows,
+    PVS narrow rendering and browser error presentation are not accepted.
+  - Deployment pending; no formal service has been restarted.
   - Specification: `docs/bugs/session-cookie-owner.md`.
 
 后续计划记录在 `Zhengqiyuan/PVS-demo` worktree 中，优先围绕 PVS 标注质量反馈扩展和版图 prompt 能力扩展。

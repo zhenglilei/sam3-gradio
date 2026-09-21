@@ -47,15 +47,27 @@ persistence.
 | Branch/stage | Commit | Tests | Deployment |
 |---|---|---|---|
 | Shared identity layer | `e2f0976` | 63 shared session tests and 8 real FastAPI/Gradio HTTP tests pass with the PVS adapter | not deployed |
-| PVS baseline on bugfix worktree | pending integration commit | full discovery: 428 passed, 1 opt-in paid VLM smoke skipped | not deployed |
-| PVS-demo integration | pending | dirty target worktree not yet touched | not deployed |
-| EL_Mask integration | pending; shared commit must be cherry-picked with `-x` | EL-specific regression pending | not deployed |
+| PVS-demo integration | `b5f21f1` plus `b41271d` | 428 total: 427 passed, 1 opt-in paid VLM smoke skipped | not deployed |
+| EL_Mask integration | `4a4ca28` plus `923eadd` | 566 total: 565 passed, 1 opt-in paid VLM smoke skipped | not deployed |
 
 The HTTP suite covers cookie issuance and rejection, IP change for the same
 owner/hash, different-owner denial before registry mutation, queue SSE, event
 query, cancel, exact Origin/Referer, and a guard-decorated callback. The branch
-still requires PVS integration, EL integration and regression, and real browser
-two-owner/two-tab acceptance before closure.
+## Browser acceptance matrix
+
+| Check | Actual result |
+|---|---|
+| PVS and EL normal viewport | Edge rendered both pages; expected workflow tabs were visible and selectable |
+| Narrow viewport | EL rendered at 390 x 844 without observed overlap; PVS capture remained at Loading and is not accepted |
+| Same-browser tabs and isolated browser context | Two Edge PVS tabs and one isolated IAB PVS page loaded; HttpOnly owner values and per-tab hashes were not read by the UI tool |
+| Upload and business handoffs | Not accepted: the documented file-chooser operation did not return, so no upload-dependent UI workflow is claimed |
+| 401/403 user message and valid-state retention | Covered by HTTP tests for status/state safety; browser presentation remains pending |
+| IP change | Controlled HTTP client-IP change passed; no real VPN or network switch was authorized or performed |
+| Model chain | Not run; model remained unloaded and model behavior is outside this bug |
+
+Screenshots were returned inline by the browser tool, which did not expose a
+persistent screenshot path. The bug remains OPEN pending the unaccepted browser
+rows above and an explicitly approved deployment.
 
 ## Boundaries
 
