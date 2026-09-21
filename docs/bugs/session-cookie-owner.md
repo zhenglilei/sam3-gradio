@@ -58,7 +58,7 @@ query, cancel, exact Origin/Referer, and a guard-decorated callback. The branch
 | Check | Actual result |
 |---|---|
 | PVS and EL normal viewport | Edge rendered both pages; expected workflow tabs were visible and selectable |
-| Narrow viewport | EL rendered at 390 x 844 without observed overlap; PVS capture remained at Loading and is not accepted |
+| Narrow viewport | PVS and EL rendered in the requested 390 x 844 viewport without observed overlap (reported CSS viewport 355 x 767) |
 | Same-browser tabs and isolated browser context | Two Edge PVS tabs and one isolated IAB PVS page loaded; HttpOnly owner values and per-tab hashes were not read by the UI tool |
 | Upload and business handoffs | Not accepted: the documented file-chooser operation did not return, so no upload-dependent UI workflow is claimed |
 | 401/403 user message and valid-state retention | Covered by HTTP tests for status/state safety; browser presentation remains pending |

@@ -9,8 +9,8 @@
     integrated as `b5f21f1` plus `b41271d`.
   - EL regression: 566 total, 565 passed and 1 paid VLM smoke skipped;
     integrated as `4a4ca28` plus `923eadd`.
-  - Browser acceptance remains partial because upload-dependent UI workflows,
-    PVS narrow rendering and browser error presentation are not accepted.
+  - Browser acceptance remains partial because upload-dependent UI workflows
+    and browser error presentation are not accepted.
   - Deployment pending; no formal service has been restarted.
   - Specification: `docs/bugs/session-cookie-owner.md`.
 
