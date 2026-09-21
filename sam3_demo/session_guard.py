@@ -11,7 +11,7 @@ import functools
 import hmac
 import inspect
 from collections.abc import Mapping
-from typing import Any, Callable, Optional, Sequence, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, get_args, get_origin, get_type_hints
 
 import gradio as gr
 
@@ -23,6 +23,9 @@ from .session_runtime import (
     SessionRegistry,
     resolve_client_ip,
 )
+
+if TYPE_CHECKING:
+    from .observability import Observability
 
 
 class SessionGuardError(SessionError):
@@ -242,6 +245,7 @@ def guard_callback(
     *,
     registry: SessionRegistry,
     trusted_proxy_cidrs: Optional[Sequence[str] | str] = None,
+    observability: "Observability | None" = None,
     recovery_factory: Optional[
         Callable[[Mapping[str, Any]], Mapping[str, Mapping[str, Any]]]
     ] = None,
@@ -285,8 +289,7 @@ def guard_callback(
     )
     guarded_signature = signature.replace(parameters=parameters + [request_parameter])
 
-    @functools.wraps(fn)
-    def guarded(*args: Any, **kwargs: Any) -> Any:
+    def _guarded_impl(*args: Any, **kwargs: Any) -> Any:
         if kwargs:
             raise SessionGuardError("guarded callbacks accept positional inputs only")
         expected = len(parameters) + 1
@@ -391,6 +394,41 @@ def guard_callback(
             raise
         except SessionError as exc:
             raise SessionGuardError(str(exc)) from exc
+
+    @functools.wraps(fn)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        if observability is None:
+            return _guarded_impl(*args, **kwargs)
+        started_at = observability.monotonic()
+        request = args[-1] if args else None
+        owner_id = getattr(request, "username", None)
+        session_hash = getattr(request, "session_hash", None)
+        action = fn.__name__.lstrip("_") or fn.__name__
+        try:
+            result = _guarded_impl(*args, **kwargs)
+        except BaseException as exc:
+            if not isinstance(exc, Exception):
+                raise
+            error_id = observability.record_callback_failure(
+                action,
+                observability.monotonic() - started_at,
+                exc,
+                owner_id=owner_id,
+                session_hash=session_hash,
+            )
+            if isinstance(exc, SessionGuardError):
+                raise SessionGuardError(f"{exc}（错误编号：{error_id}）") from exc
+            if isinstance(exc, gr.Error):
+                message = getattr(exc, "message", None) or "操作失败"
+                raise gr.Error(f"{message}（错误编号：{error_id}）") from exc
+            raise gr.Error(f"操作失败，请联系开发人员。错误编号：{error_id}") from exc
+        observability.record_callback_success(
+            action,
+            observability.monotonic() - started_at,
+            owner_id=owner_id,
+            session_hash=session_hash,
+        )
+        return result
 
     guarded.__signature__ = guarded_signature
     annotations = dict(getattr(guarded, "__annotations__", {}))

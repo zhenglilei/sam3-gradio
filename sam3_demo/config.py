@@ -32,6 +32,7 @@ if _overlap_authoring_raw not in {"0", "1", "false", "true", "no", "yes", "off",
 overlap_authoring_enabled = _overlap_authoring_raw in {"1", "true", "yes", "on"}
 del _overlap_authoring_raw
 runtime_log_dir = runtime_dir / "logs"
+runtime_observability_dir = runtime_log_dir / "observability"
 public_download_dir = current_dir / "public_downloads"
 qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
 ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
@@ -120,6 +121,7 @@ for path in (
     runtime_layout_agent_golden_dir,
     runtime_overlap_dir,
     runtime_log_dir,
+    runtime_observability_dir,
     public_download_dir,
     current_dir / ".gradio",
     qiyuan_cache_dir,

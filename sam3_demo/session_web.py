@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import contextvars
-import hashlib
 import json
 import logging
 import os
@@ -14,12 +13,15 @@ import stat
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import Request
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
+
+if TYPE_CHECKING:
+    from .observability import Observability
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,7 @@ _MAX_JSON_CONTROL_BODY = 2 * 1024 * 1024
 _COOKIE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.-]{3,96}$")
 _EVENT_PATH_RE = re.compile(r"/gradio_api/call(?:/v2)?/[^/]+/([^/]+)$")
+_OPERATIONAL_PATHS = frozenset({"/healthz", "/readyz", "/metrics"})
 _CURRENT_OWNER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "sam3_session_cookie_owner",
     default=None,
@@ -247,15 +250,20 @@ class OwnerBoundStateHolder:
         setattr(self._wrapped, name, value)
 
 
-def _error(code: str, status_code: int, message: str) -> JSONResponse:
+def _error(
+    code: str,
+    status_code: int,
+    message: str,
+    *,
+    error_id: str | None = None,
+) -> JSONResponse:
+    payload = {"code": code, "message": message}
+    if error_id is not None:
+        payload["error_id"] = error_id
     return JSONResponse(
-        {"error": {"code": code, "message": message}},
+        {"error": payload},
         status_code=status_code,
     )
-
-
-def _digest_for_log(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 def _referer_origin(value: str) -> str | None:
@@ -325,10 +333,12 @@ class SessionSecurityMiddleware:
         *,
         settings: SessionCookieSettings,
         claims: OwnerClaimRegistry,
+        observability: "Observability | None" = None,
     ) -> None:
         self.app = app
         self.settings = settings
         self.claims = claims
+        self.observability = observability
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -336,6 +346,9 @@ class SessionSecurityMiddleware:
             return
         method = scope.get("method", "GET").upper()
         path = scope.get("path", "")
+        if method == "GET" and path in _OPERATIONAL_PATHS:
+            await self.app(scope, receive, send)
+            return
         session = scope.get("session")
         owner_id = _valid_owner_session(session, self.settings)
         if owner_id is None and method == "GET" and path == "/":
@@ -347,10 +360,16 @@ class SessionSecurityMiddleware:
                 deployment_id=self.settings.deployment_id,
             )
         if owner_id is None:
+            error_id = None
+            if self.observability is not None:
+                error_id = self.observability.record_session_rejection(
+                    "SESSION_COOKIE_REQUIRED"
+                )
             response = _error(
                 "SESSION_COOKIE_REQUIRED",
                 401,
                 "会话身份缺失或已失效，请重新打开首页。",
+                error_id=error_id,
             )
             await response(scope, receive, send)
             return
@@ -359,10 +378,17 @@ class SessionSecurityMiddleware:
             headers,
             self.settings.allowed_origins,
         ):
+            error_id = None
+            if self.observability is not None:
+                error_id = self.observability.record_session_rejection(
+                    "SESSION_ORIGIN_REJECTED",
+                    owner_id=owner_id,
+                )
             response = _error(
                 "SESSION_ORIGIN_REJECTED",
                 403,
                 "请求来源校验失败，请从当前工作台重试。",
+                error_id=error_id,
             )
             await response(scope, receive, send)
             return
@@ -403,14 +429,21 @@ class SessionSecurityMiddleware:
                 self.claims.require_event(owner_id, event_id, session_hash)
         except SessionWebError as exc:
             logger.warning(
-                "session transport rejected code=SESSION_OWNER_MISMATCH owner=%s hash=%s",
-                _digest_for_log(owner_id),
-                _digest_for_log(session_hash or "missing"),
+                "session transport rejected code=SESSION_OWNER_MISMATCH"
             )
+            error_id = None
+            if self.observability is not None:
+                error_id = self.observability.record_session_rejection(
+                    "SESSION_OWNER_MISMATCH",
+                    owner_id=owner_id,
+                    session_hash=session_hash,
+                    exc=exc,
+                )
             response = _error(
                 "SESSION_OWNER_MISMATCH",
                 403,
                 "该页面或任务不属于当前浏览器会话。",
+                error_id=error_id,
             )
             await response(scope, original_receive, send)
             return
