@@ -93,7 +93,7 @@ from sam3_demo.ui_repair import bind_repair_events
 from sam3_demo.ui_repair_core import empty_editor_payload, new_repair_state
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
-from sam3_demo.session_guard import guard_callback, request_identity
+from sam3_demo.session_guard import guard_callback, gradio_state_recovery, request_identity
 from sam3_demo.session_runtime import SessionError, SessionRecord, SessionRegistry
 from sam3_demo.stitch_draft_store import StitchDraftStore
 from sam3_demo.observability import Observability, resolve_git_sha
@@ -4515,7 +4515,7 @@ def _template_stitch_handoff_status(source_status):
     return _template_stitch_cb.handoff_status(source_status)
 
 
-def _session_callback_registry():
+def _session_callback_registry(recovery_store=None):
     callbacks = dict(globals())
     missing = sorted(_SESSION_GUARDED_CALLBACKS.difference(callbacks))
     if missing:
@@ -4527,6 +4527,7 @@ def _session_callback_registry():
             trusted_proxy_cidrs=_SESSION_TRUSTED_PROXY_CIDRS,
             observability=_OBSERVABILITY,
             recovery_factory=_session_recovery_states,
+            recovery_store=recovery_store,
         )
     return callbacks
 
@@ -4616,6 +4617,10 @@ def create_demo():
                 repair_state=repair_state,
                 polygon_payload=polygon_payload,
                 point_payload=point_payload,
+            )
+            demo._sam3_session_recovery = gradio_state_recovery(
+                demo, (state_refs, image_ui, stitch_ui, template_stitch_ui),
+                registry=_SESSION_REGISTRY, factory=_session_recovery_states,
             )
             bind_demo_events(
                 state_refs=state_refs,
