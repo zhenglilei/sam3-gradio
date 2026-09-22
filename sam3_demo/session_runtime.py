@@ -205,12 +205,18 @@ def resume_id_for_identity(
 def _digest(value: str, secret: bytes) -> str:
     return hmac.new(secret, _DIGEST_TAG + value.encode(), hashlib.sha256).hexdigest()
 def _owner_token(secret: bytes, record: SessionRecord) -> str:
+    return _token_for_fields(
+        secret, record.session_id, record.generation,
+        record.owner_id_digest, record.session_hash_digest,
+    )
+def _token_for_fields(secret: bytes, session_id: str, generation: int,
+                      owner_digest: str, hash_digest: str) -> str:
     text = "|".join(
         (
-            record.session_id,
-            str(record.generation),
-            record.owner_id_digest,
-            record.session_hash_digest,
+            session_id,
+            str(generation),
+            owner_digest,
+            hash_digest,
         )
     ).encode("ascii")
     return hmac.new(secret, _TOKEN_TAG + text, hashlib.sha256).hexdigest()
@@ -463,6 +469,47 @@ class SessionRegistry:
             self._callbacks(cleanups)
         return state
 
+    def authenticate_state(
+        self, state: Mapping[str, Any], identity: RequestIdentity,
+    ) -> None:
+        """Check ownership even after eviction; never authorize stale business data."""
+        identity = normalize_identity(identity)
+        if not isinstance(state, Mapping):
+            raise SessionError("session state must be a mapping")
+        session_id = state.get("session_id")
+        token = state.get("owner_token")
+        # Business states issued before this fix contain no generation field.
+        generation = state.get("generation", 1)
+        if (
+            not isinstance(session_id, str) or not session_id.isascii()
+            or not session_id or "|" in session_id
+            or not isinstance(token, str) or not token.isascii()
+            or not isinstance(generation, int) or isinstance(generation, bool)
+            or generation < 1
+        ):
+            raise SessionError("invalid recovery identity")
+        owner_digest = _digest(identity.owner_id, self._secret)
+        hash_digest = _digest(identity.session_hash, self._secret)
+        expected = _token_for_fields(
+            self._secret, session_id, generation, owner_digest, hash_digest,
+        )
+        if not hmac.compare_digest(token, expected):
+            raise SessionError("stale session does not belong to this browser")
+        if "generation" in state:
+            self._state_fields(state)
+            if (state.get("owner_id_digest") != owner_digest
+                    or state.get("session_hash_digest") != hash_digest):
+                raise SessionError("stale session does not belong to this browser")
+        resume_id = state.get("resume_id")
+        if resume_id is not None:
+            expected_resume = _resume_id(
+                identity.session_hash, identity.owner_id,
+                self.deployment_id, self._secret,
+            )
+            if (not isinstance(resume_id, str) or not resume_id.isascii()
+                    or not hmac.compare_digest(resume_id, expected_resume)):
+                raise SessionError("stale session does not belong to this browser")
+
     def ensure(
         self,
         state: Mapping[str, Any] | None,
@@ -475,18 +522,13 @@ class SessionRegistry:
             return self.bind(identity), True
         if not isinstance(state, Mapping):
             raise SessionError("session state must be a mapping")
+        self.authenticate_state(state, identity)
         try:
-            record = self.validate(state, identity)
+            if "generation" in state:
+                record = self.validate(state, identity)
+            else:
+                record = self.validate_owner(state["session_id"], identity)
         except SessionExpired:
-            resume_id = self._state_fields(state)[-1]
-            expected = _resume_id(
-                identity.session_hash,
-                identity.owner_id,
-                self.deployment_id,
-                self._secret,
-            )
-            if resume_id is not None and not hmac.compare_digest(resume_id, expected):
-                raise SessionError("stale session does not belong to this browser")
             return self.bind(identity), True
         return self._state(record), False
 

@@ -10,10 +10,13 @@ from __future__ import annotations
 import functools
 import hmac
 import inspect
+from copy import deepcopy
 from collections.abc import Mapping
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, get_args, get_origin, get_type_hints
 
 import gradio as gr
+from gradio.context import LocalContext
 
 from .session_runtime import (
     RequestIdentity,
@@ -32,6 +35,10 @@ class SessionGuardError(SessionError):
     """Raised before a callback is called when request ownership is invalid."""
 
 
+class _SupersededCallback(Exception):
+    """A queued operation targets a session already replaced in this page."""
+
+
 _REQUEST_PARAMETER = "__session_guard_request"
 _IDENTITY_FIELDS = (
     "schema_version",
@@ -44,17 +51,6 @@ _IDENTITY_FIELDS = (
     "resume_id",
 )
 _MISSING = object()
-_BUSINESS_STATE_MARKERS = frozenset(
-    {
-        "image_id",
-        "source_image_id",
-        "instances",
-        "bbox_start",
-        "layout_id",
-        "regions_revision",
-        "conversation_revision",
-    }
-)
 
 
 def _request_type(annotation: Any) -> bool:
@@ -180,15 +176,10 @@ def _validate_state_owner_tokens(
 
 def _stamp_owned_outputs(value: Any, record: SessionRecord) -> Any:
     if isinstance(value, dict):
-        if (
-            value.get("session_id") == record.session_id
-            and (
-                "owner_token" in value
-                or any(marker in value for marker in _BUSINESS_STATE_MARKERS)
-            )
-        ):
+        if value.get("session_id") == record.session_id:
             value = dict(value)
             value["owner_token"] = record.owner_token
+            value["resume_id"] = record.resume_id
         return value
     if isinstance(value, tuple):
         return tuple(_stamp_owned_outputs(item, record) for item in value)
@@ -240,6 +231,64 @@ def _lease_for(
     return owner_lease(session_id, identity)
 
 
+def gradio_state_recovery(demo, refs, *, registry, factory):
+    """Persist recovery to all owned Gradio States, not just callback arguments.
+
+    Called under the replacement session's operation lease. Aliases in the
+    factory resolve to the same canonical component value.
+    """
+    components = {
+        name: component
+        for group in refs for name, component in vars(group).items()
+        if isinstance(component, gr.State)
+    }
+
+    def recover(server_state, request, *, previous_session_id=None):
+        identity = request_identity(request)
+        session = demo.state_holder[identity.session_hash]
+        fresh = factory(server_state)
+        resolved = {}
+        updates = []
+        root = session[components["session_state"]._id]
+        if isinstance(root, Mapping) and root.get("session_id"):
+            registry.authenticate_state(root, identity)
+            if (previous_session_id is not None
+                    and previous_session_id != server_state["session_id"]
+                    and root["session_id"] == server_state["session_id"]):
+                raise _SupersededCallback
+        reset = not isinstance(root, Mapping) or root.get("session_id") != server_state["session_id"]
+        for name, component in components.items():
+            current = session[component._id]
+            if name not in fresh:
+                # Extension states (e.g. the EL image queue) reset to their own
+                # component default; old image payloads are never re-authorized.
+                stale_extra = (
+                    isinstance(current, Mapping) and current.get("session_id")
+                    and current["session_id"] != server_state["session_id"]
+                )
+                replacement = deepcopy(component.value) if reset or stale_extra else current
+                fresh[name] = replacement
+                if name.endswith("_state"):
+                    fresh.setdefault(name[:-6], replacement)
+                if replacement is not current:
+                    updates.append((component._id, replacement))
+                continue
+            replacement = fresh[name]
+            if isinstance(current, Mapping) and current.get("session_id"):
+                registry.authenticate_state(current, identity)
+                if current["session_id"] == server_state["session_id"]:
+                    replacement = current
+            resolved[id(fresh[name])] = replacement
+            if replacement is not current:
+                updates.append((component._id, replacement))
+        # Validate the entire bundle before publishing any replacement.
+        for component_id, replacement in updates:
+            session[component_id] = replacement
+        return {name: resolved.get(id(value), value) for name, value in fresh.items()}
+
+    return recover
+
+
 def guard_callback(
     fn: Callable[..., Any],
     *,
@@ -249,6 +298,7 @@ def guard_callback(
     recovery_factory: Optional[
         Callable[[Mapping[str, Any]], Mapping[str, Mapping[str, Any]]]
     ] = None,
+    recovery_store: Optional[Callable[..., Mapping[str, Mapping[str, Any]]]] = None,
 ) -> Callable[..., Any]:
     """Wrap a callback with strict request/session ownership validation.
 
@@ -304,6 +354,8 @@ def guard_callback(
             (index, parameter.name, component_args[index])
             for index, parameter in enumerate(parameters)
             if parameter.name == "state" or parameter.name.endswith("_state")
+            or (isinstance(component_args[index], Mapping)
+                and component_args[index].get("session_id"))
         ]
         missing_state = any(
             value is None
@@ -312,88 +364,112 @@ def guard_callback(
         )
         candidates = _session_candidates(component_args)
         full_states = [state for state, _ in candidates if _is_full_state(state)]
-        stale_state = False
-        if recovery_factory is not None and not missing_state and full_states:
-            try:
-                registry.validate(full_states[0], identity)
-            except SessionExpired:
-                stale_state = True
-            except SessionError:
-                pass
-        if (missing_state or stale_state) and recovery_factory is not None:
-            if any(
-                value is not None and not isinstance(value, Mapping)
-                for _, _, value in state_positions
-            ):
-                raise SessionGuardError("state values must be mappings")
-            session_ids = {session_id for _, session_id in candidates}
-            if len(session_ids) > 1:
-                raise SessionGuardError("callback contains conflicting session states")
-            if candidates and not full_states:
-                raise SessionGuardError("stale callback has no recoverable session state")
-            try:
-                server_state, recovered = registry.ensure(
-                    full_states[0] if full_states else None,
-                    identity,
-                )
-            except SessionError as exc:
-                raise SessionGuardError(str(exc)) from exc
-            fresh_states = recovery_factory(server_state)
-            for index, name, value in state_positions:
-                if recovered or value is None or not value.get("session_id"):
-                    replacement = fresh_states.get(name)
-                    if not isinstance(replacement, Mapping):
-                        raise SessionGuardError(
-                            f"recovery factory did not provide {name}"
-                        )
-                    component_args[index] = replacement
-        required_states = _required_state_arguments(parameters, component_args)
-        candidates = _session_candidates(component_args)
-        if not candidates:
-            raise SessionGuardError("guarded callback requires a session-bearing state")
+        server_state = None
+        recovered = False
         try:
-            full_state, session_id, record = _validate_candidates(
-                candidates,
-                registry=registry,
-                identity=identity,
-            )
-            _validate_state_owner_tokens(required_states, record)
-            with _lease_for(registry, full_state, session_id, identity):
-                identity_snapshots = [
-                    (
-                        state,
-                        {
-                            field: state.get(field, _MISSING)
-                            for field in _IDENTITY_FIELDS
-                        },
+            if recovery_factory is not None:
+                if any(value is not None and not isinstance(value, Mapping)
+                       for _, _, value in state_positions):
+                    raise SessionGuardError("state values must be mappings")
+                if len({session_id for _, session_id in candidates}) > 1:
+                    raise SessionGuardError("callback contains conflicting session states")
+                stale_state = False
+                if candidates:
+                    try:
+                        _validate_candidates(candidates, registry=registry, identity=identity)
+                    except SessionExpired:
+                        stale_state = True
+                if missing_state or stale_state:
+                    # Even a thin business state must prove ownership before
+                    # recovery. A resume key alone is not an authorization token.
+                    for state in full_states:
+                        registry.authenticate_state(state, identity)
+                    for _, name, state in state_positions:
+                        if not isinstance(state, Mapping) or not state.get("session_id"):
+                            continue
+                        if (full_states and "owner_token" not in state
+                                and name != "state" and not name.endswith("_state")):
+                            continue  # Legacy extension handle is discarded below.
+                        registry.authenticate_state(state, identity)
+                    server_state, recovered = registry.ensure(
+                        full_states[0] if full_states else
+                        (candidates[0][0] if candidates else None), identity,
                     )
-                    for _, state in required_states
-                    if isinstance(state, dict)
-                ]
-                try:
-                    result = fn(*component_args)
-                except BaseException:
-                    # Gradio State inputs are server-side mutable dicts.  Preserve
-                    # their ownership identity even if a callback mutates in place
-                    # before raising, otherwise one failure can brick the session.
-                    for state, snapshot in identity_snapshots:
-                        for field, value in snapshot.items():
-                            if value is _MISSING:
-                                state.pop(field, None)
-                            else:
-                                state[field] = value
-                    raise
-                if full_state is not None:
-                    record = registry.validate(full_state, identity)
-                else:
-                    record = registry.validate_owner(session_id, identity)
-                if record.session_id != session_id:
-                    raise SessionGuardError("session closed or changed during callback")
-                return _stamp_owned_outputs(result, record)
+            recovery_lease = (
+                registry.lease(server_state, identity)
+                if server_state is not None else nullcontext()
+            )
+            with recovery_lease:
+                if server_state is not None:
+                    # Gradio 6 propagates the owning Blocks through this request
+                    # context, including callbacks registered by extension tabs.
+                    blocks = (
+                        LocalContext.blocks.get(None)
+                        if LocalContext.request.get(None) is request else None
+                    )
+                    store = recovery_store or getattr(blocks, "_sam3_session_recovery", None)
+                    fresh_states = (
+                        store(
+                            server_state, request,
+                            previous_session_id=candidates[0][1] if recovered and candidates else None,
+                        ) if store is not None
+                        else recovery_factory(server_state)
+                    )
+                    for index, name, value in state_positions:
+                        if recovered or value is None or not value.get("session_id"):
+                            replacement = fresh_states.get(name, _MISSING)
+                            if (replacement is _MISSING or
+                                ((name == "state" or name.endswith("_state"))
+                                 and not isinstance(replacement, Mapping))):
+                                raise SessionGuardError(f"recovery factory did not provide {name}")
+                            component_args[index] = replacement
+                return invoke(component_args, identity)
+        except _SupersededCallback:
+            # Gradio broadcasts a single skip to all outputs. Never replay an
+            # expired delete/crop action against a newly recovered workspace.
+            return gr.skip()
         except SessionGuardError:
             raise
         except SessionError as exc:
             raise SessionGuardError(str(exc)) from exc
+
+    def invoke(component_args, identity):
+        required_states = _required_state_arguments(parameters, component_args)
+        candidates = _session_candidates(component_args)
+        if not candidates:
+            raise SessionGuardError("guarded callback requires a session-bearing state")
+        full_state, session_id, record = _validate_candidates(
+            candidates, registry=registry, identity=identity,
+        )
+        _validate_state_owner_tokens(required_states, record)
+        with _lease_for(registry, full_state, session_id, identity):
+            identity_snapshots = [
+                (
+                    state,
+                    {field: state.get(field, _MISSING) for field in _IDENTITY_FIELDS},
+                )
+                for _, state in required_states
+                if isinstance(state, dict)
+            ]
+            try:
+                result = fn(*component_args)
+            except BaseException:
+                # Gradio State inputs are server-side mutable dicts. Preserve
+                # ownership even if a callback mutates in place before raising.
+                for state, snapshot in identity_snapshots:
+                    for field, value in snapshot.items():
+                        if value is _MISSING:
+                            state.pop(field, None)
+                        else:
+                            state[field] = value
+                raise
+            if full_state is not None:
+                record = registry.validate(full_state, identity)
+            else:
+                record = registry.validate_owner(session_id, identity)
+            if record.session_id != session_id:
+                raise SessionGuardError("session closed or changed during callback")
+            return _stamp_owned_outputs(result, record)
 
     @functools.wraps(fn)
     def guarded(*args: Any, **kwargs: Any) -> Any:
@@ -437,4 +513,4 @@ def guard_callback(
     return guarded
 
 
-__all__ = ["SessionGuardError", "guard_callback", "request_identity"]
+__all__ = ["SessionGuardError", "guard_callback", "gradio_state_recovery", "request_identity"]
