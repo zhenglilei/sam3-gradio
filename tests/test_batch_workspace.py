@@ -10,6 +10,8 @@ from sam3_demo.stitch_callbacks import new_stitch_state
 
 class BatchWorkspaceTests(unittest.TestCase):
     def setUp(self):
+        # These shared fixtures test workspace behavior, not durable storage.
+        self.enterContext(mock.patch("os.fsync"))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.patch = mock.patch.object(app, "runtime_dir", Path(self.tmp.name))

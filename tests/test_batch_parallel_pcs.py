@@ -13,6 +13,8 @@ from sam3_demo import model_runtime
 
 class BatchParallelPcsTests(unittest.TestCase):
     def setUp(self):
+        # Keep serialization and restore real; durable flushes have dedicated tests.
+        self.enterContext(mock.patch("os.fsync"))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.runtime_patch = mock.patch.object(app, "runtime_dir", Path(self.tmp.name))
