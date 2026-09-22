@@ -1,7 +1,6 @@
 import ast
 import copy
 import json
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,34 +17,6 @@ sys.path.insert(0, str(ROOT))
 
 import layout_region_utils as regions
 from sam3_demo import app as demo_module
-
-
-def _function_node(source, name):
-    tree = ast.parse(source)
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return node
-    raise AssertionError(f"missing function: {name}")
-
-
-def _function_dump(source, name):
-    return ast.dump(_function_node(source, name), include_attributes=False)
-
-
-def _moved_function_dump(source, impl_name, baseline_source, public_name):
-    node = copy.deepcopy(_function_node(source, impl_name))
-    baseline_node = _function_node(baseline_source, public_name)
-    while (
-        node.body
-        and isinstance(node.body[0], ast.Assign)
-        and isinstance(node.body[0].value, ast.Subscript)
-        and isinstance(node.body[0].value.value, ast.Name)
-        and node.body[0].value.value.id == "_deps"
-    ):
-        node.body.pop(0)
-    node.name = public_name
-    node.args = copy.deepcopy(baseline_node.args)
-    return ast.dump(node, include_attributes=False)
 
 
 def _descendant_ids(layout, target_id):
@@ -766,49 +737,116 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
                 "pvs_summary", "active_pvs", "interaction_info", "pvs_pending_count",
             ],
         )
-    def test_protected_function_bodies_match_baseline(self):
-        baseline = subprocess.run(
-            ["git", "show", "fef70b7:sam3_gradio_demo.py"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        current = (ROOT / "sam3_demo" / "app.py").read_text(encoding="utf-8")
-        protected = [
-            "_create_pvs_from_layout_mask",
-        ]
-        moved = {
-            "_finish_native_polygon": (
-                ROOT / "sam3_demo" / "pcs_pvs_callbacks.py",
-                "_finish_native_polygon_impl",
-            ),
-            "_clear_current_layout_mask": (
-                ROOT / "sam3_demo" / "layout" / "mask_callbacks.py",
-                "_clear_current_layout_mask_impl",
-            ),
-            "_commit_layout_transform": (
-                ROOT / "sam3_demo" / "layout" / "mask_callbacks.py",
-                "_commit_layout_transform_impl",
-            ),
-            "_create_pvs_from_layout_mask": (
-                ROOT / "sam3_demo" / "layout" / "prompt_callbacks.py",
-                "_create_pvs_from_layout_mask_impl",
-            ),
+    def _create_from_layout_mask(self, pvs_state, transformed_mask, prediction, mode=None):
+        image_state = {"session_id": self.session_id, "width": 48, "height": 36}
+        with (
+            mock.patch.object(demo_module.SUPERVISOR, "lease"),
+            mock.patch.multiple(
+                demo_module,
+                _commit_layout_transform=mock.DEFAULT,
+                _fresh_state=mock.DEFAULT,
+                _predict_inst=mock.DEFAULT,
+                _layout_prompt_metadata=mock.DEFAULT,
+                _layout_editor_payload=mock.DEFAULT,
+                _view=mock.DEFAULT,
+                _prompt_mask_size=lambda: (256, 256),
+            ) as patched,
+        ):
+            patched["_commit_layout_transform"].return_value = (
+                self.layout_state,
+                transformed_mask,
+                None,
+            )
+            patched["_fresh_state"].return_value = image_state
+            patched["_predict_inst"].return_value = prediction
+            patched["_layout_prompt_metadata"].return_value = {
+                "layout_id": self.layout_id
+            }
+            patched["_layout_editor_payload"].return_value = {"status": "ok"}
+            patched["_view"].return_value = (None,) * 8
+
+            result = demo_module._create_pvs_from_layout_mask(
+                image_state,
+                demo_module._new_pcs_state(),
+                pvs_state,
+                demo_module.MODE_LAYOUT if mode is None else mode,
+                self.layout_state,
+                True,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.35,
+                {},
+                progress=None,
+            )
+        return result, patched
+
+    def test_create_pvs_from_layout_mask_creates_instance(self):
+        transformed_mask = self.source_mask.astype(bool)
+        predicted_mask = np.zeros_like(transformed_mask)
+        predicted_mask[10:20, 14:25] = True
+        prediction = {
+            "masks": predicted_mask[None, ...],
+            "scores": np.asarray([0.91], dtype=np.float32),
+            "lowres_logits": np.full((1, 256, 256), 0.25, dtype=np.float32),
         }
-        for name in protected:
-            with self.subTest(name=name):
-                if name in moved:
-                    path, impl_name = moved[name]
-                    actual = _moved_function_dump(
-                        path.read_text(encoding="utf-8"),
-                        impl_name,
-                        baseline,
-                        name,
-                    )
-                else:
-                    actual = _function_dump(current, name)
-                self.assertEqual(actual, _function_dump(baseline, name))
+        pvs_state = demo_module._new_pvs_state()
+        result, patched = self._create_from_layout_mask(
+            pvs_state, transformed_mask, prediction
+        )
+
+        self.assertIn("已用版图 mask prompt 创建 PVS #1", result[3])
+        instance = pvs_state["instances"][1]
+        self.assertIs(result[0], pvs_state)
+        self.assertIs(result[1], self.layout_state)
+        self.assertEqual(pvs_state["active_instance_id"], 1)
+        self.assertEqual(pvs_state["next_instance_id"], 2)
+        self.assertEqual(instance["source"], "manual_pvs_layout_mask")
+        np.testing.assert_array_equal(instance["mask_fullres_bool"], predicted_mask)
+        self.assertEqual(instance["box_xyxy_px"], [14.0, 10.0, 25.0, 20.0])
+        self.assertAlmostEqual(instance["score"], 0.91, places=6)
+        self.assertEqual(
+            instance["prompt_history"][0]["op"], "create_from_layout_mask"
+        )
+        self.assertEqual(
+            instance["prompt_history"][0]["prompt"]["layout_id"], self.layout_id
+        )
+        self.assertEqual(result[4:], (None,) * 8)
+        model_call = patched["_predict_inst"].call_args
+        self.assertEqual(
+            model_call.kwargs["mask_input_lowres_logits"].shape,
+            (256, 256),
+        )
+
+    def test_create_pvs_from_layout_mask_rejects_invalid_mode_and_mask(self):
+        empty_mask = np.zeros((36, 48), dtype=bool)
+        for mode, message in (
+            ("not-layout-mask", "只支持"),
+            (demo_module.MODE_LAYOUT, "layout transformed mask is empty"),
+        ):
+            with self.subTest(mode=mode):
+                pvs_state = demo_module._new_pvs_state()
+                result, patched = self._create_from_layout_mask(
+                    pvs_state, empty_mask, None, mode=mode
+                )
+                self.assertIn(message, result[3])
+                self.assertEqual(pvs_state["instances"], {})
+                patched["_predict_inst"].assert_not_called()
+                if mode != demo_module.MODE_LAYOUT:
+                    patched["_commit_layout_transform"].assert_not_called()
+
+    def test_create_pvs_from_layout_mask_rejects_empty_prediction(self):
+        pvs_state = demo_module._new_pvs_state()
+        result, _ = self._create_from_layout_mask(
+            pvs_state,
+            self.source_mask.astype(bool),
+            {"scores": np.asarray([], dtype=np.float32)},
+        )
+
+        self.assertIn("predict_inst returned no masks", result[3])
+        self.assertEqual(pvs_state["instances"], {})
+        self.assertIsNone(pvs_state["active_instance_id"])
 
 
 if __name__ == "__main__":

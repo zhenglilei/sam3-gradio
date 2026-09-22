@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,7 +65,24 @@ class StitchDraftStoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_round_trip_persists_business_state_and_png_tiles(self):
-        self.store.save(self.resume_id, _state())
+        events = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def flush(fd):
+            events.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+            return real_fsync(fd)
+
+        def replace(source, target):
+            events.append(Path(target).name)
+            return real_replace(source, target)
+
+        with mock.patch("sam3_demo.stitch_draft_store.os.fsync", side_effect=flush), mock.patch(
+            "sam3_demo.stitch_draft_store.os.replace", side_effect=replace
+        ):
+            self.store.save(self.resume_id, _state())
+        commit_index = events.index("manifest.json")
+        self.assertEqual(events[:commit_index].count("file"), 3)
+        self.assertEqual(events[commit_index + 1:], ["directory", "directory"])
 
         loaded = self.store.load(self.resume_id)
         self.assertIsNotNone(loaded)
@@ -85,7 +103,10 @@ class StitchDraftStoreTests(unittest.TestCase):
         self.assertTrue((draft / "images").is_dir())
         self.assertTrue(list((draft / "images").glob("*.png")))
 
-    def test_session_identity_and_derived_images_are_excluded(self):
+    # These validation cases still use real files; the round-trip and failure cases
+    # above/below exercise durable flushes and atomic replacement without stubbing.
+    @mock.patch("sam3_demo.stitch_draft_store.os.fsync")
+    def test_session_identity_and_derived_images_are_excluded(self, _flush):
         self.store.save(self.resume_id, _state())
         manifest_path = Path(self.tmp.name) / "drafts" / self.resume_id / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -102,7 +123,8 @@ class StitchDraftStoreTests(unittest.TestCase):
         self.assertNotIn("owner_token", loaded)
         self.assertEqual(loaded["nested"], {"keep": 1})
 
-    def test_corrupt_manifest_missing_image_and_unsafe_path_fail_closed(self):
+    @mock.patch("sam3_demo.stitch_draft_store.os.fsync")
+    def test_corrupt_manifest_missing_image_and_unsafe_path_fail_closed(self, _flush):
         self.store.save(self.resume_id, _state())
         draft = Path(self.tmp.name) / "drafts" / self.resume_id
         manifest_path = draft / "manifest.json"
@@ -146,7 +168,8 @@ class StitchDraftStoreTests(unittest.TestCase):
             self.store.delete("b" * 64)
         self.assertTrue((outside / "marker").is_file())
 
-    def test_ttl_load_and_prune(self):
+    @mock.patch("sam3_demo.stitch_draft_store.os.fsync")
+    def test_ttl_load_and_prune(self, _flush):
         first = "1" * 64
         second = "2" * 64
         self.store.save(first, _state())

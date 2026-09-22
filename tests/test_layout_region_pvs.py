@@ -32,6 +32,8 @@ def _signature(value):
 
 class LayoutRegionPvsTest(unittest.TestCase):
     def setUp(self):
+        # Region persistence has separate real-I/O tests; these cases exercise PVS logic.
+        self.enterContext(mock.patch.object(regions.os, "fsync"))
         self.lease_patcher = mock.patch.object(
             demo_module.SUPERVISOR,
             "lease",

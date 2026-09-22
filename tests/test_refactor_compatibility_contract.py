@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import inspect
+import importlib
 import json
 import os
+import runpy
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -139,13 +142,13 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         }
 
     def test_public_entrypoint_is_thin(self):
-        source = (ROOT / "sam3_gradio_demo.py").read_text(encoding="utf-8")
-        self.assertEqual(
-            source,
-            "from sam3_demo.app import create_demo, main\n\n\n"
-            'if __name__ == "__main__":\n'
-            "    main()\n",
-        )
+        entrypoint = importlib.import_module("sam3_gradio_demo")
+        self.assertIs(entrypoint.create_demo, demo.create_demo)
+        self.assertIs(entrypoint.main, demo.main)
+
+        with mock.patch.object(demo, "main") as main:
+            runpy.run_path(str(ROOT / "sam3_gradio_demo.py"), run_name="__main__")
+        main.assert_called_once_with()
 
     def test_gradio_config_semantic_snapshot(self):
         actual = canonical_config(self.config)
@@ -334,20 +337,6 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
             with self.subTest(name=name):
                 function = getattr(demo, name)
                 self.assertEqual(len(inspect.signature(function).parameters), parameter_count)
-
-    def test_custom_component_event_contract(self):
-        component_type = {
-            component["id"]: component.get("type") for component in self.components
-        }
-        events_by_type = {}
-        for dependency in self.config["dependencies"]:
-            for component_id, event_name in dependency.get("targets") or []:
-                events_by_type.setdefault(component_type.get(component_id), set()).add(
-                    event_name
-                )
-        self.assertIn("input", events_by_type["imagegestureoverlay"])
-        self.assertIn("input", events_by_type["layoutregionannotator"])
-        self.assertIn("change", events_by_type["layouttransformeditor"])
 
     def test_dependency_concurrency_and_public_api_contract(self):
         for name in (

@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 from pycocotools import mask as coco_mask
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts import offline_eval_utils as eval_utils
 
