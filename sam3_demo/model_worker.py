@@ -32,6 +32,7 @@ _OPS = {
     "encode",
     "predict_inst",
     "predict_pcs",
+    "predict_pcs_batch",
     "evict",
     "shutdown",
 }
@@ -315,7 +316,7 @@ class _Embedding:
 
 
 class Sam3WorkerRuntime:
-    """Lazy, single-threaded SAM3 runtime owned by the worker process."""
+    """Lazy SAM3 runtime; only the isolated PCS batch uses multiple streams."""
 
     def __init__(self, *, device: str | None = None, embedding_limit: int | None = None, clock: Callable[[], float] = time.monotonic) -> None:
         self.device = device or os.environ.get("SAM3_WORKER_DEVICE", "cuda:0")
@@ -330,6 +331,7 @@ class Sam3WorkerRuntime:
         self._capabilities: dict[str, Any] | None = None
         self._embeddings: OrderedDict[str, _Embedding] = OrderedDict()
         self._shutdown_requested = False
+        self._pcs_batch = None
 
     @property
     def loaded(self) -> bool:
@@ -398,6 +400,7 @@ class Sam3WorkerRuntime:
                 "gpu_name": gpu_name,
                 "gpu_uuid": gpu_uuid,
                 "device": str(self.device),
+                "pcs_max_candidates": int(image_model.transformer.decoder.num_queries),
             }
             return dict(self._capabilities)
         except WorkerRPCError:
@@ -533,6 +536,9 @@ class Sam3WorkerRuntime:
         entry = self._touch(image_id)
         if image_sha256 and image_sha256 != entry.image_sha256:
             raise WorkerRPCError("MISSING_EMBEDDING", f"embedding hash mismatch for image {image_id!r}", "ValueError")
+        return self._pcs_from_state(self.processor, self._prediction_state(entry), args)
+
+    def _pcs_from_state(self, processor, state, args):
         text = str(args.get("text", "") or "").strip()
         positive_boxes = args.get("positive_boxes_cxcywh")
         negative_boxes = args.get("negative_boxes_cxcywh")
@@ -543,27 +549,26 @@ class Sam3WorkerRuntime:
         threshold = float(args.get("threshold", 0.5))
         if not self._np.isfinite(threshold):
             raise ValueError("threshold must be finite")
-        state = self._prediction_state(entry)
         try:
             if text:
-                state = self.processor.set_text_prompt(text, state)
+                state = processor.set_text_prompt(text, state)
             for box in positive_boxes:
                 values = _finite_array(box, "positive_boxes_cxcywh", dtype=self._np.float32).reshape(-1)
                 if values.shape != (4,):
                     raise ValueError("positive box must contain four values")
-                state = self.processor.add_geometric_prompt(values, True, state)
+                state = processor.add_geometric_prompt(values, True, state)
             for box in negative_boxes:
                 values = _finite_array(box, "negative_boxes_cxcywh", dtype=self._np.float32).reshape(-1)
                 if values.shape != (4,):
                     raise ValueError("negative box must contain four values")
-                state = self.processor.add_geometric_prompt(values, False, state)
-            state = self.processor.set_confidence_threshold(threshold, state)
+                state = processor.add_geometric_prompt(values, False, state)
+            state = processor.set_confidence_threshold(threshold, state)
         except Exception as exc:
             if self._is_oom(exc):
                 raise WorkerRPCError("OOM", str(exc), type(exc).__name__) from exc
             raise
         masks = state.get("masks")
-        height, width = entry.height, entry.width
+        height, width = int(state["original_height"]), int(state["original_width"])
         if masks is None:
             masks_np = self._np.zeros((0, height, width), dtype=self._np.bool_)
         else:
@@ -585,11 +590,19 @@ class Sam3WorkerRuntime:
                 raise ValueError("PCS probability shape does not match masks")
             if not self._np.isfinite(probs_np).all():
                 raise ValueError("PCS probabilities contain non-finite values")
-        boxes = _as_numpy(state.get("boxes", self._np.zeros((0, 4), dtype=self._np.float32)), dtype=self._np.float32).reshape(-1, 4)
+        boxes = _finite_array(_as_numpy(state.get("boxes", self._np.zeros((0, 4), dtype=self._np.float32))), "boxes", dtype=self._np.float32).reshape(-1, 4)
         scores = _finite_array(_as_numpy(state.get("scores", self._np.zeros((0,), dtype=self._np.float32))), "scores", dtype=self._np.float32).reshape(-1)
         if boxes.shape[0] != masks_np.shape[0] or scores.shape[0] != masks_np.shape[0]:
             raise ValueError("PCS output counts do not match masks")
         return {"masks_packed": packed, "masks_shape": shape, "probs_f16": probs_np, "boxes": boxes, "scores": scores}
+
+    def predict_pcs_batch(self, args):
+        self._require_loaded()
+        if self._pcs_batch is None:
+            from sam3_demo.pcs_batch_runtime import PCSBatchRuntime
+
+            self._pcs_batch = PCSBatchRuntime(self)
+        return self._pcs_batch.predict(args)
 
     def warmup(self) -> dict[str, Any]:
         self._require_loaded()
@@ -616,6 +629,9 @@ class Sam3WorkerRuntime:
 
     def shutdown(self) -> dict[str, Any]:
         self._shutdown_requested = True
+        if self._pcs_batch is not None:
+            self._pcs_batch.close()
+            self._pcs_batch = None
         self._embeddings.clear()
         self.processor = None
         self.model = None
@@ -636,6 +652,8 @@ class Sam3WorkerRuntime:
             return self.predict_inst(args)
         if op == "predict_pcs":
             return self.predict_pcs(args)
+        if op == "predict_pcs_batch":
+            return self.predict_pcs_batch(args)
         if op == "evict":
             return self.evict(args.get("image_ids", []))
         if op == "shutdown":

@@ -1,6 +1,7 @@
 """Session-owned multi-image workbench, using existing segmentation callbacks."""
 from copy import deepcopy
 from pathlib import Path
+import logging
 import json
 import uuid
 import numpy as np
@@ -11,6 +12,7 @@ from .session_cleanup import validate_server_session_id
 
 MAX_IMAGES = 32
 MAX_PIXELS = 32_000_000
+_LOGGER = logging.getLogger(__name__)
 
 
 def owned_batch(batch, session):
@@ -136,6 +138,125 @@ def pcs_input_for_batch(pcs, text):
     if not str(text or "").strip() and not (pcs or {}).get("positive_boxes"):
         raise ValueError("本图没有正样本框；请给本图画框，或填写共用文本提示")
     return deepcopy(pcs)
+
+
+def process_pcs_chunk(app, batch, session):
+    """Run one bounded PCS batch and persist each result under its stable item ID."""
+    from .pcs_pvs_callbacks import apply_pcs_prediction
+
+    session_id = validate_server_session_id(session["session_id"])
+    if batch.get("session_id") != session_id or not batch.get("running"):
+        return {"last_id": None, "last_values": None, "last_error": ""}
+    chunk_ids = list(batch.get("pending") or [])[:4]
+    batch["pending"] = list(batch.get("pending") or [])[len(chunk_ids):]
+    if not chunk_ids:
+        return {"last_id": None, "last_values": None, "last_error": ""}
+
+    text = str(batch.get("batch_text") or "").strip()
+    threshold = float(batch.get("batch_threshold", 0.4))
+    item_by_id = {item["id"]: item for item in batch.get("items", [])}
+    inputs, request_ids, errors = [], [], {}
+    for item_id in chunk_ids:
+        item = item_by_id.get(item_id)
+        if item is None:
+            continue
+        try:
+            snapshot = item.get("snapshot") or {}
+            image = snapshot.get("image")
+            image = (image if image is not None else item["original"]).copy()
+            pcs = deepcopy(snapshot.get("pcs") or {})
+            pcs = pcs_input_for_batch(pcs, text)
+            width, height = image.size
+            inputs.append({
+                "image": image,
+                "text": text,
+                "positive_boxes_cxcywh": [
+                    app._xyxy_to_cxcywh_norm(box, width, height)
+                    for box in pcs.get("positive_boxes", [])
+                ],
+                "negative_boxes_cxcywh": [
+                    app._xyxy_to_cxcywh_norm(box, width, height)
+                    for box in pcs.get("negative_boxes", [])
+                ],
+                "threshold": threshold,
+            })
+            request_ids.append(item_id)
+        except Exception as exc:
+            errors[item_id] = str(exc)
+
+    response = {"items": [], "concurrency": 0, "fallback": False, "reason": ""}
+    if inputs:
+        try:
+            from sam3_demo.model_runtime import _predict_pcs_batch
+            response = _predict_pcs_batch(inputs)
+            rows = response.get("items") if isinstance(response, dict) else None
+            if not isinstance(rows, list) or len(rows) != len(inputs):
+                raise ValueError("PCS batch backend returned an invalid item list")
+            concurrency = response.get("concurrency", 1)
+            fallback = bool(response.get("fallback", False))
+            reason = str(response.get("reason") or "")
+            _LOGGER.info("PCS batch: images=%d concurrency=%s fallback=%s reason=%s",
+                         len(inputs), concurrency, fallback, reason)
+            for item_id, row in zip(request_ids, rows):
+                if not isinstance(row, dict):
+                    errors[item_id] = "PCS failed: invalid item result"
+                elif row.get("error"):
+                    error = str(row["error"])
+                    errors[item_id] = error if error.startswith("PCS failed") else f"PCS failed: {error}"
+                elif row.get("prediction") is None:
+                    errors[item_id] = "PCS failed: backend returned no prediction"
+        except Exception as exc:
+            _LOGGER.exception("PCS batch backend call failed")
+            for item_id in request_ids:
+                errors.setdefault(item_id, f"PCS failed: {exc}")
+            response = {"items": [], "concurrency": 1, "fallback": False,
+                        "reason": str(exc)}
+
+    rows_by_id = {
+        item_id: row for item_id, row in zip(request_ids, response.get("items", []))
+        if isinstance(row, dict)
+    }
+    last_id, last_values, last_error = None, None, ""
+    for item_id in chunk_ids:
+        item = item_by_id.get(item_id)
+        if item is None:
+            continue
+        last_id = item_id
+        try:
+            values = list(restore_item(app, batch, item, session))
+            source, image, pcs, pvs, prompt, layout, _, tool, _, _ = values
+            error = errors.get(item_id)
+            row = rows_by_id.get(item_id)
+            if not error and row is not None:
+                try:
+                    width, height = image["width"], image["height"]
+                    apply_pcs_prediction(
+                        pcs, row["prediction"], text, width, height,
+                        app._make_inst, app._norm_box,
+                    )
+                    values = [source, image, pcs, pvs, prompt, layout,
+                              "PCS Auto", tool, text, threshold]
+                    item.update(status="done", error="")
+                except Exception as exc:
+                    error = f"PCS failed: {exc}"
+            if error:
+                item.update(status="failed", error=error)
+            if not save_snapshot(app, batch, *values):
+                error = error or "当前图片保存失败"
+                item.update(status="failed", error=error)
+            elif error:
+                item.update(status="failed", error=error)
+            else:
+                item.update(status="done", error="")
+            last_error = item.get("error", "")
+            last_values = values
+        except Exception as exc:
+            last_error = str(exc)
+            item.update(status="failed", error=last_error)
+            _LOGGER.exception("Failed to restore/save PCS batch item %s", item_id)
+
+    return {"last_id": last_id, "last_values": last_values,
+            "last_error": last_error}
 
 
 def send_tiles(app, batch, selected, stitch, live_values=None):
@@ -325,34 +446,17 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 message = "批处理已取消，已完成结果保留"
             elif action == "step":
                 if batch.get("running") and batch.get("pending"):
-                    tile_id = batch["pending"].pop(0)
-                    item = next(i for i in batch["items"] if i["id"] == tile_id)
-                    values = restore_item(app, batch, item, session_state)
-                    source, image, pcs, pvs, prompt, layout, _, tool, _, _ = values
-                    prior = deepcopy(pcs)
-                    try:
-                        new_pcs = pcs_input_for_batch(pcs, batch["batch_text"])
-                        result = app._run_pcs(image, new_pcs, pvs, "PCS Auto",
-                                              batch["batch_text"], batch["batch_threshold"])
-                        if str(result[-2]).startswith("PCS failed"):
-                            raise ValueError(str(result[-2]))
-                        pcs = result[0]
-                        item.update(status="done", error="")
-                    except Exception as exc:
-                        pcs = prior
-                        item.update(status="failed", error=str(exc))
-                    if not item.get("error"):
-                        values = (source, image, pcs, pvs, prompt, layout, "PCS Auto",
-                                  tool, batch["batch_text"], batch["batch_threshold"])
-                    save_snapshot(app, batch, *values)
-                    if item.get("error"):
-                        item["status"] = "failed"
-                    changed = True
-                    status_text = "失败" if item.get("error") else "已完成"
-                    message = f"{item['name']} · {status_text} · 剩余 {len(batch['pending'])}"
-                    if item.get("error"):
-                        message += f" · {item['error']}"
-                        gr.Warning(message)
+                    chunk = process_pcs_chunk(app, batch, session_state)
+                    if chunk["last_id"]:
+                        item = next(i for i in batch["items"] if i["id"] == chunk["last_id"])
+                        if chunk["last_values"] is not None:
+                            values = chunk["last_values"]
+                            changed = True
+                        status_text = "失败" if chunk["last_error"] else "已完成"
+                        message = f"{item['name']} · {status_text} · 剩余 {len(batch['pending'])}"
+                        if chunk["last_error"]:
+                            message += f" · {chunk['last_error']}"
+                            gr.Warning(message)
                 if not batch.get("pending"):
                     batch["running"] = False
             elif action == "stitch":

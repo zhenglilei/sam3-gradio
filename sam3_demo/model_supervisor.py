@@ -173,6 +173,8 @@ class ModelRuntimeSupervisor:
         self._last_error = ""
         self._last_start_failure_at = None
         self._request_id = 0
+        self._pcs_parallel_disabled = False
+        self._pcs_max_candidates = 200
         self._mask_input_size = None
         self._encoded_generation = {}
         self._restart_requested = False
@@ -449,6 +451,7 @@ class ModelRuntimeSupervisor:
                                 raise ModelWorkerError("Worker ownership changed during startup", code="INTERNAL")
                             self._generation = next_generation
                             self._mask_input_size = mask_size
+                            self._pcs_max_candidates = int(capabilities.get("pcs_max_candidates", 200))
                             self._state = READY
                             self._last_error = ""
                             self._last_start_failure_at = None
@@ -744,30 +747,108 @@ class ModelRuntimeSupervisor:
     def predict_pcs(self, handle, image_supplier, **kwargs):
         def run():
             result = self._predict_with_embedding("predict_pcs", handle, image_supplier, kwargs)
-            if not isinstance(result, dict):
-                raise ModelWorkerError("Worker returned invalid predict_pcs response", code="INTERNAL")
-            masks = self._unpack_masks(result)
-            scores = np.asarray(result.get("scores"), dtype=np.float32).reshape(-1)
-            boxes = np.asarray(result.get("boxes"), dtype=np.float32)
-            probs_value = result.get("probs_f16")
-            probs = None if probs_value is None else np.asarray(probs_value, dtype=np.float16)
             expected_shape = (int(handle.get("original_height") or 0), int(handle.get("original_width") or 0))
-            if tuple(masks.shape[1:]) != expected_shape:
-                raise ModelWorkerError("Worker PCS mask shape does not match workspace", code="INTERNAL")
-            if masks.shape[0] != scores.size or boxes.shape != (scores.size, 4):
-                raise ModelWorkerError("Worker PCS candidate counts do not match", code="INTERNAL")
-            if not np.isfinite(scores).all() or not np.isfinite(boxes).all():
-                raise ModelWorkerError("Worker returned non-finite PCS values", code="INTERNAL")
-            if probs is not None and (probs.shape[0] != scores.size or not np.isfinite(probs).all()):
-                raise ModelWorkerError("Worker returned invalid PCS probabilities", code="INTERNAL")
-            if probs is not None and tuple(probs.shape[1:]) != expected_shape:
-                raise ModelWorkerError("Worker PCS probability shape does not match workspace", code="INTERNAL")
-            return {"masks": masks, "scores": scores, "boxes": boxes, "probs": probs}
+            return self._decode_pcs(result, expected_shape)
 
         if int(getattr(self._lease_local, "depth", 0)):
             return run()
         with self.lease(reason="predict_pcs"):
             return run()
+
+    def _decode_pcs(self, result, expected_shape):
+        if not isinstance(result, dict):
+            raise ModelWorkerError("Worker returned invalid predict_pcs response", code="INTERNAL")
+        masks = self._unpack_masks(result)
+        scores = np.asarray(result.get("scores"), dtype=np.float32).reshape(-1)
+        boxes = np.asarray(result.get("boxes"), dtype=np.float32)
+        probs_value = result.get("probs_f16")
+        probs = None if probs_value is None else np.asarray(probs_value, dtype=np.float16)
+        if tuple(masks.shape[1:]) != expected_shape:
+            raise ModelWorkerError("Worker PCS mask shape does not match workspace", code="INTERNAL")
+        if masks.shape[0] != scores.size or boxes.shape != (scores.size, 4):
+            raise ModelWorkerError("Worker PCS candidate counts do not match", code="INTERNAL")
+        if not np.isfinite(scores).all() or not np.isfinite(boxes).all():
+            raise ModelWorkerError("Worker returned non-finite PCS values", code="INTERNAL")
+        if probs is not None and (probs.ndim != 3 or probs.shape[0] != scores.size or not np.isfinite(probs).all()):
+            raise ModelWorkerError("Worker returned invalid PCS probabilities", code="INTERNAL")
+        if probs is not None and tuple(probs.shape[1:]) != expected_shape:
+            raise ModelWorkerError("Worker PCS probability shape does not match workspace", code="INTERNAL")
+        return {"masks": masks, "scores": scores, "boxes": boxes, "probs": probs}
+
+    def _pcs_batch_rpc(self, items, concurrency):
+        response = self._rpc("predict_pcs_batch", {"items": items, "concurrency": concurrency})
+        if not isinstance(response, dict):
+            raise ModelWorkerError("Worker returned invalid PCS batch response")
+        if response.get("reason") == "frame_limit" and len(items) > 1:
+            results = []
+            for item in items:
+                results.extend(self._pcs_batch_rpc([item], 1)["items"])
+            return {"items": results, "concurrency": 1, "fallback": True, "reason": "frame_limit"}
+        results = response.get("items")
+        if not isinstance(results, list) or len(results) != len(items):
+            raise ModelWorkerError("Worker PCS batch result count mismatch")
+        decoded = []
+        for item, result in zip(items, results):
+            if result.get("error"):
+                decoded.append({"prediction": None, "error": str(result["error"])})
+            else:
+                prediction = self._decode_pcs(result.get("prediction"), (item["height"], item["width"]))
+                decoded.append({"prediction": prediction, "error": None})
+        return {**response, "items": decoded}
+
+    def predict_pcs_batch(self, items):
+        """Private batch inputs originate from the session-owned image queue."""
+        if not 1 <= len(items) <= 4:
+            raise ValueError("PCS batch requires one to four images")
+        prepared = []
+        for item in items:
+            image = item["image"].convert("RGB")
+            positive = np.asarray(item.get("positive_boxes_cxcywh", []), dtype=np.float32).reshape(-1, 4)
+            negative = np.asarray(item.get("negative_boxes_cxcywh", []), dtype=np.float32).reshape(-1, 4)
+            threshold = float(item.get("threshold", 0.5))
+            if not np.isfinite(positive).all() or not np.isfinite(negative).all() or not np.isfinite(threshold):
+                raise ValueError("PCS prompts must contain finite values")
+            text = str(item.get("text") or "").strip()
+            if not text and not len(positive):
+                raise ValueError("PCS requires text or a positive box")
+            prepared.append({
+                "rgb_bytes": image.tobytes(), "width": image.width, "height": image.height,
+                "text": text, "threshold": threshold,
+                "positive_boxes_cxcywh": positive, "negative_boxes_cxcywh": negative,
+            })
+        with self.lease(reason="predict_pcs_batch"):
+            # Account for worst-case full-resolution probabilities plus packed masks.
+            budget = max(1, _MAX_FRAME_BYTES - 16 * 1024 * 1024)
+            groups, group, used = [], [], 0
+            for item in prepared:
+                estimate = item["width"] * item["height"] * self._pcs_max_candidates * 17 // 8
+                if group and used + estimate > budget:
+                    groups.append(group)
+                    group, used = [], 0
+                group.append(item)
+                used += estimate
+            groups.append(group)
+            results, lanes, fallback, reason = [], 1, False, ""
+            for group in groups:
+                try:
+                    response = self._pcs_batch_rpc(group, 1 if self._pcs_parallel_disabled else 4)
+                except Exception:
+                    # A native crash cannot be caught in the worker. Restart once,
+                    # respecting backoff, then keep this deployment serial.
+                    self._pcs_parallel_disabled = True
+                    with self._condition:
+                        failed_at = self._last_start_failure_at
+                    if failed_at is not None:
+                        delay = max(0.0, self._restart_backoff - (self._clock() - failed_at))
+                        self._monitor_stop.wait(delay)
+                    self._wait_until_started()
+                    response = self._pcs_batch_rpc(group, 1)
+                    response.update(fallback=True, reason="worker_failure")
+                results.extend(response["items"])
+                lanes = max(lanes, int(response.get("concurrency", 1)))
+                fallback = fallback or bool(response.get("fallback"))
+                reason = response.get("reason") or reason
+            return {"items": results, "concurrency": lanes, "fallback": fallback, "reason": reason}
 
     def evict(self, image_ids):
         ids = [str(value) for value in image_ids or [] if value]

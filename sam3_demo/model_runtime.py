@@ -115,3 +115,7 @@ def _predict_pcs(
         negative_boxes_cxcywh=negative,
         threshold=confidence,
     )
+
+
+def _predict_pcs_batch(items):
+    return SUPERVISOR.predict_pcs_batch(items)

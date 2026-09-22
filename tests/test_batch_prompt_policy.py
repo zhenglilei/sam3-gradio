@@ -1,10 +1,9 @@
 import inspect
 import unittest
-from copy import deepcopy
 from unittest import mock
 
 import test_batch_workspace as fixtures
-from sam3_demo import app, batch_workspace as batch
+from sam3_demo import app, batch_workspace as batch, model_runtime
 from sam3_demo.stitch_callbacks import new_stitch_state
 
 
@@ -38,7 +37,13 @@ class BatchPromptPolicyTests(unittest.TestCase):
                 batch.pcs_input_for_batch(pcs, " ")
 
     def test_batch_steps_keep_each_images_own_boxes(self):
-        boxes = [[1, 2, 8, 10], [4, 5, 12, 16]]
+        boxes = [[index + 1, 2, index + 8, 10] for index in range(6)]
+        extra_paths = []
+        for index in range(2, 6):
+            path = fixtures.Path(self.tmp.name) / f"tile{index}.png"
+            fixtures.Image.new("RGB", (24, 20), "blue").save(path)
+            extra_paths.append(str(path))
+        batch.add_images(self.state, extra_paths)
         for item, box in zip(self.state["items"], boxes):
             values = list(batch.restore_item(app, self.state, item, self.session))
             values[2]["positive_boxes"] = [box]
@@ -46,20 +51,36 @@ class BatchPromptPolicyTests(unittest.TestCase):
             batch.save_snapshot(app, self.state, *values)
         ids = [i["id"] for i in self.state["items"]]
         self.state.update(running=True, pending=ids[:], batch_text="", batch_threshold=0.4)
-        seen = []
+        calls = []
 
-        def predict(image, pcs, pvs, mode, text, threshold):
-            seen.append(deepcopy(pcs["positive_boxes"]))
-            self.assertEqual(text, "")
-            return (pcs, *app._view(image, pcs, pvs, mode, "PCS found no instances"))
+        def predict(payloads):
+            calls.append(payloads)
+            results = []
+            for payload in payloads:
+                self.assertEqual(payload["text"], "")
+                width, height = payload["image"].size
+                results.append({"prediction": {
+                    "masks": fixtures.np.zeros((0, height, width), dtype=bool),
+                    "scores": fixtures.np.asarray([], dtype=fixtures.np.float32),
+                    "boxes": fixtures.np.zeros((0, 4), dtype=fixtures.np.float32),
+                    "probs": None,
+                }, "error": None})
+            return {"items": results, "concurrency": len(payloads),
+                    "fallback": False, "reason": ""}
 
         callback = self._callback("batch_step")
-        with mock.patch.object(app, "_run_pcs", side_effect=predict):
+        with mock.patch.object(model_runtime, "_predict_pcs_batch", side_effect=predict):
             self._call(callback, values, ids)
+            self.assertEqual(self.state["pending"], ids[4:])
+            self.assertTrue(self.state["running"])
             self._call(callback, values, ids)
-        self.assertEqual(seen, [[boxes[0]], [boxes[1]]])
+        self.assertEqual([len(call) for call in calls], [4, 2])
+        seen = [payload["positive_boxes_cxcywh"]
+                for call in calls for payload in call]
+        self.assertEqual(seen, [[app._xyxy_to_cxcywh_norm(box, 24, 20)]
+                                for box in boxes])
         self.assertFalse(self.state["running"])
-        self.assertEqual([i["status"] for i in self.state["items"]], ["done", "done"])
+        self.assertEqual([i["status"] for i in self.state["items"]], ["done"] * 6)
 
     def test_start_batch_does_not_require_text(self):
         item = self.state["items"][0]

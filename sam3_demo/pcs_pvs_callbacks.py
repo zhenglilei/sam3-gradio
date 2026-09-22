@@ -364,6 +364,31 @@ def _clear_pcs_instances_impl(_deps, image_state, pcs_state, pvs_state, mode):
     return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 
+def apply_pcs_prediction(pcs_state, prediction, text_prompt, width, height,
+                         make_inst, norm_box):
+    """Apply one PCS prediction to its matching image's workspace state."""
+    masks_np = np.asarray(prediction.get("masks"), dtype=bool)
+    if masks_np.ndim != 3 or masks_np.shape[0] == 0:
+        pcs_state["instances"] = {}
+        return 0
+    probs_value = prediction.get("probs")
+    probs_np = None if probs_value is None else np.asarray(probs_value, dtype=np.float32)
+    boxes_np = np.asarray(prediction.get("boxes"), dtype=np.float32)
+    scores_np = np.asarray(prediction.get("scores"), dtype=np.float32).reshape(-1)
+    instances = {}
+    for idx, mask in enumerate(masks_np):
+        inst_id = idx + 1
+        instances[inst_id] = make_inst(
+            inst_id, "pcs", mask, norm_box(boxes_np[idx].tolist(), width, height),
+            float(scores_np[idx]), pcs_prob=None if probs_np is None else probs_np[idx],
+            history=[{"op": "pcs_grounding", "text_prompt": text_prompt or ""}],
+        )
+    pcs_state["instances"] = instances
+    pcs_state["next_instance_id"] = len(instances) + 1
+    pcs_state["text_prompt"] = text_prompt or ""
+    return len(instances)
+
+
 def _run_pcs_impl(_deps, image_state, pcs_state, pvs_state, mode, text_prompt, threshold):
     _fresh_state = _deps['_fresh_state']
     _make_inst = _deps['_make_inst']
@@ -395,22 +420,12 @@ def _run_pcs_impl(_deps, image_state, pcs_state, pvs_state, mode, text_prompt, t
             ],
             threshold=float(threshold),
         )
-        masks_np = np.asarray(prediction.get("masks"), dtype=bool)
-        if masks_np.ndim != 3 or masks_np.shape[0] == 0:
-            pcs_state["instances"] = {}
+        count = apply_pcs_prediction(
+            pcs_state, prediction, text_prompt, w, h, _make_inst, _norm_box
+        )
+        if count == 0:
             return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, "PCS found no instances")
-        probs_value = prediction.get("probs")
-        probs_np = None if probs_value is None else np.asarray(probs_value, dtype=np.float32)
-        boxes_np = np.asarray(prediction.get("boxes"), dtype=np.float32)
-        scores_np = np.asarray(prediction.get("scores"), dtype=np.float32).reshape(-1)
-        instances = {}
-        for idx, mask in enumerate(masks_np):
-            inst_id = idx + 1
-            instances[inst_id] = _make_inst(inst_id, "pcs", mask, _norm_box(boxes_np[idx].tolist(), w, h), float(scores_np[idx]), pcs_prob=None if probs_np is None else probs_np[idx], history=[{"op":"pcs_grounding","text_prompt":text_prompt or ""}])
-        pcs_state["instances"] = instances
-        pcs_state["next_instance_id"] = len(instances) + 1
-        pcs_state["text_prompt"] = text_prompt or ""
-        info = f"PCS found {len(instances)} instances"
+        info = f"PCS found {count} instances"
     except Exception as exc:
         info = f"PCS failed: {exc}"
     return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
