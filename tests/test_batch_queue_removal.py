@@ -78,6 +78,8 @@ class BatchQueueRemovalTests(unittest.TestCase):
         target = batch["items"][2]["id"]
         self.invoke("batch_selection", selected=[target])
         self.invoke("batch_delete_selected")
+        # A guarded callback may replace the component's state mapping.
+        batch = self.values[self.batch_id]
         self.assertEqual(len(batch["items"]), 3)
         self.assertNotIn(target, [i["id"] for i in batch["items"]])
         after = self.business_states()
