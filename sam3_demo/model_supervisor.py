@@ -833,6 +833,8 @@ class ModelRuntimeSupervisor:
                 try:
                     response = self._pcs_batch_rpc(group, 1 if self._pcs_parallel_disabled else 4)
                 except Exception:
+                    if self._pcs_parallel_disabled:
+                        raise
                     # A native crash cannot be caught in the worker. Restart once,
                     # respecting backoff, then keep this deployment serial.
                     self._pcs_parallel_disabled = True

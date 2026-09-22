@@ -149,6 +149,15 @@ class SupervisorBatchTests(unittest.TestCase):
         self.assertEqual(len(result["items"]), 4)
         self.assertEqual(self.supervisor._rpc.call_count, 4)
 
+    def test_already_serial_failure_does_not_retry_again(self):
+        self.supervisor._pcs_parallel_disabled = True
+        self.supervisor._rpc = Mock(side_effect=EOFError())
+        self.supervisor._wait_until_started = Mock()
+        with self.assertRaises(EOFError):
+            self.supervisor.predict_pcs_batch([item()])
+        self.assertEqual(self.supervisor._rpc.call_count, 1)
+        self.supervisor._wait_until_started.assert_not_called()
+
     def test_no_prompt_or_nonfinite_inputs_never_call_worker(self):
         self.supervisor._rpc = Mock()
         invalid = item()
