@@ -28,10 +28,11 @@ def build_image_tab(
                 with gr.Row(elem_id="el-library-row"):
                     batch_upload = gr.File(
                         label="添加图片", file_count="multiple", type="filepath",
-                        file_types=["image"], height=120, scale=1, min_width=160,
+                        file_types=["image"], height=76, scale=1, min_width=160,
+                        elem_classes="el-compact-upload",
                     )
                     batch_gallery = gr.Gallery(
-                        label="图片列表", columns=6, height=104,
+                        label="图片列表", columns=6, height=76,
                         allow_preview=False, buttons=[], interactive=False,
                         object_fit="contain", show_label=False, scale=5, min_width=220,
                         elem_id="el-image-gallery",
@@ -47,26 +48,32 @@ def build_image_tab(
                     )
             batch_status = gr.Markdown("", elem_id="el-batch-status")
             with gr.Row(elem_id="el-workspace-footer"):
-                batch_prev_btn = gr.Button("上一张", size="sm", min_width=80)
-                batch_save_btn = gr.Button("保存", size="sm", min_width=80)
-                batch_next_btn = gr.Button("保存并下一张", variant="primary", size="sm", min_width=120)
-                batch_run_btn = gr.Button("批量 PCS", size="sm", min_width=100)
-                batch_retry_btn = gr.Button("重试失败", size="sm", min_width=100)
+                batch_prev_btn = gr.Button("上一张", size="sm", min_width=80, interactive=False)
+                batch_save_btn = gr.Button("保存", size="sm", min_width=80, interactive=False)
+                batch_next_btn = gr.Button("保存并下一张", variant="primary", size="sm", min_width=120, interactive=False)
+                batch_run_btn = gr.Button("批量 PCS", size="sm", min_width=100, interactive=False)
+                batch_retry_btn = gr.Button("重试失败", size="sm", min_width=100, interactive=False)
                 batch_cancel_btn = gr.Button("取消批处理", size="sm", interactive=False, min_width=110)
-                batch_stitch_btn = gr.Button("送往拼接", variant="primary", size="sm", min_width=100)
+                batch_stitch_btn = gr.Button("送往拼接", size="sm", min_width=100, interactive=False)
             with gr.Tabs(elem_id="el-workflow-tabs") as workflow_tabs:
                 with gr.Tab("分割标注", id="segment", elem_classes="el-workflow-page"):
-                    mode = gr.Radio(
-                        choices=[("PCS 自动分割", "PCS Auto"), ("PVS 手动标注", "PVS Manual"), ("版图 Mask", "Layout Mask")],
-                        value="PVS Manual",
-                        label="分割方式", show_label=False, container=False,
-                        elem_classes="mode-radio",
-                    )
+                    with gr.Row(elem_classes="el-canvas-toolbar"):
+                        mode = gr.Radio(
+                            choices=[("PCS 自动分割", "PCS Auto"), ("PVS 手动标注", "PVS Manual"), ("版图 Mask", "Layout Mask")],
+                            value="PVS Manual",
+                            label="分割方式", show_label=False, container=False,
+                            elem_classes="mode-radio", scale=3,
+                        )
+                        gr.Radio(
+                            choices=[("自适应", "auto"), ("原图", "source"), ("结果", "result"), ("对照", "compare")],
+                            value="auto", label="画布视图", show_label=False,
+                            container=False, scale=2, interactive=True, elem_id="el-canvas-view",
+                        )
                     with gr.Row(elem_id="el-workspace-body"):
                         with gr.Column(scale=3, min_width=360, elem_id="el-workspace-center") as workspace_center:
                             with gr.Row(elem_classes="el-image-pair"):
-                                with gr.Column(min_width=180):
-                                    gr.Markdown("### 原始图像（点击进行交互）")
+                                with gr.Column(min_width=180, elem_id="el-source-pane"):
+                                    gr.Markdown("### 原始图像")
                                     image_upload = gr.Image(type="numpy", label="原始图像", show_label=False, interactive=False, elem_id="input_image", height=400)
                                     if ImageGestureOverlay is not None:
                                         workspace_gesture_overlay = ImageGestureOverlay(
@@ -82,7 +89,7 @@ def build_image_tab(
                                             value=_workspace_gesture_payload({}, "PVS Manual", "bbox"),
                                             visible=False,
                                         )
-                                with gr.Column(min_width=180):
+                                with gr.Column(min_width=180, elem_id="el-result-pane"):
                                     gr.Markdown("### 分割结果")
                                     result_image = gr.Image(type="numpy", label="分割结果", show_label=False, interactive=False, height=400, elem_classes="el-result-image")
                             with gr.Group(visible=False) as layout_transform_panel:
@@ -137,11 +144,11 @@ def build_image_tab(
                                     elem_classes="mode-radio",
                                 )
                                 layout_point_btn = gr.Button("应用点提示", variant="primary")
-                            with gr.Group(visible=False) as pcs_panel:
+                            with gr.Group(visible=False, elem_id="el-pcs-settings") as pcs_panel:
                                 gr.Markdown("### PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272")
                                 text_prompt = gr.Textbox(label="文本提示（可选）", placeholder="例如：circle", lines=1)
                                 confidence_threshold = gr.Slider(minimum=0.0, maximum=1.0, value=0.4, step=0.05, label="\u7f6e\u4fe1\u5ea6\u9608\u503c (Confidence)")
-                                run_pcs_btn = gr.Button("\u5f00\u59cb PCS \u5206\u5272", variant="primary")
+                                run_pcs_btn = gr.Button("\u5f00\u59cb PCS \u5206\u5272", variant="primary", interactive=False)
                                 with gr.Row():
                                     clear_pcs_instances_btn = gr.Button("\u6e05\u7a7a PCS \u5b9e\u4f8b", variant="secondary")
                                     export_pcs_btn = gr.Button("\u5bfc\u51fa PCS")

@@ -137,60 +137,65 @@ def build_stitch_tab(
                 )
 
             with gr.Column(scale=3, min_width=0, elem_classes="stitch-preview-column"):
-                with gr.Group(elem_classes="stitch-canvas-card"):
-                    gr.Markdown("#### 拼接画布")
-                    if StitchPreviewCanvas is not None:
-                        stitch_canvas = StitchPreviewCanvas(
-                            value=empty_canvas,
-                            label="分块预览",
-                            show_label=False,
-                            height=560,
-                            elem_id="stitch_preview_canvas",
-                        )
-                    else:
-                        gr.Markdown(f"分块画布组件不可用：{_stitch_canvas_import_error}")
-                        stitch_canvas = gr.JSON(value=empty_canvas, label="stitch canvas payload")
+                with gr.Tabs(elem_id="stitch-preview-tabs") as stitch_preview_tabs:
+                    with gr.Tab("拼接编辑", id="stitch_edit", render_children=True, elem_classes="stitch-canvas-card"):
+                        if StitchPreviewCanvas is not None:
+                            stitch_canvas = StitchPreviewCanvas(
+                                value=empty_canvas,
+                                label="分块预览",
+                                show_label=False,
+                                height=560,
+                                elem_id="stitch_preview_canvas",
+                            )
+                        else:
+                            gr.Markdown(f"分块画布组件不可用：{_stitch_canvas_import_error}")
+                            stitch_canvas = gr.JSON(value=empty_canvas, label="stitch canvas payload")
 
-                with gr.Group(elem_classes="stitch-result-card"):
-                    gr.Markdown("#### 导出预览")
-                    stitch_mosaic_preview = gr.Image(
-                        type="pil",
-                        label="拼接结果",
-                        interactive=False,
-                        height=240,
-                        visible=True,
-                        elem_id="stitch_mosaic_preview",
-                    )
-                    if ImageGestureOverlay is not None:
-                        stitch_mosaic_crop_overlay = ImageGestureOverlay(
-                            value=empty_crop_overlay,
-                            label="拼接结果矩形截图手势",
-                            show_label=False,
-                            target_elem_id="stitch_mosaic_preview",
-                            height=1,
-                            elem_classes="gesture-overlay-anchor",
+                    with gr.Tab("结果预览", id="stitch_result", render_children=True, elem_classes="stitch-result-card"):
+                        stitch_mosaic_preview = gr.Image(
+                            type="pil",
+                            label="拼接结果",
+                            interactive=False,
+                            height=480,
+                            visible=True,
+                            elem_id="stitch_mosaic_preview",
                         )
-                    else:
-                        gr.Markdown(f"矩形截图组件不可用：{_image_gesture_overlay_import_error}")
-                        stitch_mosaic_crop_overlay = gr.JSON(
-                            value=empty_crop_overlay,
-                            visible=False,
+                        if ImageGestureOverlay is not None:
+                            stitch_mosaic_crop_overlay = ImageGestureOverlay(
+                                value=empty_crop_overlay,
+                                label="拼接结果矩形截图手势",
+                                show_label=False,
+                                target_elem_id="stitch_mosaic_preview",
+                                height=1,
+                                elem_classes="gesture-overlay-anchor",
+                            )
+                        else:
+                            gr.Markdown(f"矩形截图组件不可用：{_image_gesture_overlay_import_error}")
+                            stitch_mosaic_crop_overlay = gr.JSON(
+                                value=empty_crop_overlay,
+                                visible=False,
+                            )
+                        stitch_restore_full_btn = gr.Button(
+                            "恢复完整拼接图",
+                            size="sm",
+                            interactive=False,
                         )
-                    stitch_restore_full_btn = gr.Button(
-                        "恢复完整拼接图",
-                        size="sm",
-                        interactive=False,
-                    )
-                    gr.Markdown(
-                        "生成后可在预览上拖拽长方形截图；截图会成为下载和导入工作区的当前结果。",
-                        elem_classes="stitch-canvas-help",
-                    )
-                    stitch_mosaic_file = gr.File(
-                        label="下载拼接结果（PNG / 标注 ZIP）",
-                        interactive=False,
-                        visible=True,
-                        elem_id="stitch_download",
-                    )
+                        gr.Markdown(
+                            "生成后可在预览上拖拽长方形截图；截图会成为下载和导入工作区的当前结果。",
+                            elem_classes="stitch-canvas-help",
+                        )
+                        stitch_mosaic_file = gr.File(
+                            label="下载拼接结果（PNG / 标注 ZIP）",
+                            interactive=False,
+                            visible=True,
+                            elem_id="stitch_download",
+                        )
+
+                stitch_mosaic_file.change(
+                    fn=lambda result_file: gr.update(selected="stitch_result" if result_file else "stitch_edit"),
+                    inputs=[stitch_mosaic_file], outputs=[stitch_preview_tabs],
+                    queue=False, show_progress="hidden", api_visibility="private",
+                )
 
     return ComponentRefs(
         annotated_files=annotated_files, annotated_import_btn=annotated_import_btn,

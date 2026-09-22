@@ -12,6 +12,19 @@ from sam3_demo.session_guard import guard_callback
 from sam3_demo import ui_repair_core as core
 
 
+def repair_action_availability(state, selected):
+    items = {item["id"]: item for item in (state or {}).get("items", [])}
+    active = (state or {}).get("active_id")
+    targets = [key for key in (selected or []) if key in items]
+    if not targets and active in items:
+        targets = [active]
+    return (
+        active in items,
+        bool(targets),
+        any(items[key].get("result_path") for key in targets),
+    )
+
+
 def bind_repair_events(
     *,
     state_refs,
@@ -30,6 +43,22 @@ def bind_repair_events(
             registry=app._SESSION_REGISTRY,
             trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
             recovery_factory=app._session_recovery_states,
+        )
+
+    def repair_action_state(repair_state, session_state, selected):
+        state = core.owned_repair_state(repair_state, session_state)
+        return tuple(gr.update(interactive=enabled) for enabled in
+                     repair_action_availability(state, selected))
+
+    for trigger in (state_component.change, repair_refs.repair_selection.input):
+        trigger(
+            guarded(repair_action_state),
+            inputs=[state_component, session_component, repair_refs.repair_selection],
+            outputs=[repair_refs.repair_current_btn, repair_refs.repair_selected_btn,
+                     repair_refs.send_repaired_btn],
+            queue=False,
+            show_progress="hidden",
+            api_visibility="private",
         )
 
     def selected_ids(state, selected, *, default_active=False):

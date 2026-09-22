@@ -49,5 +49,31 @@ class BatchUIContractTests(unittest.TestCase):
         gallery = next(c for c in self.config["components"] if c.get("props", {}).get("elem_id") == "el-image-gallery")
         self.assertIsInstance(gallery["props"]["columns"], int)
 
+    def test_canvas_view_controls_are_interactive_without_backend_events(self):
+        for anchor in ("el-canvas-view", "repair-canvas-view"):
+            component = next(c for c in self.config["components"] if c["props"].get("elem_id") == anchor)
+            self.assertTrue(component["props"]["interactive"])
+            self.assertEqual(component["props"]["value"], "auto")
+            self.assertEqual([choice[1] for choice in component["props"]["choices"]],
+                             ["auto", "source", "result", "compare"])
+
+    def test_repair_actions_are_above_canvas_and_disabled_until_ready(self):
+        for label in ("修复当前图片", "批量修复选中图片", "送往智能图像分割"):
+            button = next(c for c in self.config["components"] if c["type"] == "button" and c["props"].get("value") == label)
+            parents = {c["props"].get("elem_id") for c in self._ancestors(button["id"])}
+            self.assertIn("repair-actions", parents)
+            self.assertNotIn("repair-tools", parents)
+            self.assertFalse(button["props"]["interactive"])
+
+    def test_programmatic_pvs_selection_does_not_trigger_user_action(self):
+        event = next(d for d in self.config["dependencies"] if d.get("api_name") == "_set_active_pvs")
+        self.assertEqual([target[1] for target in event["targets"]], ["input"])
+
+    def test_stitch_editor_and_result_have_explicit_tabs(self):
+        for anchor, label in (("stitch_preview_canvas", "拼接编辑"), ("stitch_mosaic_preview", "结果预览")):
+            component = next(c for c in self.config["components"] if c["props"].get("elem_id") == anchor)
+            parents = self._ancestors(component["id"])
+            self.assertIn(label, [c["props"].get("label") for c in parents if c["type"] == "tabitem"])
+
 if __name__ == "__main__":
     unittest.main()

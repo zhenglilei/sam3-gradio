@@ -15,6 +15,15 @@ from sam3_demo.stitch_callbacks import new_stitch_state
 class UIRepairFlowTests(unittest.TestCase):
     session_id = "a" * 32
 
+    def test_action_availability_tracks_selection_and_result_invalidation(self):
+        self.assertEqual(ui_repair.repair_action_availability(None, []), (False, False, False))
+        state = {"active_id": "a", "items": [{"id": "a"}, {"id": "b", "result_path": "result.png"}]}
+        self.assertEqual(ui_repair.repair_action_availability(state, []), (True, True, False))
+        self.assertEqual(ui_repair.repair_action_availability(state, ["b"]), (True, True, True))
+        state["items"][1]["result_path"] = None
+        self.assertEqual(ui_repair.repair_action_availability(state, ["b"]), (True, True, False))
+        self.assertEqual(ui_repair.repair_action_availability(state, ["removed"]), (True, True, False))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

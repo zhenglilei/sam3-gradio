@@ -15,55 +15,69 @@ def build_repair_tab(
 ):
     with gr.TabItem("图像修复", id="tab_repair", render_children=True) as repair_tab:
         with gr.Column(elem_id="repair-workspace"):
-            with gr.Row(elem_id="repair-main-row"):
-                with gr.Column(elem_id="repair-library", min_width=220):
+            with gr.Column(elem_id="repair-library"):
+                with gr.Row(elem_classes="repair-upload-row"):
                     repair_upload = gr.File(
                         label="添加待修复图片",
                         file_count="multiple",
                         type="filepath",
                         file_types=["image"],
-                        height=104,
+                        height=76,
+                        scale=1,
+                        min_width=160,
+                        elem_classes="el-compact-upload",
                     )
                     repair_gallery = gr.Gallery(
                         label="图片队列",
-                        columns=1,
-                        height=392,
+                        columns=6,
+                        height=76,
                         allow_preview=False,
                         buttons=[],
                         interactive=False,
                         object_fit="contain",
                         show_label=False,
+                        scale=5,
+                        min_width=220,
                         elem_id="repair-gallery",
                     )
-                    with gr.Row(elem_classes="repair-nav-row"):
-                        repair_prev_btn = gr.Button("上一张", size="sm")
-                        repair_next_btn = gr.Button("下一张", size="sm")
-                        repair_remove_current_btn = gr.Button(
-                            "删除当前图片", variant="secondary", size="sm"
-                        )
+                with gr.Row(elem_classes="repair-nav-row"):
+                    repair_prev_btn = gr.Button("上一张", size="sm", min_width=64, scale=0)
+                    repair_next_btn = gr.Button("下一张", size="sm", min_width=64, scale=0)
+                    repair_remove_current_btn = gr.Button(
+                        "删除当前图片", variant="secondary", size="sm", min_width=100, scale=0
+                    )
                     repair_position = gr.Markdown("尚未添加图片", elem_id="repair-position")
-                    with gr.Accordion("批量范围", open=False):
-                        with gr.Row():
-                            repair_select_all_btn = gr.Button("全选", size="sm")
-                            repair_remove_selected_btn = gr.Button("删除选中图片", size="sm")
-                        repair_selection = gr.Dropdown(
-                            choices=[],
-                            value=[],
-                            multiselect=True,
-                            allow_custom_value=True,
-                            label="选中的图片",
-                        )
-
+                with gr.Accordion("批量范围", open=False):
+                    with gr.Row():
+                        repair_select_all_btn = gr.Button("全选", size="sm")
+                        repair_remove_selected_btn = gr.Button("删除选中图片", size="sm")
+                    repair_selection = gr.Dropdown(
+                        choices=[],
+                        value=[],
+                        multiselect=True,
+                        allow_custom_value=True,
+                        label="选中的图片",
+                    )
+            with gr.Row(elem_id="repair-actions"):
+                repair_current_btn = gr.Button("修复当前图片", interactive=False)
+                repair_selected_btn = gr.Button("批量修复选中图片", variant="primary", interactive=False)
+                send_repaired_btn = gr.Button("送往智能图像分割", interactive=False)
+                gr.Radio(
+                    choices=[("自适应", "auto"), ("原图", "source"), ("结果", "result"), ("对照", "compare")],
+                    value="auto", label="修复视图", show_label=False,
+                    container=False, interactive=True, elem_id="repair-canvas-view",
+                )
+            with gr.Row(elem_id="repair-main-row"):
                 with gr.Column(elem_id="repair-canvas-column", min_width=360):
                     with gr.Row(elem_id="repair-canvas-pair"):
-                        with gr.Column(min_width=280, elem_classes="repair-canvas-pane"):
+                        with gr.Column(min_width=280, elem_classes="repair-canvas-pane", elem_id="repair-source-pane"):
                             gr.Markdown("#### 修复区域")
                             if RepairMaskEditor is not None:
                                 repair_editor = RepairMaskEditor(
                                     value=empty_editor_payload(),
                                     label="修复区域编辑器",
                                     show_label=False,
-                                    height="clamp(360px, 55vh, 560px)",
+                                    height="clamp(280px, 48vh, 480px)",
                                     elem_id="repair-mask-editor",
                                 )
                             else:
@@ -75,14 +89,14 @@ def build_repair_tab(
                                     value=empty_editor_payload(),
                                     visible=False,
                                 )
-                        with gr.Column(min_width=280, elem_classes="repair-canvas-pane"):
+                        with gr.Column(min_width=280, elem_classes="repair-canvas-pane", elem_id="repair-result-pane"):
                             gr.Markdown("#### 修复结果")
                             repair_result = gr.Image(
                                 type="pil",
                                 label="修复结果",
                                 show_label=False,
                                 interactive=False,
-                                height="clamp(360px, 55vh, 560px)",
+                                height="clamp(280px, 48vh, 480px)",
                                 elem_id="repair-result",
                             )
 
@@ -92,7 +106,7 @@ def build_repair_tab(
                         with gr.Row():
                             detect_red_btn = gr.Button("红色", variant="secondary")
                             detect_yellow_btn = gr.Button("黄色", variant="secondary")
-                        detect_both_btn = gr.Button("红色 + 黄色", variant="primary")
+                        detect_both_btn = gr.Button("红色 + 黄色")
                         detect_selected_btn = gr.Button("批量标记选中图片")
                         with gr.Accordion("检测参数", open=False):
                             detect_saturation = gr.Slider(
@@ -160,12 +174,6 @@ def build_repair_tab(
                             label="标记透明度",
                         )
                         clear_mask_btn = gr.Button("清空当前标记", variant="secondary")
-
-                    with gr.Group(elem_classes="repair-tool-section"):
-                        gr.Markdown("#### 生成结果")
-                        repair_current_btn = gr.Button("修复当前图片", variant="primary")
-                        repair_selected_btn = gr.Button("批量修复选中图片")
-                        send_repaired_btn = gr.Button("送往智能图像分割", variant="primary")
 
             repair_status = gr.Markdown(
                 "添加图片后，先自动标记红黄区域，再用画布修正。",

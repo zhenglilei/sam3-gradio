@@ -519,6 +519,16 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
         elif not changed and image_state and image_state.get("image_id"):
             result[r.workspace_gesture_overlay] = app._workspace_gesture_payload(image_state, mode, click_tool)
             result[r.source_crop_overlay] = app._source_gesture_payload(source_image_state)
+        idle = not batch.get("running", False)
+        has_active = any(item["id"] == batch.get("active_id") for item in batch["items"])
+        for control in (r.batch_prev_btn, r.batch_next_btn, r.batch_save_btn,
+                        r.batch_delete_current_btn):
+            result[control] = gr.update(interactive=idle and has_active)
+        for control in (r.batch_run_btn, r.batch_stitch_btn, r.batch_delete_selected_btn):
+            result[control] = gr.update(interactive=idle and bool(selected))
+        result[r.batch_retry_btn] = gr.update(interactive=idle and any(
+            item["id"] in selected and item.get("status") == "failed" for item in batch["items"]))
+        result[r.run_pcs_btn] = gr.update(interactive=idle and bool((values[1] or {}).get("image_id")))
         return result
 
     def ordered(result, components=outputs):
@@ -540,6 +550,20 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                    concurrency_id="image-prepost-state", show_progress="hidden", api_visibility="private")
     upload_callback = wrap("upload")
     r.batch_upload.upload(upload_callback, **options)
+
+    def image_action_state(session_state, image_state, batch):
+        del session_state
+        return gr.update(interactive=bool((image_state or {}).get("image_id"))
+                         and not (batch or {}).get("running", False))
+
+    s.image_state.change(
+        guard_callback(image_action_state, registry=app._SESSION_REGISTRY,
+                       trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
+                       recovery_factory=app._session_recovery_states),
+        inputs=[s.session_state, s.image_state, r.batch_state],
+        outputs=[r.run_pcs_btn], queue=False, show_progress="hidden",
+        api_visibility="private",
+    )
     r.batch_selection.input(wrap("selection"), **options)
     for component, action in ((r.batch_prev_btn,"prev"),(r.batch_next_btn,"next"),
                               (r.batch_delete_current_btn,"delete_current"),
