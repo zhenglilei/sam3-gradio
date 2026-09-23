@@ -60,7 +60,7 @@ def build_repair_tab(
                     )
             with gr.Row(elem_id="repair-actions"):
                 repair_current_btn = gr.Button("修复当前图片", interactive=False)
-                repair_selected_btn = gr.Button("批量修复选中图片", variant="primary", interactive=False)
+                repair_selected_btn = gr.Button("自动标记并批量修复", variant="primary", interactive=False)
                 send_repaired_btn = gr.Button("送往智能图像分割", interactive=False)
                 gr.Radio(
                     choices=[("自适应", "auto"), ("原图", "source"), ("结果", "result"), ("对照", "compare")],
@@ -176,7 +176,7 @@ def build_repair_tab(
                         clear_mask_btn = gr.Button("清空当前标记", variant="secondary")
 
             repair_status = gr.Markdown(
-                "添加图片后，先自动标记红黄区域，再用画布修正。",
+                "批量修复会自动检测红黄区域；单张图片也可先标记、修正，再修复。",
                 elem_id="repair-status",
             )
 

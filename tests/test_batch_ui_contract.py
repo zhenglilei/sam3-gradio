@@ -58,7 +58,7 @@ class BatchUIContractTests(unittest.TestCase):
                              ["auto", "source", "result", "compare"])
 
     def test_repair_actions_are_above_canvas_and_disabled_until_ready(self):
-        for label in ("修复当前图片", "批量修复选中图片", "送往智能图像分割"):
+        for label in ("修复当前图片", "自动标记并批量修复", "送往智能图像分割"):
             button = next(c for c in self.config["components"] if c["type"] == "button" and c["props"].get("value") == label)
             parents = {c["props"].get("elem_id") for c in self._ancestors(button["id"])}
             self.assertIn("repair-actions", parents)

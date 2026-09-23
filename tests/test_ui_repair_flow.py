@@ -173,10 +173,11 @@ class UIRepairFlowTests(unittest.TestCase):
         selected = [item["id"] for item in items]
         events = []
         lama = object()
+        original_detect = ui_repair.core.apply_color_detection
 
         def detect(state, image_ids, colors, **parameters):
             events.append(("detect", list(image_ids), tuple(colors), parameters))
-            return len(image_ids), len(colors)
+            return original_detect(state, image_ids, colors, **parameters)
 
         def run_lama(state, image_ids, runtime):
             events.append(("lama", list(image_ids), runtime))
@@ -222,6 +223,55 @@ class UIRepairFlowTests(unittest.TestCase):
         )
         self.assertEqual(events[1][1], selected)
         self.assertIs(events[1][2], lama)
+
+    def test_batch_repair_skips_unmarked_images_without_marking_them_failed(self):
+        paths = []
+        for index, color in enumerate(("red", "yellow", None)):
+            path = Path(self.temp.name) / f"batch_{index}.png"
+            image = Image.new("RGB", (32, 24), "white")
+            if color:
+                ImageDraw.Draw(image).rectangle((4, 5, 14, 16), fill=color)
+            image.save(path)
+            paths.append(str(path))
+        items = repair.add_uploaded_images(self.state, paths, self.root)
+
+        class Runtime:
+            def inpaint(self, source, mask):
+                if mask.getbbox() is None:
+                    raise AssertionError("empty mask was sent to LaMa")
+                return source
+
+        callback = self._callback(app.create_demo(), "repair_selected")
+        with mock.patch.object(ui_repair, "get_lama_runtime", return_value=Runtime()):
+            result = self._invoke(callback, {
+                "repair_state": self.state, "session_state": self.session,
+                "selected": [item["id"] for item in items], "editor_value": None,
+                "tool": "brush", "brush_size": 20, "alpha": 0.45,
+                "saturation": 80, "value": 80, "min_area": 20,
+                "padding": 5, "merge_distance": 10,
+            })
+
+        self.assertEqual([item["status"] for item in items], ["已修复", "已修复", "待标记"])
+        self.assertTrue(all(Path(item["result_path"]).is_file() for item in items[:2]))
+        self.assertIsNone(items[2]["result_path"])
+        self.assertIn("跳过 1 张", result[5])
+
+    def test_batch_repair_with_no_regions_does_not_load_lama(self):
+        path = Path(self.temp.name) / "clean.png"
+        Image.new("RGB", (32, 24), "white").save(path)
+        item = repair.add_uploaded_images(self.state, [str(path)], self.root)[0]
+        callback = self._callback(app.create_demo(), "repair_selected")
+        with mock.patch.object(ui_repair, "get_lama_runtime") as runtime:
+            result = self._invoke(callback, {
+                "repair_state": self.state, "session_state": self.session,
+                "selected": [item["id"]], "editor_value": None,
+                "tool": "brush", "brush_size": 20, "alpha": 0.45,
+                "saturation": 80, "value": 80, "min_area": 20,
+                "padding": 5, "merge_distance": 10,
+            })
+        runtime.assert_not_called()
+        self.assertEqual(item["status"], "待标记")
+        self.assertIn("跳过 1 张", result[5])
 
     def test_repaired_handoff_uses_batch_upload_restore_for_first_workspace(self):
         items = self._add_repair_images()

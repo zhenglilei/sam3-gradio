@@ -532,6 +532,8 @@ def bind_repair_events(
                     else [state.get("active_id")]
                 )
                 targets = [target for target in targets if target]
+                if not targets:
+                    raise ValueError("当前没有待修复图片")
                 detected_images = 0
                 detected_regions = 0
                 if batch:
@@ -545,22 +547,26 @@ def bind_repair_events(
                         padding=int(padding),
                         merge_distance=int(merge_distance),
                     )
-                if not targets:
-                    raise ValueError("当前没有待修复图片")
-                completed, failures = core.repair_items(
-                    state,
-                    targets,
-                    get_lama_runtime(model_path),
-                )
-                message = f"修复完成：{completed}/{len(targets)} 张"
+                    ready = core.repairable_ids(state, targets)
+                else:
+                    ready = targets
+                if ready:
+                    completed, failures = core.repair_items(
+                        state, ready, get_lama_runtime(model_path),
+                    )
+                else:
+                    completed, failures = 0, []
+                message = f"修复完成：{completed}/{len(ready)} 张"
                 if batch:
                     message = (
                         f"自动检测：{detected_images} 张、{detected_regions} 个红黄区域；{message}"
                     )
+                    if len(ready) < len(targets):
+                        message += f"；跳过 {len(targets) - len(ready)} 张（无红黄区域或手动标记）"
                 if failures:
                     message += "；" + "；".join(failures[:3])
                     gr.Warning(message)
-                elif completed:
+                elif completed or batch:
                     gr.Info(message)
             except Exception as exc:
                 message = str(exc)

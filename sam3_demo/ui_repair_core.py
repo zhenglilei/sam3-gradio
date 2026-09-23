@@ -415,6 +415,18 @@ def clear_active_mask(state: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def repairable_ids(state: dict[str, Any], image_ids: Iterable[str]) -> list[str]:
+    ready = []
+    for image_id in image_ids:
+        item = find_item(state, image_id)
+        if item is None:
+            continue
+        with Image.open(item["mask_path"]) as mask:
+            if mask.getbbox() is not None:
+                ready.append(image_id)
+    return ready
+
+
 def repair_items(
     state: dict[str, Any],
     image_ids: Iterable[str],
@@ -479,6 +491,7 @@ __all__ = [
     "new_repair_state",
     "owned_repair_state",
     "queue_view",
+    "repairable_ids",
     "remove_repair_items",
     "repair_items",
     "repaired_paths",

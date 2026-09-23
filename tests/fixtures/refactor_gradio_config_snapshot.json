@@ -321,7 +321,7 @@
     {
       "props": {
         "interactive": false,
-        "value": "批量修复选中图片",
+        "value": "自动标记并批量修复",
         "visible": true
       },
       "type": "button"
@@ -662,7 +662,7 @@
       "props": {
         "elem_id": "repair-status",
         "show_label": false,
-        "value": "添加图片后，先自动标记红黄区域，再用画布修正。",
+        "value": "批量修复会自动检测红黄区域；单张图片也可先标记、修正，再修复。",
         "visible": true
       },
       "type": "markdown"
