@@ -609,12 +609,14 @@ def _error(
     *,
     error_id: str | None = None,
     headers: dict[str, str] | None = None,
+    detail: str | dict[str, str] | None = None,
 ) -> JSONResponse:
     payload = {"code": code, "message": message}
     if error_id is not None:
         payload["error_id"] = error_id
     return JSONResponse(
-        {"error": payload},
+        # Gradio queue clients render detail, while API consumers use error.code.
+        {"error": payload, "detail": message if detail is None else detail},
         status_code=status_code,
         headers=headers,
     )
@@ -809,6 +811,8 @@ class SessionSecurityMiddleware:
                 401,
                 "会话身份缺失或已失效，请重新打开首页。",
                 error_id=error_id,
+                detail={"auth_message": "会话身份缺失或已失效，请重新打开首页。"}
+                if path == "/config" else None,
             )
             await response(scope, receive, send)
             return
