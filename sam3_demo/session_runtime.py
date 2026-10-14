@@ -190,7 +190,7 @@ def resume_id_for_identity(
     deployment_id: str,
     secret: bytes | str,
 ) -> str:
-    """Return the stable, non-authorizing key used for same-browser drafts."""
+    """Return a process-scoped, non-authorizing key for same-browser drafts."""
     secret_bytes = secret.encode() if isinstance(secret, str) else secret
     if not isinstance(secret_bytes, bytes) or not secret_bytes:
         raise ValueError("secret must be non-empty bytes or string")
@@ -221,7 +221,7 @@ def _token_for_fields(secret: bytes, session_id: str, generation: int,
     ).encode("ascii")
     return hmac.new(secret, _TOKEN_TAG + text, hashlib.sha256).hexdigest()
 class SessionRegistry:
-    """Thread-safe registry keyed by signed-cookie owner and page hash."""
+    """Thread-safe registry keyed by opaque-cookie owner and page hash."""
     def __init__(
         self,
         *,

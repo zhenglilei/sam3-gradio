@@ -1,25 +1,24 @@
-"""Signed-cookie identity and Gradio transport guards."""
+"""Opaque browser credentials and Gradio transport guards."""
 
 from __future__ import annotations
 
-import base64
 import contextvars
 import json
 import logging
 import os
 import re
 import secrets
-import stat
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import Request
 from starlette.datastructures import Headers
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
+
+from .session_credentials import BrowserCredentialRegistry, CredentialCapacityError, IDLE_SECONDS
 
 if TYPE_CHECKING:
     from .observability import Observability
@@ -28,7 +27,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 COOKIE_SCHEMA = 1
-COOKIE_MAX_AGE_SECONDS = 24 * 60 * 60
+COOKIE_MAX_AGE_SECONDS = IDLE_SECONDS
+_LEGACY_WARNING_LOCK = threading.Lock()
+_LEGACY_WARNING_EMITTED = False
 _MAX_JSON_CONTROL_BODY = 2 * 1024 * 1024
 _COOKIE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.-]{3,96}$")
@@ -91,13 +92,8 @@ class _RequestLease:
 class SessionCookieSettings:
     deployment_id: str
     cookie_name: str
-    secret: bytes
     allowed_origins: frozenset[str]
     secure_cookie: bool
-
-    @property
-    def signer_secret(self) -> str:
-        return base64.urlsafe_b64encode(self.secret).decode("ascii")
 
 
 def _origin(value: str) -> str:
@@ -117,40 +113,24 @@ def _origin(value: str) -> str:
     return f"{parsed.scheme}://{parsed.hostname.lower()}:{port}"
 
 
-def _read_secret(path_text: str) -> bytes:
-    path = Path(path_text)
-    if not path.is_absolute():
-        raise SessionWebError("SAM3_SESSION_SECRET_FILE must be absolute")
-    try:
-        mode = stat.S_IMODE(path.stat().st_mode)
-    except OSError as exc:
-        raise SessionWebError("session cookie secret file is unavailable") from exc
-    if mode != 0o600:
-        raise SessionWebError("session cookie secret file must have mode 0600")
-    try:
-        secret = path.read_bytes().rstrip(b"\r\n")
-    except OSError as exc:
-        raise SessionWebError("session cookie secret file cannot be read") from exc
-    if len(secret) < 32:
-        raise SessionWebError("session cookie secret must contain at least 32 bytes")
-    return secret
-
-
 def load_session_cookie_settings(
     environ: dict[str, str] | None = None,
 ) -> SessionCookieSettings:
     env = os.environ if environ is None else environ
     deployment_id = env.get("SAM3_SESSION_DEPLOYMENT_ID", "").strip()
     cookie_name = env.get("SAM3_SESSION_COOKIE_NAME", "").strip()
-    secret_file = env.get("SAM3_SESSION_SECRET_FILE", "").strip()
+    global _LEGACY_WARNING_EMITTED
+    if "SAM3_SESSION_SECRET_FILE" in env:
+        with _LEGACY_WARNING_LOCK:
+            if not _LEGACY_WARNING_EMITTED:
+                logger.warning("SAM3_SESSION_SECRET_FILE is retired and ignored; no file is read")
+                _LEGACY_WARNING_EMITTED = True
     origins_text = env.get("SAM3_ALLOWED_ORIGINS", "").strip()
     secure_text = env.get("SAM3_SESSION_COOKIE_SECURE", "").strip()
     if not _IDENTIFIER_RE.fullmatch(deployment_id):
         raise SessionWebError("SAM3_SESSION_DEPLOYMENT_ID is required and invalid")
     if not _COOKIE_NAME_RE.fullmatch(cookie_name):
         raise SessionWebError("SAM3_SESSION_COOKIE_NAME is required and invalid")
-    if not secret_file:
-        raise SessionWebError("SAM3_SESSION_SECRET_FILE is required")
     if not origins_text:
         raise SessionWebError("SAM3_ALLOWED_ORIGINS is required")
     origins = frozenset(_origin(item) for item in origins_text.split(",") if item.strip())
@@ -166,7 +146,6 @@ def load_session_cookie_settings(
     return SessionCookieSettings(
         deployment_id=deployment_id,
         cookie_name=cookie_name,
-        secret=_read_secret(secret_file),
         allowed_origins=origins,
         secure_cookie=secure_cookie,
     )
@@ -341,6 +320,14 @@ class OwnerClaimRegistry:
         """Reclaim only expired hashes and events proven unreachable by probes."""
         with self._lock:
             return self._reap_locked(self._clock(), force=True)
+
+    def owner_is_live(self, owner_id: str) -> bool:
+        """Keep credentials while ownership cannot safely be released."""
+        with self._lock:
+            self._reap_locked(self._clock(), force=True)
+            return any(claim.owner_id == owner_id for claim in self._hash_owners.values()) or any(
+                claim.owner_id == owner_id for claim in self._event_owners.values()
+            )
 
     def _claim_hash_locked(self, owner_id: str, session_hash: str, now: float) -> bool:
         self._reap_locked(now)
@@ -745,11 +732,16 @@ class SessionSecurityMiddleware:
         settings: SessionCookieSettings,
         claims: OwnerClaimRegistry,
         observability: "Observability | None" = None,
+        credentials: BrowserCredentialRegistry | None = None,
     ) -> None:
         self.app = app
         self.settings = settings
         self.claims = claims
         self.observability = observability
+        self.credentials = credentials or BrowserCredentialRegistry(
+            settings.deployment_id, capacity=claims.max_hashes,
+            owner_live_probe=claims.owner_is_live,
+        )
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -760,16 +752,52 @@ class SessionSecurityMiddleware:
         if method == "GET" and path in _OPERATIONAL_PATHS:
             await self.app(scope, receive, send)
             return
-        session = scope.get("session")
-        owner_id = _valid_owner_session(session, self.settings)
-        if owner_id is None and method == "GET" and path == "/":
-            owner_id = secrets.token_urlsafe(32)
-            session.clear()
-            session.update(
-                owner_id=owner_id,
-                schema=COOKIE_SCHEMA,
-                deployment_id=self.settings.deployment_id,
+        try:
+            credential = self.credentials.acquire(
+                Request(scope).cookies.get(self.settings.cookie_name),
+                create=method == "GET" and path == "/",
             )
+        except CredentialCapacityError:
+            await _error(
+                "SESSION_CREDENTIAL_CAPACITY", 503,
+                "浏览器会话容量已满，请稍后重试。",
+                headers={"Retry-After": "5"},
+            )(scope, receive, send)
+            return
+        scope["session"] = {}
+        status = None
+        if credential is not None:
+            lease, bearer = credential
+            scope["session"].update(owner_id=lease.owner_id, schema=COOKIE_SCHEMA,
+                                    deployment_id=self.settings.deployment_id)
+
+        async def send_cookie(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                if credential is not None and 200 <= status < 400:
+                    cookie = Response()
+                    cookie.set_cookie(
+                        self.settings.cookie_name, bearer,
+                        max_age=COOKIE_MAX_AGE_SECONDS, path="/",
+                        secure=self.settings.secure_cookie, httponly=True, samesite="lax",
+                    )
+                    message = dict(message)
+                    message["headers"] = list(message.get("headers", [])) + [
+                        pair for pair in cookie.raw_headers if pair[0] == b"set-cookie"
+                    ]
+            await send(message)
+
+        try:
+            await self._dispatch(scope, receive, send_cookie)
+        finally:
+            if credential is not None:
+                self.credentials.release(lease, renew=status is not None and 200 <= status < 400)
+
+    async def _dispatch(self, scope, receive, send):
+        method = scope.get("method", "GET").upper()
+        path = scope.get("path", "")
+        owner_id = _valid_owner_session(scope.get("session"), self.settings)
         if owner_id is None:
             error_id = None
             if self.observability is not None:

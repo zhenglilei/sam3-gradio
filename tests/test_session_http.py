@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
-import time
 import unittest
 import uuid
-from base64 import b64decode, b64encode
 from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
-from itsdangerous import TimestampSigner
 
 from sam3_demo import app
 from sam3_demo.session_web import (
@@ -29,14 +25,10 @@ class SessionHttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory()
-        secret_path = Path(cls.temp_dir.name) / "session-cookie.key"
-        secret_path.write_bytes(b"session-cookie-http-test-secret-32-bytes-minimum")
-        secret_path.chmod(0o600)
         cls.settings = load_session_cookie_settings(
             {
                 "SAM3_SESSION_DEPLOYMENT_ID": "pvs-http-test",
                 "SAM3_SESSION_COOKIE_NAME": COOKIE_NAME,
-                "SAM3_SESSION_SECRET_FILE": str(secret_path),
                 "SAM3_ALLOWED_ORIGINS": ORIGIN,
                 "SAM3_SESSION_COOKIE_SECURE": "0",
                 "SAM3_ALLOW_INSECURE_COOKIE": "1",
@@ -106,14 +98,6 @@ class SessionHttpTests(unittest.TestCase):
             headers=request_headers,
         )
 
-    def _signed_cookie(self, payload, *, timestamp=None):
-        signer = TimestampSigner(self.settings.signer_secret)
-        encoded = b64encode(json.dumps(payload).encode("utf-8"))
-        if timestamp is None:
-            return signer.sign(encoded).decode("ascii")
-        with mock.patch("itsdangerous.timed.time.time", return_value=timestamp):
-            return signer.sign(encoded).decode("ascii")
-
     def test_mount_preserves_demo_theme_and_css(self):
         self.assertEqual(
             self.mount_gradio_app_kwargs["css"],
@@ -131,39 +115,24 @@ class SessionHttpTests(unittest.TestCase):
             self.assertNotIn("secure", header.lower())
             self.assertNotIn("domain=", header.lower())
             raw = client.cookies.get(COOKIE_NAME)
-            unsigned = TimestampSigner(self.settings.signer_secret).unsign(
-                raw,
-                max_age=COOKIE_MAX_AGE_SECONDS,
-            )
-            payload = json.loads(b64decode(unsigned))
-            self.assertEqual(
-                set(payload),
-                {"owner_id", "schema", "deployment_id"},
-            )
-            self.assertGreaterEqual(len(payload["owner_id"]), 43)
+            self.assertRegex(raw, r"^[A-Za-z0-9_-]{43}$")
+            credential = self.web.state.browser_credentials.acquire(raw)
+            self.assertIsNotNone(credential)
+            lease, _ = credential
+            self.assertNotEqual(raw, lease.owner_id)
+            self.web.state.browser_credentials.release(lease, renew=False)
+            self.assertEqual(client.get("/").status_code, 200)
+            self.assertEqual(client.cookies.get(COOKIE_NAME), raw)
         finally:
             client.close()
 
-    def test_missing_tampered_expired_and_cross_deployment_cookie_are_rejected(self):
+    def test_missing_tampered_legacy_and_unknown_cookie_are_rejected(self):
         body = {"data": [], "fn_index": self.bootstrap["id"], "session_hash": "x"}
         variants = {
             "missing": None,
-            "tampered": "not-a-valid-signed-cookie",
-            "expired": self._signed_cookie(
-                {
-                    "owner_id": "o" * 43,
-                    "schema": 1,
-                    "deployment_id": self.settings.deployment_id,
-                },
-                timestamp=time.time() - COOKIE_MAX_AGE_SECONDS - 60,
-            ),
-            "cross-deployment": self._signed_cookie(
-                {
-                    "owner_id": "o" * 43,
-                    "schema": 1,
-                    "deployment_id": "el-other-deployment",
-                }
-            ),
+            "tampered": "not-a-valid-token",
+            "legacy-signed": "eyJvd25lcl9pZCI6ICJvbGQifQ==.old-time.old-signature",
+            "unregistered": "A" * 43,
         }
         for label, cookie in variants.items():
             with self.subTest(label=label):
@@ -346,39 +315,33 @@ class SessionHttpTests(unittest.TestCase):
 
 
 class SessionCookieConfigTests(unittest.TestCase):
-    def test_http_requires_explicit_insecure_cookie_acknowledgement(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            secret = Path(tmp) / "secret"
-            secret.write_bytes(b"x" * 32)
-            secret.chmod(0o600)
-            with self.assertRaisesRegex(SessionWebError, "explicit"):
-                load_session_cookie_settings(
-                    {
-                        "SAM3_SESSION_DEPLOYMENT_ID": "test-deploy",
-                        "SAM3_SESSION_COOKIE_NAME": "test_cookie_name",
-                        "SAM3_SESSION_SECRET_FILE": str(secret),
-                        "SAM3_ALLOWED_ORIGINS": ORIGIN,
-                        "SAM3_SESSION_COOKIE_SECURE": "0",
-                    }
-                )
+    def _env(self):
+        return {
+            "SAM3_SESSION_DEPLOYMENT_ID": "test-deploy",
+            "SAM3_SESSION_COOKIE_NAME": "test_cookie_name",
+            "SAM3_ALLOWED_ORIGINS": ORIGIN,
+            "SAM3_SESSION_COOKIE_SECURE": "1",
+        }
 
-    def test_secret_permissions_must_be_0600(self):
-        if os.name == "nt":
-            self.skipTest("POSIX permission assertion")
-        with tempfile.TemporaryDirectory() as tmp:
-            secret = Path(tmp) / "secret"
-            secret.write_bytes(b"x" * 32)
-            secret.chmod(0o644)
-            with self.assertRaisesRegex(SessionWebError, "0600"):
-                load_session_cookie_settings(
-                    {
-                        "SAM3_SESSION_DEPLOYMENT_ID": "test-deploy",
-                        "SAM3_SESSION_COOKIE_NAME": "test_cookie_name",
-                        "SAM3_SESSION_SECRET_FILE": str(secret),
-                        "SAM3_ALLOWED_ORIGINS": ORIGIN,
-                        "SAM3_SESSION_COOKIE_SECURE": "1",
-                    }
-                )
+    def test_http_requires_explicit_insecure_cookie_acknowledgement(self):
+        env = self._env()
+        env["SAM3_SESSION_COOKIE_SECURE"] = "0"
+        with self.assertRaisesRegex(SessionWebError, "explicit"):
+            load_session_cookie_settings(env)
+
+    def test_startup_without_secret_and_legacy_path_is_never_read(self):
+        from sam3_demo import session_web
+        env = self._env()
+        expected = load_session_cookie_settings(env)
+        env["SAM3_SESSION_SECRET_FILE"] = "/does/not/exist/retired.key"
+        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("key read")), \
+                mock.patch.object(session_web, "_LEGACY_WARNING_EMITTED", False), \
+                mock.patch.object(session_web.logger, "warning") as warning:
+            self.assertEqual(load_session_cookie_settings(env), expected)
+            self.assertEqual(load_session_cookie_settings(env), expected)
+            warning.assert_called_once()
+        self.assertFalse(hasattr(expected, "secret"))
+        self.assertFalse(hasattr(expected, "signer_secret"))
 
 
 if __name__ == "__main__":
