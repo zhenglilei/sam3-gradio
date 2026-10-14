@@ -1,86 +1,59 @@
-# SESSION-COOKIE-001: signed cookie owner replaces IP authorization
+# Browser sessions without a deployment signing key
 
-- Priority: P1
-- Scope: shared session identity and transport guard for PVS-demo and EL_Mask
-- Overall status: OPEN; one branch passing does not close this bug
-- Current stage: shared implementation is under test on `codex/bugfix-session-cookie`
+## Runtime contract
 
-## Problem
+Only GET `/` can establish a browser identity. The Cookie contains a 256-bit
+cryptographically random bearer token; a bounded in-process registry stores its
+SHA-256 digest, an independent random owner id, deployment id and activity time.
+No Cookie payload, signing middleware, persistent signing key or key mount is used.
 
-The existing registry binds a Gradio `session_hash` to the client IP. A proxy,
-VPN, or NAT route change can therefore reject the same browser, while different
-browsers behind one address do not have a durable owner boundary. IP remains
-useful diagnostic data, but it must not authorize access.
+The Cookie is host-only, HttpOnly, SameSite=Lax, Path=/ and has a 24-hour sliding
+idle lifetime. Successful authenticated requests (including UI polling) refresh
+both server activity and Cookie Max-Age. This measures network activity, not mouse
+activity. Use distinct Cookie names and registries per service: Cookies have no
+port isolation. Exact Origin/Referer checks still apply to writes. HTTP requires
+both `SAM3_SESSION_COOKIE_SECURE=0` and `SAM3_ALLOW_INSECURE_COOKIE=1`.
 
-This bug is separate from `session-restart-recovery.md`. That bug handles stale
-browser state after restart and safe draft recovery. SESSION-COOKIE-001 changes
-the identity used by that recovery path; it does not add full workspace
-persistence.
+Required configuration:
 
-## Required contract
+- `SAM3_SESSION_DEPLOYMENT_ID`: unique deployment identifier.
+- `SAM3_SESSION_COOKIE_NAME`: unique Cookie name for the service.
+- `SAM3_ALLOWED_ORIGINS`: comma-separated exact browser-facing origins.
+- `SAM3_SESSION_COOKIE_SECURE`: `1` for HTTPS; explicit opt-in above for HTTP.
 
-1. A Starlette `SessionMiddleware` cookie contains only a random owner id of at
-   least 32 random bytes, schema, and deployment id. It is signed, not encrypted.
-2. The cookie is deployment-specific, host-only, `HttpOnly`, `SameSite=Lax`,
-   `Path=/`, and expires after 24 hours. HTTP deployment must explicitly opt out
-   of `Secure`; a stolen HTTP cookie can still be replayed.
-3. Each deployment has a different persistent secret outside the release tree,
-   mode `0600`. A missing, short, or permissive secret fails startup; startup
-   never silently generates one.
-4. Authorization uses `(owner_id, session_hash)`. `client_ip` is retained only
-   as a redacted diagnostic field. Trusted-proxy parsing does not grant access.
-5. Gradio state remains keyed by `session_hash`, but every business, queue,
-   stream, event-query, and cancel request must validate the hash-to-owner claim
-   before reading or changing state.
-6. Missing, invalid, expired, or cross-deployment cookies are rejected on
-   business routes. Only an ordinary first `GET /` may issue an owner cookie.
-7. State schema and resume namespace are upgraded. Old IP-derived state is not
-   automatically claimed or deleted. Resume ids derive from the persistent
-   secret, deployment, owner, and page hash.
-8. Writes require an exact configured `Origin`; when Origin is absent, an exact
-   Referer origin is required. Requests with neither are rejected.
-9. Logs contain error codes and digests only, never complete cookies, tokens, or
-   key material. Multipart uploads and SSE are not fully buffered by the guard.
+`SAM3_SESSION_SECRET_FILE` is retired. If inherited, its presence produces one
+warning per process. Its value is not logged, and its file is never opened.
+The old signing dependency and deployment instructions have been retired.
 
-## Current evidence
+## Ownership and cleanup
 
-| Branch/stage | Commit | Tests | Deployment |
-|---|---|---|---|
-| Shared identity layer | `b5f21f1` on `Zhengqiyuan/PVS-demo`; inherited by `EL_Mask` | shared session tests pass with both branch adapters | not deployed |
-| PVS-demo integration | `b5f21f1` plus `b41271d` | 428 total: 427 passed, 1 opt-in paid VLM smoke skipped | not deployed |
-| EL_Mask integration | PVS ancestry plus branch-specific owner handoff coverage | 567 total: 566 passed, 1 opt-in paid VLM smoke skipped | not deployed |
+Keep `(owner_id, session_hash)` and queue `event_id` checks on callbacks, state,
+SSE and cancellation. Uploads and file routes also require a registered Cookie;
+Gradio retains its file access controls. Public export links retain their existing
+sharing behavior; a random public export URL is not a private per-user ACL.
 
-The HTTP suite covers cookie issuance and rejection, IP change for the same
-owner/hash, different-owner denial before registry mutation, queue SSE, event
-query, cancel, exact Origin/Referer, and a guard-decorated callback. The branch
-## Browser acceptance matrix
+The credential limit equals the claim limit, `max(session_capacity * 4, 128)`.
+Only expired credentials proven inactive are reclaimed; full capacity returns
+503 `SESSION_CREDENTIAL_CAPACITY` with Retry-After. Active credentials are never
+evicted to admit a new browser. Each in-flight request pins its credential through
+completion, error or disconnect. Ownership probes retain queued/running work;
+unknown liveness fails closed. Token and owner ids are never reassigned.
+An anonymous visitor can occupy a slot until expiration: this bounded registry
+is not an ingress rate limiter or an account quota system.
 
-| Check | Actual result |
-|---|---|
-| PVS and EL normal viewport | Edge rendered both pages; expected workflow tabs were visible and selectable |
-| Narrow viewport | PVS and EL rendered in the requested 390 x 844 viewport without observed overlap (reported CSS viewport 355 x 767) |
-| Same-browser tabs and isolated browser context | Two Edge PVS tabs and one isolated IAB PVS page loaded; HttpOnly owner values and per-tab hashes were not read by the UI tool |
-| Upload and business handoffs | Not accepted: the documented file-chooser operation did not return, so no upload-dependent UI workflow is claimed |
-| 401/403 user message and valid-state retention | Covered by HTTP tests for status/state safety; browser presentation remains pending |
-| IP change | Controlled HTTP client-IP change passed; no real VPN or network switch was authorized or performed |
-| Model chain | Not run; model remained unloaded and model behavior is outside this bug |
+State validation and logging each generate their own independent in-memory HMAC
+material. Neither uses deployment configuration or writes that material to disk.
+Logs use process-scoped pseudonyms and never raw credentials. These protections
+remain production code. Application startup uses one worker and no auto-reload.
 
-Screenshots were returned inline by the browser tool, which did not expose a
-persistent screenshot path. The bug remains OPEN pending the unaccepted browser
-rows above and an explicitly approved deployment.
+## Restart and verification
 
-## Boundaries
+Restart invalidates every previous Cookie and internal state proof. Business
+requests receive 401 `SESSION_COOKIE_REQUIRED` with a reopen-homepage message;
+GET `/` creates a new identity. Unsaved work and cross-restart draft recovery are
+not promised. Same-process TTL recovery continues to validate owner/generation.
 
-- Keep HTTP for this release; HTTPS, login accounts, and complete workspace
-  persistence are not part of this bug.
-- Existing random `public_download` links are not owner-private ACLs. This bug
-  does not claim to make every download private.
-- Model/CUDA/PyTorch/Gradio and the shared Python environment are unchanged.
-- PVS and EL use distinct cookie names, deployment ids, and secret files.
-
-## Deployment gate
-
-Before release, identify each service by port, PID, cwd, interpreter, and full
-command, then provision its private persistent key and exact public origin.
-Uvicorn must run one worker without reload. Restarting 7890, 7891, 7893 or any
-Aliyun service requires separate explicit approval.
+Regression coverage lives in `tests/test_session_credentials.py`, session HTTP,
+HTTP lifecycle, runtime, guard, recovery and observability suites. Test sources
+are maintained in Git but excluded from production images and deployment ZIPs.
+PVS is the shared integration base; deployment acceptance runs on EL and overlap.

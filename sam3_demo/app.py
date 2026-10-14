@@ -4696,11 +4696,10 @@ def create_application(
     import ipaddress
 
     from fastapi import FastAPI, Request
-    from starlette.middleware.sessions import SessionMiddleware
     from starlette.responses import JSONResponse, PlainTextResponse
 
+    from sam3_demo.session_credentials import BrowserCredentialRegistry
     from sam3_demo.session_web import (
-        COOKIE_MAX_AGE_SECONDS,
         OwnerClaimRegistry,
         SessionSecurityMiddleware,
         load_session_cookie_settings,
@@ -4717,7 +4716,6 @@ def create_application(
         observability = Observability(
             runtime_observability_dir,
             deployment_id=settings.deployment_id,
-            secret=settings.secret,
             git_sha=resolve_git_sha(current_dir),
         )
     previous_observability = _OBSERVABILITY
@@ -4728,7 +4726,6 @@ def create_application(
     atexit.register(observability.close)
     previous_registry.shutdown()
     _SESSION_REGISTRY = _new_session_registry(
-        secret=settings.secret,
         deployment_id=settings.deployment_id,
     )
     atexit.register(_SESSION_REGISTRY.shutdown)
@@ -4736,6 +4733,10 @@ def create_application(
     demo = create_demo()
     demo.queue(default_concurrency_limit=1)
     claims = OwnerClaimRegistry(max_hashes=max(_SESSION_MAX_ENTRIES * 4, 128))
+    credentials = BrowserCredentialRegistry(
+        settings.deployment_id, capacity=claims.max_hashes,
+        owner_live_probe=claims.owner_is_live,
+    )
     application = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @application.get("/healthz", include_in_schema=False)
@@ -4811,17 +4812,8 @@ def create_application(
         SessionSecurityMiddleware,
         settings=settings,
         claims=claims,
+        credentials=credentials,
         observability=observability,
-    )
-    application.add_middleware(
-        SessionMiddleware,
-        secret_key=settings.signer_secret,
-        session_cookie=settings.cookie_name,
-        max_age=COOKIE_MAX_AGE_SECONDS,
-        path="/",
-        same_site="lax",
-        https_only=settings.secure_cookie,
-        domain=None,
     )
     application = gr.mount_gradio_app(
         application,
@@ -4839,6 +4831,7 @@ def create_application(
     protect_gradio_state_holder(demo.app, claims)
     application.state.session_cookie_settings = settings
     application.state.session_owner_claims = claims
+    application.state.browser_credentials = credentials
     application.state.gradio_blocks = demo
     application.state.observability = observability
     observability.emit("service_initialized")

@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -68,13 +69,15 @@ class Observability:
         log_dir: str | os.PathLike[str],
         *,
         deployment_id: str,
-        secret: bytes,
+        secret: bytes | None = None,
         git_sha: str | None = None,
         max_bytes: int = 20 * 1024 * 1024,
         retention_days: int = 30,
         wall_clock: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
     ) -> None:
+        if secret is None:
+            secret = secrets.token_bytes(32)
         if not isinstance(secret, bytes) or len(secret) < 16:
             raise ValueError("observability secret must contain at least 16 bytes")
         if int(max_bytes) <= 0:
