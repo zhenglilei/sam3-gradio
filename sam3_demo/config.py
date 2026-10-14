@@ -23,7 +23,7 @@ runtime_layout_region_dir = runtime_dir / "layout_regions"
 runtime_log_dir = runtime_dir / "logs"
 runtime_observability_dir = runtime_log_dir / "observability"
 public_download_dir = current_dir / "public_downloads"
-qiyuan_cache_dir = Path("/data/zhengqiyuan/.cache")
+qiyuan_cache_dir = Path(os.environ.get("XDG_CACHE_HOME") or "/data/zhengqiyuan/.cache")
 ge1_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/GE1_coco")
 o3_coco_dir = Path("/data/zhengqiyuan/ADC_contour/datasets/O3_coco")
 
