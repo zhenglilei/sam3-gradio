@@ -36,7 +36,7 @@ def selected(name):
         return False
     if len(path.parts) == 1:
         return name in ROOT_FILES
-    if name == "assets/bpe_simple_vocab_16e6.txt.gz":
+    if name in {"assets/bpe_simple_vocab_16e6.txt.gz", "scripts/layout_image_to_mask.py"}:
         return True
     if name.startswith("sam3/train/"):
         return name in TRAIN_RUNTIME

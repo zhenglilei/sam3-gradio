@@ -43,6 +43,12 @@ class ProductionBundleTests(unittest.TestCase):
         self.git("add", ".")
         self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
 
+    def test_reviewed_manifest_contains_only_supported_runtime_files(self):
+        listing = Path(__file__).resolve().parents[1] / bundle.FILE_LIST
+        for name in listing.read_text().splitlines():
+            if name and not name.startswith("#"):
+                self.assertTrue(bundle.selected(name), name)
+
     def test_flat_production_zip_uses_committed_bytes_and_excludes_unrelated_files(self):
         (self.root / "run.sh").write_bytes(b"uncommitted override")
         (self.root / "sam3_demo/untracked.py").write_bytes(b"untracked")
