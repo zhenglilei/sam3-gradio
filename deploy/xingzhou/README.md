@@ -85,6 +85,8 @@ Docker socket 权限、用户组、系统依赖，也不停止现有服务。当
 
 沿用 torch 2.7.0 / torchvision 0.22.0 / CUDA 12.6 的组合，不改宿主机环境。
 容器使用 headless OpenCV；Pydantic 2.12.5 满足 Gradio 6.14.0 的版本约束。
+SAM3 模型构建器的导入链需要 `psutil`，模型下载辅助模块需要 `requests`，
+两者显式列入运行依赖，不能假设宿主机安装会自动带进镜像。
 删除应用对 Cookie 签名包的直接依赖。基础镜像与全部传递依赖尚未按摘要锁定，
 构建产物会在 `/opt/sam3/installed-requirements.txt` 记录实际安装版本。
 

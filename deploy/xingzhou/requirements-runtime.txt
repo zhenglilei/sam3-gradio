@@ -9,6 +9,8 @@ opencv-python-headless==4.10.0.84
 Pillow==12.1.1
 timm==1.0.26
 iopath==0.1.10
+psutil==7.2.2
+requests==2.33.1
 ftfy==6.1.1
 einops==0.8.2
 scipy==1.14.1
