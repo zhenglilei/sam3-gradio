@@ -167,7 +167,19 @@ class CredentialHttpTests(unittest.TestCase):
             stale = client.get("/data")
             self.assertEqual(stale.status_code, 401)
             self.assertIn("重新打开首页", stale.json()["error"]["message"])
+            self.assertEqual(stale.json()["detail"], stale.json()["error"]["message"])
             self.assertNotEqual(client.get("/").json(), first)
+
+    def test_expired_config_gives_gradio_reopen_hint_without_a_login_prompt(self):
+        app, _, _ = self.build()
+        with TestClient(app) as client:
+            response = client.get("/config")
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.json()["error"]["code"], "SESSION_COOKIE_REQUIRED")
+            self.assertIn("重新打开首页", response.json()["detail"]["auth_message"])
+            queued = client.post("/gradio_api/queue/join", json={})
+            self.assertEqual(queued.status_code, 401)
+            self.assertIn("重新打开首页", queued.json()["detail"])
 
     def test_independent_ports_even_if_both_cookies_are_sent(self):
         one, _, _ = self.build("browser_owner_7891")
