@@ -113,7 +113,6 @@ def _make_observability(
             required=True,
         )
     add(("deployment_id",), "observability-test-deployment", required=True)
-    add(("secret",), b"observability-test-secret-32-bytes", required=True)
     add(("git_sha",), "observability-test-sha", required=True)
     if clock is not None:
         add(("wall_clock", "clock", "now", "now_fn", "time_fn"), clock, required=True)
@@ -267,19 +266,25 @@ class ObservabilityTests(unittest.TestCase):
     def _settings(self):
         from sam3_demo.session_web import load_session_cookie_settings
 
-        secret_path = self.root / "session-cookie.key"
-        secret_path.write_bytes(b"observability-test-cookie-secret-32-bytes")
-        secret_path.chmod(0o600)
         return load_session_cookie_settings(
             {
                 "SAM3_SESSION_DEPLOYMENT_ID": "observability-http-test",
                 "SAM3_SESSION_COOKIE_NAME": "observability_test_cookie",
-                "SAM3_SESSION_SECRET_FILE": str(secret_path),
                 "SAM3_ALLOWED_ORIGINS": "http://testserver",
                 "SAM3_SESSION_COOKIE_SECURE": "0",
                 "SAM3_ALLOW_INSECURE_COOKIE": "1",
             }
         )
+
+    def test_default_log_keys_are_process_local_and_independent_of_state_keys(self):
+        first, _ = self._observation("first")
+        second, _ = self._observation("second")
+        registry = SessionRegistry()
+        self.addCleanup(registry.shutdown)
+        self.assertEqual(first.digest("owner"), first.digest("owner"))
+        self.assertNotEqual(first.digest("owner"), second.digest("owner"))
+        self.assertNotEqual(first._secret, registry._secret)
+        self.assertNotEqual(second._secret, registry._secret)
 
     def test_jsonl_schema_and_sensitive_values_are_redacted(self):
         observation, root = self._observation()

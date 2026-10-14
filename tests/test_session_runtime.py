@@ -7,7 +7,6 @@ from sam3_demo.session_runtime import (
     SessionError,
     SessionExpired,
     SessionRegistry,
-    resume_id_for_identity,
     resolve_client_ip,
     validate_trusted_proxy_cidrs,
 )
@@ -400,63 +399,33 @@ class SessionRegistryTests(unittest.TestCase):
 
 
 class SessionRecoveryTests(unittest.TestCase):
-    def test_resume_id_is_stable_across_restart_and_ip_changes(self):
-        secret = b"persistent-resume-secret"
-        first = SessionRegistry(secret=secret, deployment_id="pvs")
-        second = SessionRegistry(secret=secret, deployment_id="pvs")
+    def test_resume_id_is_stable_within_process_and_changes_after_restart(self):
+        first = SessionRegistry(deployment_id="pvs")
+        second = SessionRegistry(deployment_id="pvs")
         try:
-            a = first.bind(_identity("owner-a", "browser-a"))
-            b = second.bind(_identity("owner-a", "browser-a", "203.0.113.2"))
-            self.assertEqual(a["resume_id"], b["resume_id"])
-            self.assertEqual(
-                a["resume_id"],
-                resume_id_for_identity(
-                    "browser-a",
-                    "owner-a",
-                    deployment_id="pvs",
-                    secret=secret,
-                ),
-            )
-            self.assertNotEqual(
-                a["resume_id"],
-                resume_id_for_identity(
-                    "browser-b",
-                    "owner-a",
-                    deployment_id="pvs",
-                    secret=secret,
-                ),
-            )
-            self.assertNotEqual(
-                a["resume_id"],
-                resume_id_for_identity(
-                    "browser-a",
-                    "owner-b",
-                    deployment_id="pvs",
-                    secret=secret,
-                ),
-            )
+            identity = _identity("owner-a", "browser-a")
+            a = first.bind(identity)
+            moved = first.bind(_identity("owner-a", "browser-a", "203.0.113.2"))
+            restarted = second.bind(identity)
+            self.assertEqual(a["resume_id"], moved["resume_id"])
+            self.assertNotEqual(a["resume_id"], restarted["resume_id"])
+            self.assertNotEqual(a["resume_id"], first.bind(_identity("owner-b", "browser-a"))["resume_id"])
+            self.assertNotEqual(a["resume_id"], first.bind(_identity("owner-a", "browser-b"))["resume_id"])
         finally:
             first.shutdown()
             second.shutdown()
 
-    def test_ensure_recovers_restart_but_rejects_other_owner(self):
-        secret = b"persistent-restart-secret"
-        old_registry = SessionRegistry(secret=secret, deployment_id="pvs")
+    def test_restart_rejects_old_internal_proof_even_for_same_identity(self):
+        old_registry = SessionRegistry(deployment_id="pvs")
         stale = old_registry.bind(_identity("owner-a", "browser-a"))
         old_registry.shutdown()
-        new_registry = SessionRegistry(secret=secret, deployment_id="pvs")
+        new_registry = SessionRegistry(deployment_id="pvs")
         try:
-            rebound, recovered = new_registry.ensure(
-                stale,
-                _identity("owner-a", "browser-a", "203.0.113.2"),
-            )
-            self.assertTrue(recovered)
-            self.assertNotEqual(rebound["session_id"], stale["session_id"])
-            with self.assertRaisesRegex(SessionError, "does not belong"):
-                new_registry.ensure(
-                    stale,
-                    _identity("owner-b", "browser-a"),
-                )
+            for owner in ("owner-a", "owner-b"):
+                with self.subTest(owner=owner), self.assertRaises(SessionError):
+                    new_registry.ensure(stale, _identity(owner, "browser-a", "203.0.113.2"))
+            fresh = new_registry.bind(_identity("owner-a", "browser-a"))
+            self.assertNotEqual(fresh["session_id"], stale["session_id"])
         finally:
             new_registry.shutdown()
 

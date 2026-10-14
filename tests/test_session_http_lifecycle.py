@@ -10,9 +10,9 @@ from typing import Any
 import gradio as gr
 from fastapi import FastAPI, HTTPException, Request
 from gradio.queueing import Event
-from starlette.middleware.sessions import SessionMiddleware
 from starlette.testclient import TestClient
 
+from sam3_demo.session_credentials import BrowserCredentialRegistry
 from sam3_demo.session_web import (
     _MAX_JSON_CONTROL_BODY,
     OwnerClaimRegistry,
@@ -53,7 +53,6 @@ class SessionHttpLifecycleTests(unittest.TestCase):
         settings = SessionCookieSettings(
             deployment_id=DEPLOYMENT_ID,
             cookie_name=COOKIE_NAME,
-            secret=b"synthetic-session-secret-for-http-tests-only",
             allowed_origins=frozenset({ORIGIN + ":80"}),
             secure_cookie=False,
         )
@@ -103,11 +102,12 @@ class SessionHttpLifecycleTests(unittest.TestCase):
         async def get_event(api_name: str, event_id: str):
             return {"event_id": event_id}
 
-        middleware = SessionSecurityMiddleware(api, settings=settings, claims=claims)
-        return SessionMiddleware(
-            middleware, secret_key=settings.signer_secret,
-            session_cookie=COOKIE_NAME, same_site="lax", https_only=False,
-        ), claims
+        middleware = SessionSecurityMiddleware(
+            api, settings=settings, claims=claims,
+            credentials=BrowserCredentialRegistry(DEPLOYMENT_ID, capacity=128,
+                                                   owner_live_probe=claims.owner_is_live),
+        )
+        return middleware, claims
 
     def _client(self, ip: str = "198.51.100.10", *, cookies=None) -> TestClient:
         return TestClient(
