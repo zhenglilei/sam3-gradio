@@ -42,8 +42,13 @@ def configure(root):
         isinstance(value, str) for value in profile.values()
     ):
         raise StartupError("xingzhou-config.json must contain only the five documented session settings")
+    sources = {name: "environment" if name in os.environ else "profile" for name in profile}
     for name, value in profile.items():
         os.environ.setdefault(name, value)
+        if any(marker in os.environ[name].upper() for marker in
+               ("REPLACE_WITH", "CHANGE_ME", "CHANGEME", "YOUR_SERVICE_HOST")):
+            raise StartupError(name + " contains a placeholder; remove the stale environment override "
+                               "to use xingzhou-config.json, or provide the real deployment value")
     from sam3_demo.session_web import load_session_cookie_settings
 
     settings = load_session_cookie_settings()
@@ -51,7 +56,7 @@ def configure(root):
     if not all(origin.startswith(expected_scheme) for origin in settings.allowed_origins):
         raise StartupError("SAM3_SESSION_COOKIE_SECURE must match every SAM3_ALLOWED_ORIGINS scheme")
     return {"deployment_id": settings.deployment_id, "origins": sorted(settings.allowed_origins),
-            "secure_cookie": settings.secure_cookie}
+            "secure_cookie": settings.secure_cookie, "configuration_sources": sources}
 
 
 def check_bundle(root):
@@ -108,7 +113,12 @@ def check_dependencies(root):
 
 
 def check_directories(root):
-    from sam3_demo import config
+    # Config creates directories on import, before the individual write probes.
+    try:
+        from sam3_demo import config
+    except OSError as exc:
+        raise StartupError("Cannot initialize runtime directory: " + str(exc.filename or root)
+                           + "; grant the container user write access to the mounted runtime directories") from exc
 
     paths = {value for name, value in vars(config).items()
              if name.startswith("runtime_") and name.endswith("_dir") and isinstance(value, Path)}
@@ -147,9 +157,9 @@ def main(argv=None):
     root = Path(__file__).resolve().parent
     for name, check in (
         ("bundle", lambda: check_bundle(root)),
-        ("session", lambda: configure(root)),
-        ("dependencies", lambda: check_dependencies(root)),
         ("directories", lambda: check_directories(root)),
+        ("dependencies", lambda: check_dependencies(root)),
+        ("session", lambda: configure(root)),
         ("gpu", check_gpu),
     ):
         try:

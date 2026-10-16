@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,9 +21,9 @@ class XingzhouEntrypointTests(unittest.TestCase):
         shutil.copyfile(ROOT / "run.sh", self.directory / "run.sh")
         python = self.directory / "python-probe"
         python.write_text(
-            "#!/usr/bin/env python3\n"
+            f"#!{sys.executable}\n"
             "import json, os, sys\n"
-            "print(json.dumps({'args': sys.argv[1:], 'cwd': os.getcwd(), "
+            "print(json.dumps({'args': sys.argv[1:], 'interpreter': os.path.basename(sys.argv[0]), 'cwd': os.getcwd(), "
             "'host': os.environ['SAM3_SERVER_NAME'], 'port': os.environ['SAM3_SERVER_PORT'], "
             "'cache': os.environ['XDG_CACHE_HOME']}))\n"
         )
@@ -38,9 +39,68 @@ class XingzhouEntrypointTests(unittest.TestCase):
 
     def launch(self, *args):
         return subprocess.run(
-            ["sh", str(self.directory / "run.sh"), *args], cwd="/", env=self.env,
+            ["/bin/sh", str(self.directory / "run.sh"), *args], cwd="/", env=self.env,
             capture_output=True, text=True, timeout=10,
         )
+
+    def use_interpreter_path(self, *names):
+        directory = self.directory / "bin"
+        directory.mkdir()
+        (directory / "dirname").symlink_to(shutil.which("dirname"))
+        for name in names:
+            (directory / name).symlink_to(self.directory / "python-probe")
+        self.env["PATH"] = str(directory)
+        self.env.pop("PYTHON_BIN", None)
+
+    def test_python3_only_is_discovered_and_check_is_forwarded(self):
+        self.use_interpreter_path("python3")
+        result = self.launch("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertEqual(record["interpreter"], "python3")
+        self.assertEqual(record["args"], [str(self.directory / "xingzhou_startup.py"), "--check"])
+
+    def test_python_only_is_discovered_with_empty_override(self):
+        self.use_interpreter_path("python")
+        self.env["PYTHON_BIN"] = ""
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["interpreter"], "python")
+
+    def test_python3_is_preferred_when_both_are_available(self):
+        self.use_interpreter_path("python3", "python")
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["interpreter"], "python3")
+
+    def test_missing_interpreters_fail_before_launch(self):
+        self.use_interpreter_path()
+        result = self.launch()
+        self.assertEqual(result.returncode, 127)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Python interpreter not found", result.stderr)
+        self.assertIn("PYTHON_BIN", result.stderr)
+
+    def test_invalid_explicit_interpreter_does_not_fall_back(self):
+        self.use_interpreter_path("python3", "python")
+        nonexecutable = self.directory / "nonexecutable-python"
+        nonexecutable.write_text("#!/bin/sh\nexit 0\n")
+        nonexecutable.chmod(0o600)
+        for value in ("missing-python", str(nonexecutable), str(self.directory)):
+            with self.subTest(value=value):
+                self.env["PYTHON_BIN"] = value
+                result = self.launch()
+                self.assertEqual(result.returncode, 127)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("Invalid PYTHON_BIN", result.stderr)
+                self.assertIn("executable Python interpreter", result.stderr)
+
+    def test_explicit_interpreter_name_overrides_python3_preference(self):
+        self.use_interpreter_path("python3", "python")
+        self.env["PYTHON_BIN"] = "python"
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["interpreter"], "python")
 
     def test_entrypoint_fixed_port_and_bundle_workdir(self):
         result = self.launch()

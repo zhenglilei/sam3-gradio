@@ -1,6 +1,8 @@
 """Xingzhou startup checks using tiny bundles and mocked CUDA, never live models."""
 
+import builtins
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -49,6 +51,7 @@ class XingzhouStartupTests(unittest.TestCase):
         self.assertFalse(result["secure_cookie"])
         self.assertEqual(os.environ["SAM3_ALLOW_INSECURE_COOKIE"], "1")
         self.assertNotIn("SAM3_SESSION_SECRET_FILE", os.environ)
+        self.assertEqual(set(result["configuration_sources"].values()), {"profile"})
 
     def test_explicit_https_settings_are_preserved(self):
         os.environ.update(SAM3_ALLOWED_ORIGINS="https://example.test",
@@ -60,6 +63,22 @@ class XingzhouStartupTests(unittest.TestCase):
         self.assertTrue(result["secure_cookie"])
         self.assertEqual(result["deployment_id"], "another-deployment")
         self.assertEqual(os.environ["SAM3_SESSION_COOKIE_NAME"], "another_owner_cookie")
+        self.assertEqual(result["configuration_sources"]["SAM3_ALLOWED_ORIGINS"], "environment")
+        self.assertEqual(result["configuration_sources"]["SAM3_ALLOW_INSECURE_COOKIE"], "profile")
+
+    def test_placeholder_environment_and_profile_fail_without_echoing_value(self):
+        value = "http://REPLACE_WITH_SERVICE_HOST:30231"
+        with patch.dict(os.environ, {"SAM3_ALLOWED_ORIGINS": value}):
+            with self.assertRaisesRegex(startup.StartupError, "SAM3_ALLOWED_ORIGINS contains a placeholder") as result:
+                startup.configure(self.root)
+            self.assertNotIn(value, str(result.exception))
+            self.assertEqual(os.environ["SAM3_ALLOWED_ORIGINS"], value)
+        profile = json.loads((self.root / "xingzhou-config.json").read_text())
+        profile["SAM3_ALLOWED_ORIGINS"] = value
+        (self.root / "xingzhou-config.json").write_text(json.dumps(profile))
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(startup.StartupError, "placeholder"):
+                startup.configure(self.root)
 
     def test_invalid_explicit_session_settings_are_not_replaced_by_defaults(self):
         for name, value in (
@@ -177,8 +196,32 @@ class XingzhouStartupTests(unittest.TestCase):
                                       runtime_feedback_dir=self.root / ".runtime/feedback")
         with patch.dict(sys.modules, {"sam3_demo.config": directories}), \
              patch.object(startup.tempfile, "TemporaryFile", side_effect=PermissionError()):
-            with self.assertRaisesRegex(startup.StartupError, "not writable"):
+            with self.assertRaisesRegex(startup.StartupError, "not writable") as result:
                 startup.check_directories(self.root)
+            self.assertIn(str(self.root), str(result.exception))
+
+    def test_directory_initialization_failure_reports_path_before_dependencies(self):
+        blocked = str(self.root / ".runtime/tmp")
+        original_import = builtins.__import__
+
+        def import_with_blocked_config(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "sam3_demo" and "config" in fromlist:
+                raise PermissionError(errno.EACCES, "sensitive error contents", blocked)
+            return original_import(name, globals, locals, fromlist, level)
+
+        with patch.object(builtins, "__import__", side_effect=import_with_blocked_config), \
+             patch.object(startup, "check_bundle", return_value={}), \
+             patch.object(startup, "check_dependencies") as dependencies, \
+             patch.object(startup, "configure") as configure, patch.object(startup.os, "execv") as execute, \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(startup.main([]), 1)
+            record = json.loads(output.getvalue())
+            self.assertEqual(record["check"], "directories")
+            self.assertIn(blocked, record["message"])
+            self.assertNotIn("sensitive error contents", record["message"])
+            dependencies.assert_not_called()
+            configure.assert_not_called()
+            execute.assert_not_called()
 
     def test_main_check_only_does_not_exec_and_success_execs_same_python(self):
         with patch.object(startup, "check_bundle", return_value={}), \
