@@ -1,7 +1,9 @@
 """Production ZIP contracts, using tiny fixtures and no model execution."""
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -64,6 +66,85 @@ class ProductionBundleTests(unittest.TestCase):
                 self.assertNotIn(name, archive.namelist())
         with self.assertRaises(FileExistsError):
             bundle.build(self.root, self.archive)
+
+    def test_runtime_documents_are_explicitly_allowlisted_and_packaged(self):
+        expected = {
+            "sam3_demo/layout/skills/layout-mask-preprocess/SKILL.md",
+            "sam3_demo/layout/skills/layout-mask-preprocess/references/operation-catalog.md",
+            "sam3_demo/layout/skills/layout-mask-preprocess/references/profile-priors.md",
+            "sam3_demo/layout/skills/layout-mask-preprocess/references/response-schema.json",
+        }
+        listing = Path(__file__).resolve().parents[1] / bundle.FILE_LIST
+        listed = {line for line in listing.read_text().splitlines() if line and not line.startswith("#")}
+        self.assertEqual(set(bundle.RUNTIME_DOCS), expected)
+        self.assertTrue(expected.issubset(bundle.REQUIRED))
+        self.assertTrue(expected.issubset(listed))
+        self.assertTrue(all(bundle.selected(name) for name in expected))
+        self.assertFalse(bundle.selected("sam3_demo/layout/skills/layout-mask-preprocess/references/extra.md"))
+
+        bundle.build(self.root, self.archive)
+        manifest = bundle.verify(self.archive)
+        self.assertTrue(expected.issubset(manifest["files"]))
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertTrue(expected.issubset(archive.namelist()))
+
+    def test_missing_runtime_document_is_rejected_during_build(self):
+        missing = bundle.RUNTIME_DOCS[0]
+        listing = self.root / bundle.FILE_LIST
+        listing.write_text("\n".join(line for line in listing.read_text().splitlines() if line != missing) + "\n")
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "missing required runtime files"):
+            bundle.build(self.root, self.archive)
+
+    def test_verify_rejects_archive_missing_runtime_document(self):
+        bundle.build(self.root, self.archive)
+        missing = bundle.RUNTIME_DOCS[0]
+        incomplete = self.base / "incomplete.zip"
+        with zipfile.ZipFile(self.archive) as source, zipfile.ZipFile(incomplete, "w") as target:
+            for item in source.infolist():
+                if item.filename == missing:
+                    continue
+                data = source.read(item)
+                if item.filename == bundle.MANIFEST:
+                    manifest = json.loads(data)
+                    manifest["files"].pop(missing)
+                    data = json.dumps(manifest).encode()
+                target.writestr(item, data)
+        with self.assertRaisesRegex(ValueError, "missing runtime files"):
+            bundle.verify(incomplete)
+
+    def test_arbitrary_markdown_is_rejected(self):
+        arbitrary = "sam3_demo/layout/skills/layout-mask-preprocess/references/extra.md"
+        self.assertFalse(bundle.selected(arbitrary))
+        with (self.root / bundle.FILE_LIST).open("a") as target:
+            target.write(arbitrary + "\n")
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "Non-production"):
+            bundle.build(self.root, self.archive)
+
+    def test_packaged_real_skill_fixture_loads_without_external_api(self):
+        source_root = Path(__file__).resolve().parents[1]
+        for name in bundle.RUNTIME_DOCS:
+            target = self.root / name
+            target.write_bytes((source_root / name).read_bytes())
+        self.commit()
+        bundle.build(self.root, self.archive)
+        extracted = self.base / "extracted"
+        with zipfile.ZipFile(self.archive) as archive:
+            archive.extractall(extracted)
+
+        sys.path.insert(0, str(source_root))
+        try:
+            from sam3_demo.layout.agent_runtime import load_skill_bundle
+        finally:
+            sys.path.remove(str(source_root))
+        text, _, response_schema = load_skill_bundle(
+            extracted / "sam3_demo/layout/skills/layout-mask-preprocess"
+        )
+        self.assertEqual(response_schema["properties"]["schema_version"]["const"], 4)
+        for name in bundle.RUNTIME_DOCS:
+            relative_name = name.split("layout-mask-preprocess/", 1)[1]
+            self.assertIn(f"## {relative_name}\n", text)
 
     def test_models_are_only_included_explicitly_and_symlinks_become_file_bytes(self):
         external = self.base / "model.pt"

@@ -12,21 +12,12 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = (
-    "models/sam3.pt", "models/big-lama.pt", "assets/bpe_simple_vocab_16e6.txt.gz"
-)
-
-
 class XingzhouEntrypointTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         shutil.copyfile(ROOT / "run.sh", self.directory / "run.sh")
-        for name in ASSETS:
-            target = self.directory / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"fixture")
         python = self.directory / "python-probe"
         python.write_text(
             "#!/usr/bin/env python3\n"
@@ -45,9 +36,9 @@ class XingzhouEntrypointTests(unittest.TestCase):
             "SAM3_SERVER_NAME": "127.0.0.1",
         }
 
-    def launch(self):
+    def launch(self, *args):
         return subprocess.run(
-            ["sh", str(self.directory / "run.sh")], cwd="/", env=self.env,
+            ["sh", str(self.directory / "run.sh"), *args], cwd="/", env=self.env,
             capture_output=True, text=True, timeout=10,
         )
 
@@ -55,35 +46,21 @@ class XingzhouEntrypointTests(unittest.TestCase):
         result = self.launch()
         self.assertEqual(result.returncode, 0, result.stderr)
         records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
-        self.assertEqual(records[0]["args"], [
-            "-c", "from sam3_demo.session_web import load_session_cookie_settings; load_session_cookie_settings()"
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["args"], [str(self.directory / "xingzhou_startup.py")])
+        self.assertEqual(records[0]["host"], "0.0.0.0")
+        self.assertEqual(records[0]["port"], "8030")
+        self.assertEqual(records[0]["cwd"], str(self.directory))
+        self.assertEqual(records[0]["cache"], str(self.directory / ".runtime/cache"))
+
+    def test_check_only_is_forwarded_without_shell_security_defaults(self):
+        self.env.pop("SAM3_ALLOWED_ORIGINS")
+        self.env.pop("SAM3_SESSION_COOKIE_SECURE")
+        result = self.launch("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["args"], [
+            str(self.directory / "xingzhou_startup.py"), "--check"
         ])
-        self.assertEqual(records[1]["args"], ["-m", "sam3_demo.app"])
-        self.assertEqual(records[1]["host"], "0.0.0.0")
-        self.assertEqual(records[1]["port"], "8030")
-        self.assertEqual(records[1]["cwd"], str(self.directory))
-        self.assertEqual(records[1]["cache"], str(self.directory / ".runtime/cache"))
-
-    def test_missing_security_configuration_fails_before_launch(self):
-        for name in ("SAM3_ALLOWED_ORIGINS", "SAM3_SESSION_COOKIE_SECURE"):
-            with self.subTest(name=name):
-                value = self.env.pop(name)
-                result = self.launch()
-                self.env[name] = value
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(name, result.stderr)
-                self.assertFalse(result.stdout)
-
-    def test_missing_asset_fails_without_download_prompt(self):
-        for name in ASSETS:
-            with self.subTest(name=name):
-                target = self.directory / name
-                target.unlink()
-                result = self.launch()
-                target.write_bytes(b"fixture")
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(name, result.stderr)
-                self.assertFalse(result.stdout)
 
     def test_explicit_cache_is_preserved(self):
         self.env["XDG_CACHE_HOME"] = "/cache/sam3"

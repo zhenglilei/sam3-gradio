@@ -9,7 +9,7 @@
 | 交付物 | 必须包含 | 明确排除 |
 |---|---|---|
 | 运行镜像 | Python 3.12、CUDA 对应的 PyTorch wheels、固定的 Web/推理运行依赖、8030 入口及健康检查 | 项目源码、模型、测试/验收工具、Git、个人目录、会话密钥 |
-| `/src` 部署 ZIP | `run.sh`、`sam3_demo` 运行代码、SAM3 必需模块、运行辅助模块、自定义组件后端与已编译资源、BPE 词表、LICENSE、文件摘要清单 | `tests`、训练入口、评测工具、notebooks、前端开发工具链、Docker 构建脚本、文档、`.git`、`.runtime`、缓存、历史结果、`.orig`、废仓、密钥文件 |
+| `/src` 部署 ZIP | `run.sh`、`xingzhou_startup.py`、`xingzhou-config.json`、`sam3_demo` 运行代码、SAM3 必需模块、运行辅助模块、自定义组件后端与已编译资源、BPE 词表、布局运行技能文档、LICENSE、文件摘要清单 | `tests`、训练入口、评测工具、notebooks、前端开发工具链、Docker 构建脚本、非运行文档、`.git`、`.runtime`、缓存、历史结果、`.orig`、废仓、密钥文件 |
 | 模型 | `/src/models/sam3.pt`、`/src/models/big-lama.pt`；默认另行只读挂载 | 禁止复制进运行镜像；只有显式 `--with-models` 才写入 ZIP |
 | 运行数据 | 可写 `/src/.runtime`、`/src/.gradio`、`/src/public_downloads`；缓存默认 `/src/.runtime/cache` | 不依赖宿主机用户的缓存或绝对个人路径 |
 
@@ -19,6 +19,9 @@ matcher 模块，因此白名单保留这几个实际依赖文件；不会携带
 脚本、训练数据或整个训练目录。本次不通过改模型导入关系来缩减它们。
 `app.py` 实际调用的 `scripts/layout_image_to_mask.py` 同样保留；其余 `scripts/`
 文件均排除，目录名称本身不代表该文件是否属于生产依赖。
+布局技能的 `SKILL.md`、`references/operation-catalog.md`、
+`references/profile-priors.md` 和 `references/response-schema.json` 是
+`load_skill_bundle()` 的运行输入，必须完整打包；不会放行其他 Markdown 文件。
 
 应用现有的数据集评估功能仍需另行提供数据集；部署包不带宿主机数据集。
 SAM3/LaMa 核心加载与推理使用 `/src/models`，不依赖个人模型路径。
@@ -51,13 +54,32 @@ sh deploy/xingzhou/build-image.sh "$OUT/sam3-runtime.tar"
 3. 运行用户应能写 `/src` 下的运行目录。镜像默认 UID/GID 为 `10001:10001`；
    绑定宿主机目录时需由部署方预先匹配目录所有权，或选择有相应写权限的 UID。
 4. 执行 `/bin/sh /src/run.sh`，固定监听 `0.0.0.0:8030`。
-5. 配置真实浏览器访问来源和 Cookie 安全属性：
+5. 本包的 `xingzhou-config.json` 已配置星舟服务 **10259** 的实际访问地址：
+
+```text
+SAM3_SESSION_DEPLOYMENT_ID=sam3-xingzhou-10259
+SAM3_SESSION_COOKIE_NAME=sam3_xingzhou_10259_owner
+SAM3_ALLOWED_ORIGINS=http://10.120.105.205:30231
+SAM3_SESSION_COOKIE_SECURE=0
+SAM3_ALLOW_INSECURE_COOKIE=1
+```
+
+平台仅执行 `./run.sh` 时会加载此配置，不需要额外注入环境变量或密钥。
+该地址是 2026-10-16 在“接口信息”核实的服务来源，不是管理页面
+`10.120.105.243:30008`，也不包含 `/inferenceStart`。平台若重新分配地址，
+必须更新此 JSON 后提交并重新打包，或通过环境变量覆盖；不会自动信任任意来源。
+此 HTTP 配置只适用于当前内部验收，传输本身没有 HTTPS 加密。
+
+环境变量优先于 JSON，显式空值或错误值仍会失败，不会被默认值掩盖。
+部署到其他服务时同时指定独立部署 ID、Cookie 名称、真实来源和协议配置：
 
 ```sh
-SAM3_SESSION_DEPLOYMENT_ID=el-production
-SAM3_SESSION_COOKIE_NAME=sam3_el_production_owner
-SAM3_ALLOWED_ORIGINS=https://actual-service.example
-SAM3_SESSION_COOKIE_SECURE=1
+export SAM3_SESSION_DEPLOYMENT_ID=el-production
+export SAM3_SESSION_COOKIE_NAME=sam3_el_production_owner
+export SAM3_ALLOWED_ORIGINS=https://actual-service.example
+export SAM3_SESSION_COOKIE_SECURE=1
+export SAM3_ALLOW_INSECURE_COOKIE=0
+/bin/sh /src/run.sh
 ```
 
 内部 HTTP 验收需显式设 `SAM3_SESSION_COOKIE_SECURE=0`、
@@ -65,9 +87,33 @@ SAM3_SESSION_COOKIE_SECURE=1
 不同服务使用不同 Cookie 名称；Cookie 本身不按端口隔离。
 不配置任何会话签名密钥变量或挂载目录。
 
-启动脚本会先检查模型和 BPE 文件，再检查上述配置。只运行一个 Uvicorn
-worker，禁用自动重载。Cookie 凭证及内部临时校验材料只存在于进程内；
+启动脚本只运行一个 Uvicorn worker，禁用自动重载。Cookie 凭证及内部临时校验材料只存在于进程内；
 重启后旧页面须重新打开首页，不承诺恢复未保存的工作。
+
+## 启动自检与版本
+
+入口先检查以下内容，通过后用同一个 Python 解释器执行 `sam3_demo.app`：
+
+- 包清单、必需文件及大小，包括模型、词表、技能文档和五个组件的编译入口。
+- 原有会话配置校验，并要求来源协议与 Secure Cookie 配置一致。
+- Python 3.12+、核心依赖、SAM3 模型构建器和本包组件的实际导入。
+- 缓存、临时文件、导出、反馈、布局、日志等运行目录的实际写入权限。
+- CUDA 是否可用、设备名称、可用显存及 BF16 能力；空闲显存少于 8192 MiB
+  只警告，模型加载仍由原有 supervisor 决定，不在自检中加载模型或执行推理。
+
+自检不会安装依赖、下载模型、调用外部模型 API 或开启监听。可单独执行：
+
+```sh
+/bin/sh /src/run.sh --check
+```
+
+标准输出使用 `xingzhou_startup` JSON 事件记录检查阶段、实际依赖版本及结果。
+失败写入标准错误并返回非零退出码，不打印环境全集、Cookie 值或密钥。
+Git SHA 从 `bundle-manifest.json` 读取并设置 `SAM3_BUILD_GIT_SHA`，因此无 Git 的
+镜像中操作日志也能识别版本；如果外部注入了冲突 SHA，启动会拒绝。
+此入口用于解压后的发布包，直接在源码树运行时缺少清单会失败，应先打包解压。
+启动自检只核对文件存在性和大小；完整 SHA-256 检查由发布前的 `bundle.py verify`
+执行，避免每次启动重复读取数 GB 权重。没有改变公共会话模块、算法或 UI。
 
 ## 验收边界
 
@@ -95,4 +141,5 @@ SAM3 模型构建器的导入链需要 `psutil`，模型下载辅助模块需要
 ```sh
 python3 tests/test_production_bundle.py
 python3 tests/test_xingzhou_entrypoint.py
+python3 -m unittest discover -s tests -p 'test_xingzhou_startup.py'
 ```

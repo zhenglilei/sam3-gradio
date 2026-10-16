@@ -47,6 +47,8 @@ repair_mask_editor/backend/gradio_repair_mask_editor/templates/example/index.js
 repair_mask_editor/backend/gradio_repair_mask_editor/templates/example/render-D1FRZIsP.js
 repair_mask_editor/backend/gradio_repair_mask_editor/templates/example/svelte_runtime_entry.js
 run.sh
+xingzhou-config.json
+xingzhou_startup.py
 sam3/__init__.py
 sam3/logger.py
 sam3/model/__init__.py
@@ -120,6 +122,9 @@ sam3_demo/layout/mask_quality.py
 sam3_demo/layout/preprocess_registry.py
 sam3_demo/layout/prompt_callbacks.py
 sam3_demo/layout/region_callbacks.py
+sam3_demo/layout/skills/layout-mask-preprocess/SKILL.md
+sam3_demo/layout/skills/layout-mask-preprocess/references/operation-catalog.md
+sam3_demo/layout/skills/layout-mask-preprocess/references/profile-priors.md
 sam3_demo/layout/skills/layout-mask-preprocess/references/response-schema.json
 sam3_demo/model_runtime.py
 sam3_demo/model_supervisor.py
