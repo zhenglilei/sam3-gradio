@@ -1319,7 +1319,62 @@ class LayoutRegionPvsTest(unittest.TestCase):
             [record["region_id"] for record in document["regions"]],
         )
         self.assertEqual(selected[2]["value"], selected_tokens)
-        self.assertIn("2 个 Label", selected[3])
+        self.assertIn("2 个标注", selected[3])
+
+    def test_loading_saved_layout_selects_every_label_and_updates_controls(self):
+        document = self._save_two_regions()
+        active_transform = {
+            "center_x": 24.0,
+            "center_y": 18.0,
+            "scale": 1.0,
+            "rotation_deg": 0.0,
+            "preview_alpha": 0.35,
+        }
+
+        def commit(_image_state, state, _editor):
+            return dict(state), [], {}, self.source_mask, active_transform
+
+        with (
+            mock.patch.object(demo_module, "_layout_cache_get", return_value={}),
+            mock.patch.object(
+                demo_module, "_layout_editor_payload", return_value={"enabled": True}
+            ),
+            mock.patch.object(
+                demo_module, "_commit_layout_group_transforms", side_effect=commit
+            ),
+        ):
+            result = demo_module._load_layout_prompt_choices(
+                self.image_state, self.layout_state
+            )
+
+        self.assertEqual(len(result), 10)
+        self.assertEqual(result[0]["prompt_region_ids"], [1, 2])
+        self.assertEqual(
+            result[2]["value"],
+            [
+                demo_module._layout_prompt_selection_token(
+                    demo_module._LAYOUT_PROMPT_SCOPE_REGION_LABELS, record["region_id"]
+                )
+                for record in regions.active_regions(document)
+            ],
+        )
+        self.assertTrue(result[4])
+        self.assertEqual(result[5:], (0.0, 0.0, 1.0, 0.0, 0.35))
+
+    def test_loading_layout_without_labels_keeps_full_mask_available(self):
+        with (
+            mock.patch.object(demo_module, "_layout_cache_get", return_value={}),
+            mock.patch.object(
+                demo_module, "_layout_editor_payload", return_value={"enabled": True}
+            ),
+        ):
+            result = demo_module._load_layout_prompt_choices(
+                self.image_state, self.layout_state
+            )
+        self.assertEqual(len(result), 10)
+        self.assertEqual(result[0]["prompt_mask_scope"], demo_module._LAYOUT_PROMPT_SCOPE_FULL)
+        self.assertEqual(result[2]["value"], [demo_module._LAYOUT_PROMPT_SCOPE_FULL])
+        self.assertTrue(result[4])
 
     def test_workspace_overlay_uses_ascii_region_id_for_unicode_label(self):
         transformed = np.zeros(

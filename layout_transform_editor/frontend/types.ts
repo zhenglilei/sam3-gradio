@@ -32,6 +32,7 @@ export interface LayoutTransformGroupView {
 export interface LayoutTransformGroupServerView {
 	selection_signature: string;
 	regions_revision: number;
+	same_layer?: boolean;
 	allow_reorder?: boolean;
 	groups: LayoutTransformGroupView[];
 }

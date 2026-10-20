@@ -601,6 +601,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             [demo_module._LAYOUT_PROMPT_SCOPE_FULL],
         )
         self.assertFalse(layout_prompt_selector["props"]["interactive"])
+        self.assertFalse(layout_prompt_selector["props"]["visible"])
 
         morph_controls = [
             component
@@ -660,7 +661,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
                 len(load_choices_dependency["inputs"]),
                 len(load_choices_dependency["outputs"]),
             ),
-            (2, 4),
+            (2, 10),
         )
         self.assertIsNotNone(load_choices_dependency.get("trigger_after"))
         self.assertEqual(
@@ -688,7 +689,7 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
                 len(sync_transform_dependency["inputs"]),
                 len(sync_transform_dependency["outputs"]),
             ),
-            (2, 8),
+            (2, 9),
         )
         self.assertEqual(
             (

@@ -4,6 +4,24 @@
 _MULTI_USER_CONCURRENCY_LIMIT = 8
 
 
+def _layout_editor_intent_js(position: int) -> str:
+    # Gradio can dispatch change for a server update while the editor is hidden.
+    # Keep its preview images out of every control request, even before the
+    # component has mounted and published its own small client intent.
+    return """(...args) => {
+        const payload = args[POSITION] || {};
+        const fields = [
+            "payload_kind", "editor_session_id", "document_epoch", "payload_hash",
+            "enabled", "target_width", "target_height", "transform",
+            "transform_mode", "group_intent"
+        ];
+        args[POSITION] = Object.fromEntries(
+            fields.filter(key => key in payload).map(key => [key, payload[key]])
+        );
+        return args;
+    }""".replace("POSITION", str(position))
+
+
 def bind_demo_events(
     *,
     state_refs,
@@ -458,7 +476,7 @@ def bind_demo_events(
     use_current_layout_event.then(
         fn=_load_layout_prompt_choices,
         inputs=[image_state, layout_state],
-        outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info],
+        outputs=[layout_state, layout_editor, layout_prompt_mask_selector, layout_pvs_info, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
@@ -487,13 +505,15 @@ def bind_demo_events(
         fn=_update_layout_preview_with_groups,
         inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor],
         outputs=[layout_state, image_upload, layout_editor, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
+        js=_layout_editor_intent_js(11),
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
     layout_editor.change(
         fn=_sync_layout_controls_from_editor_with_prompt_epoch,
         inputs=[layout_state, layout_editor],
-        outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info],
+        outputs=[layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_pvs_info, layout_editor],
+        js=_layout_editor_intent_js(1),
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
@@ -508,6 +528,7 @@ def bind_demo_events(
         fn=_create_pvs_from_layout_selection,
         inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_prompt_mask_selector],
         outputs=[pvs_state, layout_state, layout_editor, layout_pvs_info, *common],
+        js=_layout_editor_intent_js(11),
         show_progress_on=[result_image],
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",

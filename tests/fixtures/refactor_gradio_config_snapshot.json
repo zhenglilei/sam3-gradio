@@ -1000,7 +1000,7 @@
     {
       "props": {
         "show_label": false,
-        "value": "上传或选择二值版图 mask；多选 Label 后，每个 Label 可在右侧独立拖动、缩放和旋转。",
+        "value": "载入版图后，全部标注同时显示。直接在右侧拖动要调整的标注，其他标注保持可见；滚轮缩放，拖动圆形手柄旋转。",
         "visible": true
       },
       "type": "markdown"
@@ -1037,12 +1037,12 @@
         ],
         "elem_id": "layout_prompt_mask_selector",
         "interactive": false,
-        "label": "版图 mask 选择（可多选 Label）",
+        "label": "版图标注",
         "show_label": true,
         "value": [
           "full"
         ],
-        "visible": true
+        "visible": false
       },
       "type": "checkboxgroup"
     },
@@ -1260,7 +1260,7 @@
     },
     {
       "props": {
-        "label": "显示/启用版图 overlay",
+        "label": "显示版图",
         "show_label": true,
         "value": false,
         "visible": true
@@ -1270,7 +1270,7 @@
     {
       "props": {
         "show_label": false,
-        "value": "多选 Label 时，下方数值只对应 Canvas 中当前激活的 Label。",
+        "value": "直接点击或拖动标注进行调整；全部标注始终显示，下方参数对应当前选中的标注。",
         "visible": true
       },
       "type": "markdown"
@@ -1376,7 +1376,7 @@
     {
       "props": {
         "interactive": true,
-        "value": "用所选版图 mask / Label 创建实例",
+        "value": "生成全部版图分割结果",
         "visible": true
       },
       "type": "button"
@@ -3906,7 +3906,13 @@
         19,
         142,
         123,
-        158
+        158,
+        143,
+        146,
+        147,
+        150,
+        151,
+        153
       ],
       "queue": true,
       "scroll_to_output": false,
@@ -4073,7 +4079,8 @@
         150,
         151,
         153,
-        158
+        158,
+        142
       ],
       "queue": true,
       "scroll_to_output": false,

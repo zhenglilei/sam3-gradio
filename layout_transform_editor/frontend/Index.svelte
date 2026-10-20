@@ -165,6 +165,10 @@
 		return isGroupMode() && localValue.group_view?.allow_reorder === true;
 	}
 
+	function isSameLayerLayout(): boolean {
+		return isGroupMode() && localValue.group_view?.same_layer === true;
+	}
+
 	function isGroupMode(): boolean {
 		return localValue.transform_mode === "label_groups" && !!localValue.group_view;
 	}
@@ -195,6 +199,7 @@
 	}
 
 	function isGroupVisible(key: string): boolean {
+		if (isSameLayerLayout()) return true;
 		if (hiddenGroupKeys.has(key)) return false;
 		if (explicitVisibleGroupKeys.has(key)) return true;
 		return defaultGroupVisible(key);
@@ -1048,7 +1053,8 @@
 		const left = Math.min(...corners.map((point) => point.x));
 		const top = Math.min(...corners.map((point) => point.y));
 		const label = String(runtime.view.label || "Label " + String(runtime.view.group_id));
-		const inverseView = 1 / Math.max(0.05, viewScale);
+		const displayScale = targetWidth() / Math.max(1, canvasEl.getBoundingClientRect().width);
+		const inverseView = displayScale / Math.max(0.05, viewScale);
 		ctx.save();
 		ctx.font = "600 " + String(13 * inverseView) + "px sans-serif";
 		const width = ctx.measureText(label).width + 12 * inverseView;
@@ -1085,14 +1091,15 @@
 			for (const key of drawOrder) {
 				const runtime = groupRuntimeByKey.get(key);
 				if (runtime?.ready && runtime.tintCanvas) {
-					const alpha = key === activeGroupKey
+					const alpha = isSameLayerLayout() || key === activeGroupKey
 						? clamp(Number(transformForKey(key).preview_alpha ?? 0.22), 0, 1)
 						: (key === nextKey ? 0.10 : 0.08);
 					drawTint(ctx, rs, runtime.tintCanvas, transformForKey(key), alpha);
 				}
 			}
 			if (
-				displayMode === "overlap"
+				!isSameLayerLayout()
+				&& displayMode === "overlap"
 				&& activeGroupKey
 				&& nextKey
 				&& keys.includes(activeGroupKey)
@@ -1629,7 +1636,7 @@
 	min_width={gradio.shared.min_width}
 >
 	<div class="layout-editor" style={"min-height:" + heightStyle(gradio.props.height)}>
-		{#if isGroupMode()}
+		{#if isGroupMode() && !isSameLayerLayout()}
 			<div class="group-picker">
 				<label for="layout-active-label">当前 Label</label>
 				<select id="layout-active-label" value={activeGroupKey} on:change={onActiveSelect}>
@@ -1718,7 +1725,7 @@
 			<button type="button" on:click={() => zoomView(1.25)}>画布 ＋</button>
 		</div>
 		{#if hasEditableMask()}
-			<div class="numeric-toolbar" aria-label="当前层精细参数">
+			<div class="numeric-toolbar" aria-label={isSameLayerLayout() ? "当前标注精细参数" : "当前层精细参数"}>
 				{#each [
 					["x", "X", "px"],
 					["y", "Y", "px"],
@@ -1777,7 +1784,7 @@
 				style={"cursor:" + cursorStyle}
 			></canvas>
 		</div>
-		{#if isGroupMode() && displayMode === "overlap" && nextBusinessGroupKey()}
+		{#if isGroupMode() && !isSameLayerLayout() && displayMode === "overlap" && nextBusinessGroupKey()}
 			<div class="overlap-legend">
 				<span class="legend-current">当前：{activeGroupLabel()}</span>
 				<span class="legend-next">下一层：{groupRuntimeByKey.get(nextBusinessGroupKey())?.view.label}</span>
@@ -1799,6 +1806,7 @@
 	.layout-editor {
 		display: flex;
 		flex-direction: column;
+		min-width: 0;
 		gap: 8px;
 		background: #f8fafc;
 		padding: 10px;
@@ -1892,12 +1900,12 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.toolbar {
+	.layout-editor .toolbar {
 		display: grid;
-		grid-template-columns: repeat(7, minmax(0, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 88px), 1fr));
 		gap: 6px;
 	}
-	.toolbar button {
+	.layout-editor .toolbar button {
 		border: 1px solid #cbd5e1;
 		background: #ffffff;
 		border-radius: 6px;
@@ -1906,11 +1914,11 @@
 		color: #0f172a;
 		cursor: pointer;
 	}
-	.toolbar button:hover:not(:disabled) {
+	.layout-editor .toolbar button:hover:not(:disabled) {
 		border-color: #2563eb;
 		color: #1d4ed8;
 	}
-	.toolbar button:disabled {
+	.layout-editor .toolbar button:disabled {
 		cursor: not-allowed;
 		opacity: 0.48;
 	}
@@ -1976,12 +1984,12 @@
 		background: #ede9fe;
 		color: #6d28d9;
 	}
-	.numeric-toolbar {
+	.layout-editor .numeric-toolbar {
 		display: grid;
-		grid-template-columns: repeat(5, minmax(92px, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 174px), 1fr));
 		gap: 6px;
 	}
-	.numeric-toolbar label {
+	.layout-editor .numeric-toolbar label {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
 		align-items: center;
@@ -1994,7 +2002,7 @@
 		font-weight: 700;
 		color: #334155;
 	}
-	.numeric-toolbar input {
+	.layout-editor .numeric-toolbar input {
 		min-width: 0;
 		width: 100%;
 		border: 0;
@@ -2004,7 +2012,7 @@
 		font-variant-numeric: tabular-nums;
 		color: #0f172a;
 	}
-	.numeric-toolbar small {
+	.layout-editor .numeric-toolbar small {
 		font-size: 10px;
 		color: #94a3b8;
 	}
@@ -2110,13 +2118,5 @@
 	.status > span:first-child.dirty {
 		background: #fef3c7;
 		color: #92400e;
-	}
-	@media (max-width: 760px) {
-		.toolbar {
-			grid-template-columns: repeat(4, minmax(0, 1fr));
-		}
-		.numeric-toolbar {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
 	}
 </style>
