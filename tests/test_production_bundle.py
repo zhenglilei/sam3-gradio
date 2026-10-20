@@ -8,9 +8,15 @@ import tempfile
 import unittest
 import zipfile
 
-spec = importlib.util.spec_from_file_location("production_bundle", Path(__file__).resolve().parents[1] / "deploy/xingzhou/bundle.py")
-bundle = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bundle)
+ROOT = Path(__file__).resolve().parents[1]
+DEPLOY_DIR = ROOT / "deploy/xingzhou"
+sys.path.insert(0, str(DEPLOY_DIR))
+try:
+    spec = importlib.util.spec_from_file_location("production_bundle", DEPLOY_DIR / "bundle.py")
+    bundle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bundle)
+finally:
+    sys.path.remove(str(DEPLOY_DIR))
 
 
 class ProductionBundleTests(unittest.TestCase):
@@ -27,6 +33,10 @@ class ProductionBundleTests(unittest.TestCase):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"production fixture")
+        (self.root / "requirements-offline.txt").write_text("fixturedep==1.2.3\n")
+        self.wheels_dir = self.root / ".runtime/xingzhou-wheels"
+        self.wheels_dir.mkdir(parents=True)
+        self.write_wheel(self.wheels_dir / "fixturedep-1.2.3-py3-none-any.whl", "fixturedep", "1.2.3")
         listing = self.root / bundle.FILE_LIST
         listing.parent.mkdir(parents=True)
         listing.write_text("\n".join(names) + "\n")
@@ -37,6 +47,14 @@ class ProductionBundleTests(unittest.TestCase):
         self.git("init", "-q")
         self.commit()
         self.archive = self.base / "bundle.zip"
+
+    @staticmethod
+    def write_wheel(path, name, version):
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as wheel:
+            wheel.writestr(
+                f"{name.replace('-', '_')}-{version}.dist-info/METADATA",
+                f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+            )
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT)
@@ -60,11 +78,28 @@ class ProductionBundleTests(unittest.TestCase):
         self.assertEqual(manifest["source"], "committed Git blobs")
         with zipfile.ZipFile(self.archive) as archive:
             self.assertEqual(archive.read("run.sh"), b"production fixture")
+            self.assertIn("wheels/fixturedep-1.2.3-py3-none-any.whl", archive.namelist())
             self.assertNotIn("repo/run.sh", archive.namelist())
             for name in ["tests/test_bad.py", ".runtime/retired/legacy.key", "reference_code.py",
                          "sam3_demo/app.py.orig", "sam3_demo/untracked.py", *bundle.MODELS]:
                 self.assertNotIn(name, archive.namelist())
         with self.assertRaises(FileExistsError):
+            bundle.build(self.root, self.archive)
+
+    def test_missing_offline_wheel_is_rejected(self):
+        next(self.wheels_dir.glob("*.whl")).unlink()
+        with self.assertRaisesRegex(ValueError, "Missing offline wheels"):
+            bundle.build(self.root, self.archive)
+
+    def test_wrong_version_offline_wheel_is_rejected(self):
+        next(self.wheels_dir.glob("*.whl")).unlink()
+        self.write_wheel(self.wheels_dir / "fixturedep-1.2.4-py3-none-any.whl", "fixturedep", "1.2.4")
+        with self.assertRaisesRegex(ValueError, "does not match application lock"):
+            bundle.build(self.root, self.archive)
+
+    def test_gpu_offline_wheel_is_rejected(self):
+        self.write_wheel(self.wheels_dir / "torch-2.7.0-py3-none-any.whl", "torch", "2.7.0")
+        with self.assertRaisesRegex(ValueError, "does not match application lock"):
             bundle.build(self.root, self.archive)
 
     def test_runtime_documents_are_explicitly_allowlisted_and_packaged(self):

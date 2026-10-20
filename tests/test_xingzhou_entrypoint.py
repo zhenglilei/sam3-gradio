@@ -1,6 +1,7 @@
 """Container entrypoint contract without starting a model or a web server."""
 
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,17 +20,42 @@ class XingzhouEntrypointTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         shutil.copyfile(ROOT / "run.sh", self.directory / "run.sh")
+        self.requirements = self.directory / "requirements-offline.txt"
+        self.requirements.write_text("fixturedep==1.2.3\n")
+        (self.directory / "wheels").mkdir()
+        self.log = self.directory / "probe.jsonl"
         python = self.directory / "python-probe"
         python.write_text(
             f"#!{sys.executable}\n"
-            "import json, os, sys\n"
-            "print(json.dumps({'args': sys.argv[1:], 'interpreter': os.path.basename(sys.argv[0]), 'cwd': os.getcwd(), "
-            "'host': os.environ['SAM3_SERVER_NAME'], 'port': os.environ['SAM3_SERVER_PORT'], "
-            "'cache': os.environ['XDG_CACHE_HOME']}))\n"
+            "import json, os, pathlib, sys\n"
+            "log = pathlib.Path(os.environ['PROBE_LOG'])\n"
+            "def record(value):\n"
+            "    with log.open('a') as stream:\n"
+            "        stream.write(json.dumps(value) + '\\n')\n"
+            "if len(sys.argv) > 2 and sys.argv[1] == '-c':\n"
+            "    exec(compile(sys.argv[2], '<probe>', 'exec'), {'__name__': '__main__'})\n"
+            "elif len(sys.argv) > 2 and sys.argv[1:3] == ['-m', 'pip']:\n"
+            "    args = sys.argv[3:]\n"
+            "    record({'kind': 'pip', 'args': args})\n"
+            "    target = pathlib.Path(args[args.index('--target') + 1])\n"
+            "    target.mkdir(parents=True, exist_ok=True)\n"
+            "    if os.environ.get('PROBE_PIP_FAIL') == '1':\n"
+            "        raise SystemExit(23)\n"
+            "elif len(sys.argv) > 1 and sys.argv[1].endswith('xingzhou_startup.py'):\n"
+            "    record({'kind': 'startup', 'args': sys.argv[1:], 'cwd': os.getcwd(), "
+            "'pythonpath': os.environ.get('PYTHONPATH', '')})\n"
+            "    print(json.dumps({'args': sys.argv[1:], 'interpreter': os.path.basename(sys.argv[0]), "
+            "'cwd': os.getcwd(), 'host': os.environ['SAM3_SERVER_NAME'], "
+            "'port': os.environ['SAM3_SERVER_PORT'], 'cache': os.environ['XDG_CACHE_HOME'], "
+            "'pythonpath': os.environ.get('PYTHONPATH', '')}))\n"
+            "else:\n"
+            "    record({'kind': 'unknown', 'args': sys.argv[1:]})\n"
+            "    raise SystemExit(97)\n"
         )
         python.chmod(0o700)
         self.env = {
             "PATH": os.environ["PATH"],
+            "PROBE_LOG": str(self.log),
             "SAM3_ALLOWED_ORIGINS": "https://sam3.example.test",
             "SAM3_SESSION_COOKIE_SECURE": "1",
             "SAM3_SERVER_PORT": "7893",
@@ -42,10 +68,22 @@ class XingzhouEntrypointTests(unittest.TestCase):
             capture_output=True, text=True, timeout=10,
         )
 
+    def records(self):
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def expected_deps_dir(self):
+        digest = hashlib.sha256(self.requirements.read_bytes()).hexdigest()[:16]
+        return self.directory / ".runtime" / (
+            f"python-deps-{sys.version_info[0]}{sys.version_info[1]}-{digest}"
+        )
+
     def use_interpreter_path(self, *names):
         directory = self.directory / "bin"
         directory.mkdir()
         (directory / "dirname").symlink_to(shutil.which("dirname"))
+        (directory / "touch").symlink_to(shutil.which("touch"))
         for name in names:
             (directory / name).symlink_to(self.directory / "python-probe")
         self.env["PATH"] = str(directory)
@@ -105,6 +143,51 @@ class XingzhouEntrypointTests(unittest.TestCase):
         result = self.launch()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout.splitlines()[-1])["cache"], "/cache/sam3")
+
+    def test_offline_install_has_no_network_or_gpu_flags_and_uses_versioned_target(self):
+        self.use_interpreter_path("python3")
+        result = self.launch("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pip_records = [record for record in self.records() if record["kind"] == "pip"]
+        self.assertEqual(len(pip_records), 1)
+        args = pip_records[0]["args"]
+        for flag in ("--isolated", "--no-index", "--only-binary=:all:", "--no-deps", "--upgrade"):
+            self.assertIn(flag, args)
+        self.assertNotIn("--index-url", args)
+        self.assertEqual(args[args.index("--find-links") + 1], str(self.directory / "wheels"))
+        self.assertEqual(args[args.index("--target") + 1], str(self.expected_deps_dir()))
+        self.assertEqual(args[args.index("-r") + 1], str(self.requirements))
+        command = " ".join(args).lower()
+        for gpu_name in ("torch", "torchvision", "torchaudio", "triton", "nvidia-", "cuda"):
+            self.assertNotIn(gpu_name, command)
+
+    def test_failed_offline_install_blocks_launch_and_leaves_no_marker(self):
+        self.use_interpreter_path("python3")
+        self.env["PROBE_PIP_FAIL"] = "1"
+        result = self.launch("--check")
+        self.assertEqual(result.returncode, 23)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse(any(record["kind"] == "startup" for record in self.records()))
+        self.assertFalse((self.expected_deps_dir() / ".installed").exists())
+
+    def test_successful_marker_skips_reinstall_and_prepends_pythonpath_overlay(self):
+        self.use_interpreter_path("python3")
+        existing = self.directory / "existing-pythonpath"
+        self.env["PYTHONPATH"] = str(existing)
+        first = self.launch("--check")
+        second = self.launch("--check")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        records = self.records()
+        self.assertEqual(sum(record["kind"] == "pip" for record in records), 1)
+        startup = [record for record in records if record["kind"] == "startup"]
+        self.assertEqual(len(startup), 2)
+        overlay = str(self.expected_deps_dir())
+        for record in startup:
+            pythonpath = record["pythonpath"].split(os.pathsep)
+            self.assertEqual(pythonpath[0], overlay)
+            self.assertIn(str(existing), pythonpath)
+        self.assertTrue((self.expected_deps_dir() / ".installed").is_file())
 
     def test_config_cache_override(self):
         tree = ast.parse((ROOT / "sam3_demo/config.py").read_text())

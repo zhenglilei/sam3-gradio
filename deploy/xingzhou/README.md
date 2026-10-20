@@ -4,12 +4,17 @@
 不进入镜像、Docker 构建上下文或部署 ZIP。本目录不含测试服务启动脚本、
 密钥生成工具、旧签名实现或本地废仓。运行时会话不需要配置、挂载或保存密钥。
 
+本次星舟部署使用平台已有的 **sam3_sdk** 镜像，不重新构建镜像。
+Torch、Torchvision、Triton、CUDA/NVIDIA 依赖由该镜像提供；
+应用依赖随 ZIP 离线交付。网页已确认该镜像可选，但未提供其内部版本信息，
+不能把本地验证当作该镜像已通过验收。
+
 ## 生产内容边界
 
 | 交付物 | 必须包含 | 明确排除 |
 |---|---|---|
-| 运行镜像 | Python 3.12、CUDA 对应的 PyTorch wheels、固定的 Web/推理运行依赖、8030 入口及健康检查 | 项目源码、模型、测试/验收工具、Git、个人目录、会话密钥 |
-| `/src` 部署 ZIP | `run.sh`、`xingzhou_startup.py`、`xingzhou-config.json`、`sam3_demo` 运行代码、SAM3 必需模块、运行辅助模块、自定义组件后端与已编译资源、BPE 词表、布局运行技能文档、LICENSE、文件摘要清单 | `tests`、训练入口、评测工具、notebooks、前端开发工具链、Docker 构建脚本、非运行文档、`.git`、`.runtime`、缓存、历史结果、`.orig`、废仓、密钥文件 |
+| 运行镜像 | Linux x86_64、Python 3.12 和 pip、已安装且可用的 Torch/Torchvision/CUDA、推理所需系统库及编译工具 | 不在启动时安装或升级 GPU 栈 |
+| `/src` 部署 ZIP | `run.sh`、`requirements-offline.txt`、`wheels/`、`xingzhou_startup.py`、`xingzhou-config.json`、运行源码、自定义组件及编译资源、模型、词表、技能文档、LICENSE、文件摘要清单 | GPU wheels、测试、开发工具链、Docker 构建脚本、`.git`、`.runtime`、缓存、历史结果、密钥文件 |
 | 模型 | `/src/models/sam3.pt`、`/src/models/big-lama.pt`；默认另行只读挂载 | 禁止复制进运行镜像；只有显式 `--with-models` 才写入 ZIP |
 | 运行数据 | 可写 `/src/.runtime`、`/src/.gradio`、`/src/public_downloads`；缓存默认 `/src/.runtime/cache` | 不依赖宿主机用户的缓存或绝对个人路径 |
 
@@ -28,13 +33,15 @@ SAM3/LaMa 核心加载与推理使用 `/src/models`，不依赖个人模型路�
 
 ## 构建与打包
 
-在 EL_Mask 工作目录执行（Python 打包器仅用标准库）：
+在 `zhengqiyuan/xingzhou-deploy` 工作目录、Linux x86_64 的 Python 3.12 环境执行。
+准备 wheels 时需要访问 PyPI；部署启动时不联网安装：
 
 ```sh
 OUT="$(mktemp -d "$PWD/.runtime/production-dist.XXXXXX")"
-python3 deploy/xingzhou/bundle.py build "$OUT/sam3-el-mask.zip" --ref HEAD
+python3 deploy/xingzhou/prepare_wheels.py "$OUT/wheels"
+python3 deploy/xingzhou/bundle.py build "$OUT/sam3-el-mask.zip" \
+    --ref HEAD --wheels-dir "$OUT/wheels" --with-models
 python3 deploy/xingzhou/bundle.py verify "$OUT/sam3-el-mask.zip"
-sh deploy/xingzhou/build-image.sh "$OUT/sam3-runtime.tar"
 ```
 
 白名单和源码资源均从指定 Git **提交**读取，忽略工作目录里的未提交修改、
@@ -43,19 +50,46 @@ sh deploy/xingzhou/build-image.sh "$OUT/sam3-runtime.tar"
 如平台只能上传一个 ZIP，可加 `--with-models`：模型软链接会转换为真实文件
 内容，模型来源以摘要为准；其余源码仍严格来自 Git 提交。
 
-`.dockerignore` 只放行 `Dockerfile` 和 `requirements-runtime.txt`。
-`build-image.sh` 使用本目录作构建上下文，产出仅含运行环境的镜像。
-可用 `SAM3_RUNTIME_IMAGE` 设置镜像标签。已有 ZIP/TAR 不会被覆盖。
+`requirements-runtime.txt` 保留直接应用依赖，根目录的 `requirements-offline.txt`
+锁定完整应用依赖闭包。构建器要求每个依赖都有同版本 wheel，并拒绝 GPU 包、
+缺包、多版本或未列入锁文件的包；wheel 的 SHA-256 同样进入 ZIP 清单。
+`iopath` 在打包时从其纯 Python 源码包生成 wheel，运行时不编译源码。
+`Dockerfile` / `build-image.sh` 是另行构建镜像的备用工具，本次不执行，
+星舟也不会因为 ZIP 中有 Dockerfile 就自动构建它。
+
+## 离线依赖
+
+`run.sh` 首次启动执行：
+
+```sh
+python3 -m pip --isolated install --disable-pip-version-check \
+    --no-index --find-links /src/wheels --only-binary=:all: --no-deps \
+    --target /src/.runtime/python-deps-312-<lock-hash> --upgrade \
+    -r /src/requirements-offline.txt
+```
+
+安装成功才写完成标记，再通过 `PYTHONPATH` 供主进程和模型子进程使用。
+同一锁文件再次启动复用此目录；依赖版本变化或 Python 小版本变化使用新目录。
+安装失败立即退出，不继续启动不完整的环境。不会修改镜像或宿主机的全局
+site-packages，也不会递归下载 `timm` 所声明的 Torch/CUDA 依赖。
+
+Web/CV 依赖并不全是纯 Python：NumPy、Pydantic Core、Pillow、OpenCV、
+SciPy 等使用已编译 Linux wheel，不能换成 Windows wheel。本批包面向
+CPython 3.12、Linux x86_64、glibc 2.28+；系统动态库、GPU 驱动、CUDA、
+Torch/Torchvision 配套版本及 Triton 编译工具链仍由镜像/平台提供。
+若 `sam3_sdk` 的 Python/架构不同，需要重新准备对应 wheel，不能靠离线
+应用依赖替换解决。已验证的 GPU 组合为 Torch 2.7.0、Torchvision 0.22.0、
+CUDA 12.6；这里描述的是 4090 验证环境，不是对平台镜像内容的断言。
 
 ## 平台启动约定
 
-1. 将 ZIP 直接解压到 `/src`，导入或选用构建好的运行镜像。
+1. 将 ZIP 直接解压到 `/src`，选择平台默认的 `sam3_sdk` 镜像。
 2. 提供两个模型文件；默认包使用只读挂载到 `/src/models` 的方式。
-3. 运行用户应能写 `/src` 下的运行目录。镜像默认 UID/GID 为 `10001:10001`；
-   绑定宿主机目录时需由部署方预先匹配目录所有权，或选择有相应写权限的 UID。
+3. 运行用户应能写 `/src` 下的运行目录，包括离线依赖安装目标。
+   实际 UID 由平台镜像决定，不能从备用 Dockerfile 推定挂载目录的权限。
 4. 执行 `/bin/sh /src/run.sh`，固定监听 `0.0.0.0:8030`。
    这是平台约定的容器端口，不由 `SAM3_SERVER_PORT` 覆盖；外部访问端口由平台映射。
-   入口依次查找 `python3`、`python`；解释器须满足 Python 3.12+。
+   入口依次查找 `python3`、`python`；本批 wheel 对应 Python 3.12。
 5. 本包的 `xingzhou-config.json` 已配置星舟服务 **10259** 的实际访问地址：
 
 ```text
@@ -104,7 +138,7 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 
 ## 启动自检与版本
 
-入口只做两项检查，通过后用同一个 Python 解释器执行 `sam3_demo.app`：
+入口先准备离线应用依赖，再做原有两项检查，通过后用同一个 Python 解释器执行 `sam3_demo.app`：
 
 - 载入 `xingzhou-config.json` 并执行原有会话配置校验，`SAM3_SESSION_COOKIE_SECURE=1` 时拒绝 `http://` 额外来源。
 - CUDA 是否可用、设备名称、可用显存及 BF16 能力；空闲显存少于 8192 MiB
@@ -114,7 +148,8 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 比对清单，因此改配置后无需同步修改 `bundle-manifest.json`。缺依赖、缺模型或
 运行目录不可写时，应用自身导入或初始化会直接报错退出。
 
-自检不会安装依赖、下载模型、调用外部模型 API 或开启监听。可单独执行：
+`--check` 同样会在首次运行时离线安装应用依赖，但不会下载模型、
+调用外部模型 API 或开启监听。可单独执行：
 
 ```sh
 /bin/sh /src/run.sh --check
@@ -147,13 +182,15 @@ Docker socket 权限、用户组、系统依赖，也不停止现有服务。当
 容器使用 headless OpenCV；Pydantic 2.13.4 与开发环境 sam3 一致，满足 Gradio 6.14.0 的版本约束。
 SAM3 模型构建器的导入链需要 `psutil`，模型下载辅助模块需要 `requests`，
 两者显式列入运行依赖，不能假设宿主机安装会自动带进镜像。
-删除应用对 Cookie 签名包的直接依赖。基础镜像与全部传递依赖尚未按摘要锁定，
-构建产物会在 `/opt/sam3/installed-requirements.txt` 记录实际安装版本。
+应用传递依赖锁定在 `requirements-offline.txt`，wheel 摘要记录在 ZIP 清单。
+平台基础镜像的版本和摘要尚待平台侧确认。测试应包含“缺应用依赖的隔离环境”
+离线安装、应用启动和 GPU 栈来源核对，不能只检查已装好全部依赖的宿主环境。
 
 以下命令只在开发仓库运行，测试本身不会被打包：
 
 ```sh
 python3 tests/test_production_bundle.py
 python3 tests/test_xingzhou_entrypoint.py
+python3 tests/test_xingzhou_wheels.py
 python3 -m unittest discover -s tests -p 'test_xingzhou_startup.py'
 ```

@@ -1,4 +1,5 @@
-# Direct runtime dependencies. Torch/CUDA wheels are installed by Dockerfile.
+# Direct application dependencies. The platform image supplies Torch/CUDA.
+# requirements-offline.txt pins the full application dependency closure.
 gradio==6.14.0
 fastapi==0.136.1
 starlette==1.0.0

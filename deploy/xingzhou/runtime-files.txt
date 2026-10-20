@@ -47,6 +47,7 @@ repair_mask_editor/backend/gradio_repair_mask_editor/templates/example/index.js
 repair_mask_editor/backend/gradio_repair_mask_editor/templates/example/render-D1FRZIsP.js
 repair_mask_editor/backend/gradio_repair_mask_editor/templates/example/svelte_runtime_entry.js
 run.sh
+requirements-offline.txt
 xingzhou-config.json
 xingzhou_startup.py
 sam3/__init__.py

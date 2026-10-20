@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 import zipfile
 
+from prepare_wheels import gpu_package, wheel_files
+
 COMPONENTS = ("image_gesture_overlay", "layout_transform_editor", "layout_region_annotator",
               "stitch_preview_canvas", "repair_mask_editor")
 MODELS = ("models/sam3.pt", "models/big-lama.pt")
@@ -20,11 +22,11 @@ RUNTIME_DOCS = (
 )
 REQUIRED = ("run.sh", "sam3_demo/app.py", "sam3_demo/config.py",
             "assets/bpe_simple_vocab_16e6.txt.gz", "LICENSE",
-            "xingzhou_startup.py", "xingzhou-config.json", *RUNTIME_DOCS)
+            "xingzhou_startup.py", "xingzhou-config.json", "requirements-offline.txt", *RUNTIME_DOCS)
 ROOT_FILES = {"run.sh", "LICENSE", "layout_categories.json", "download_models.py",
               "image_crop_utils.py", "layout_region_utils.py", "layout_transform_utils.py",
               "periodic_template_matching.py", "public_download_utils.py", "template_match_workflow.py",
-              "xingzhou_startup.py", "xingzhou-config.json"}
+              "xingzhou_startup.py", "xingzhou-config.json", "requirements-offline.txt"}
 # These modules are imported by inference; the rest of sam3/train is excluded.
 TRAIN_RUNTIME = {"sam3/train/__init__.py", "sam3/train/masks_ops.py", "sam3/train/matcher.py",
                  "sam3/train/data/__init__.py", "sam3/train/data/collator.py",
@@ -46,6 +48,8 @@ def selected(name):
         return False
     if len(path.parts) == 1:
         return name in ROOT_FILES
+    if path.parts[0] == "wheels":
+        return len(path.parts) == 2 and path.suffix == ".whl" and not gpu_package(path.name.split("-")[0])
     if name in {"assets/bpe_simple_vocab_16e6.txt.gz", "scripts/layout_image_to_mask.py"}:
         return True
     if name.startswith("sam3/train/"):
@@ -72,7 +76,7 @@ def digest(stream):
     return result.hexdigest()
 
 
-def build(root, output, *, ref="HEAD", with_models=False):
+def build(root, output, *, ref="HEAD", with_models=False, wheels_dir=None):
     root, output = root.resolve(), Path(output)
     sha = git(root, "rev-parse", "--verify", ref + "^{commit}").decode().strip()
     tree = {}
@@ -92,8 +96,14 @@ def build(root, output, *, ref="HEAD", with_models=False):
     for component in COMPONENTS:
         if not any(name.startswith(component + "/backend/") and "/templates/component/" in name for name in names):
             raise ValueError("Missing compiled component: " + component)
+    lock = git(root, "show", sha + ":requirements-offline.txt").decode()
+    wheels = wheel_files(wheels_dir or root / ".runtime/xingzhou-wheels", lock)
+    external = {"wheels/" + path.name: path for path in wheels}
+    if with_models:
+        external.update({name: root / name for name in MODELS})
     manifest = {"schema": 2, "git_sha": sha, "source": "committed Git blobs",
                 "container_port": 8030, "entrypoint": "/src/run.sh",
+                "application_dependencies": "offline wheels; CPython 3.12 Linux x86_64",
                 "models": "included" if with_models else "external mount", "files": {}}
     if output.exists():
         raise FileExistsError(output)
@@ -102,16 +112,16 @@ def build(root, output, *, ref="HEAD", with_models=False):
     os.close(fd)
     try:
         with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
-            for name in names + (list(MODELS) if with_models else []):
+            for name in names + sorted(external):
                 info = zipfile.ZipInfo(name)
                 info.create_system = 3
                 info.external_attr = (stat.S_IFREG | (0o755 if name == "run.sh" else 0o644)) << 16
-                info.compress_type = zipfile.ZIP_STORED if name in MODELS else zipfile.ZIP_DEFLATED
-                if name in MODELS:
-                    path = root / name
+                info.compress_type = zipfile.ZIP_STORED if name in external else zipfile.ZIP_DEFLATED
+                if name in external:
+                    path = external[name]
                     before = path.stat()
                     if not path.is_file() or before.st_size == 0:
-                        raise ValueError("Missing model: " + name)
+                        raise ValueError("Missing payload: " + name)
                     with path.open("rb") as source, archive.open(info, "w", force_zip64=True) as target:
                         sha256 = hashlib.sha256()
                         while chunk := source.read(1024 * 1024):
@@ -119,7 +129,7 @@ def build(root, output, *, ref="HEAD", with_models=False):
                             target.write(chunk)
                     after = path.stat()
                     if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
-                        raise ValueError("Model changed during packaging: " + name)
+                        raise ValueError("Payload changed during packaging: " + name)
                     entry = {"size": after.st_size, "sha256": sha256.hexdigest()}
                 else:
                     data = git(root, "cat-file", "blob", tree[name][2])
@@ -174,10 +184,11 @@ def main():
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--ref", default="HEAD", help="Committed revision to package (working files are ignored)")
     parser.add_argument("--with-models", action="store_true", help="Include local trusted model bytes instead of mounting them")
+    parser.add_argument("--wheels-dir", type=Path, help="Prepared Linux application wheelhouse")
     parser.add_argument("--destination", type=Path)
     args = parser.parse_args()
     if args.action == "build":
-        build(args.root, args.zip, ref=args.ref, with_models=args.with_models)
+        build(args.root, args.zip, ref=args.ref, with_models=args.with_models, wheels_dir=args.wheels_dir)
     manifest = verify(args.zip)
     if args.action == "extract":
         if args.destination is None:

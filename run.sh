@@ -14,4 +14,14 @@ if [ -z "$PYTHON_BIN" ]; then
     printf '%s\n' 'Python interpreter not found: provide python3 or python on PATH.' >&2
     exit 127
 fi
+
+# Only application wheels go here; Torch/Torchvision/CUDA stay in the image.
+DEPS_DIR="$("$PYTHON_BIN" -c 'import hashlib, pathlib, sys; root = pathlib.Path.cwd(); key = hashlib.sha256((root / "requirements-offline.txt").read_bytes()).hexdigest()[:16]; print(root / ".runtime" / ("python-deps-%d%d-" % sys.version_info[:2] + key))')"
+if [ ! -f "$DEPS_DIR/.installed" ]; then
+    "$PYTHON_BIN" -m pip --isolated install --disable-pip-version-check \
+        --no-index --find-links "$PWD/wheels" --only-binary=:all: --no-deps \
+        --target "$DEPS_DIR" --upgrade -r "$PWD/requirements-offline.txt"
+    touch "$DEPS_DIR/.installed"
+fi
+export PYTHONPATH="$DEPS_DIR${PYTHONPATH:+:$PYTHONPATH}"
 exec "$PYTHON_BIN" "$PWD/xingzhou_startup.py" "$@"
