@@ -131,11 +131,8 @@ def load_session_cookie_settings(
         raise SessionWebError("SAM3_SESSION_DEPLOYMENT_ID is required and invalid")
     if not _COOKIE_NAME_RE.fullmatch(cookie_name):
         raise SessionWebError("SAM3_SESSION_COOKIE_NAME is required and invalid")
-    if not origins_text:
-        raise SessionWebError("SAM3_ALLOWED_ORIGINS is required")
+    # Optional extra origins; same-origin writes are always accepted (see _write_origin).
     origins = frozenset(_origin(item) for item in origins_text.split(",") if item.strip())
-    if not origins:
-        raise SessionWebError("at least one exact allowed origin is required")
     if secure_text not in {"0", "1"}:
         raise SessionWebError("SAM3_SESSION_COOKIE_SECURE must be exactly 0 or 1")
     secure_cookie = secure_text == "1"
@@ -633,17 +630,45 @@ def _referer_origin(value: str) -> str | None:
         return None
 
 
+def _host_authority(value: str | None, default_port: int) -> tuple[str, int] | None:
+    if not value:
+        return None
+    try:
+        parsed = urlsplit("//" + value.split(",", 1)[0].strip())
+        if not parsed.hostname:
+            return None
+        return parsed.hostname.lower(), parsed.port or default_port
+    except ValueError:
+        return None
+
+
+def _matches_request_host(origin: str, headers: Headers) -> bool:
+    # A browser page served by this app sends its own address as Origin, so the
+    # deployment address need not be known in advance. Cross-site pages cannot
+    # forge Host or X-Forwarded-Host. Scheme is not compared because a TLS proxy
+    # may forward HTTPS traffic to this process as plain HTTP.
+    parsed = urlsplit(origin)
+    target = (parsed.hostname, parsed.port)
+    default_port = 80 if parsed.scheme == "http" else 443
+    return any(
+        _host_authority(headers.get(name), default_port) == target
+        for name in ("host", "x-forwarded-host")
+    )
+
+
 def _write_origin(headers: Headers, allowed_origins: frozenset[str]) -> bool:
     origin = headers.get("origin")
     if origin is not None:
         try:
-            return _origin(origin) in allowed_origins
+            normalized = _origin(origin)
         except SessionWebError:
             return False
-    referer = headers.get("referer")
-    if referer is None:
-        return False
-    return _referer_origin(referer) in allowed_origins
+    else:
+        referer = headers.get("referer")
+        normalized = _referer_origin(referer) if referer is not None else None
+        if normalized is None:
+            return False
+    return normalized in allowed_origins or _matches_request_host(normalized, headers)
 
 
 async def _read_json_body(receive: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:

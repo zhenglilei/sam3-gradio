@@ -313,6 +313,41 @@ class SessionHttpTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_same_origin_write_is_accepted_without_allowlist_entry(self):
+        client, _ = self._new_owner("198.51.100.51")
+        try:
+            def post(headers):
+                return client.post(
+                    "/gradio_api/run/_bootstrap_session",
+                    json={
+                        "data": [],
+                        "fn_index": self.bootstrap["id"],
+                        "trigger_id": self.bootstrap["id"],
+                        "session_hash": "same-origin-" + uuid.uuid4().hex,
+                    },
+                    headers=headers,
+                )
+
+            for headers in (
+                {"Host": "10.9.8.7:31000", "Origin": "http://10.9.8.7:31000"},
+                {"Host": "sam3.example.test", "Origin": "https://sam3.example.test"},
+                {"Host": "10.9.8.7:31000", "Referer": "http://10.9.8.7:31000/?x=1"},
+                {"Host": "pod:8030", "X-Forwarded-Host": "10.9.8.7:31000",
+                 "Origin": "http://10.9.8.7:31000"},
+            ):
+                with self.subTest(headers=headers):
+                    response = post(headers)
+                    self.assertEqual(response.status_code, 200, response.text)
+            for headers in (
+                {"Host": "10.9.8.7:31000", "Origin": "http://evil.example"},
+                {"Host": "10.9.8.7:31000", "Origin": "http://10.9.8.7:31001"},
+                {"Host": "10.9.8.7:31000", "Origin": "null"},
+            ):
+                with self.subTest(headers=headers):
+                    self.assertEqual(post(headers).status_code, 403)
+        finally:
+            client.close()
+
 
 class SessionCookieConfigTests(unittest.TestCase):
     def _env(self):

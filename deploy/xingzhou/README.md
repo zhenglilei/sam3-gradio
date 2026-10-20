@@ -68,9 +68,14 @@ SAM3_ALLOW_INSECURE_COOKIE=1
 
 平台仅执行 `./run.sh` 时会加载此配置，不需要额外注入环境变量或密钥。
 该地址是 2026-10-16 在“接口信息”核实的服务来源，不是管理页面
-`10.120.105.243:30008`，也不包含 `/inferenceStart`。平台若重新分配地址，
-必须更新此 JSON 后提交并重新打包，或通过环境变量覆盖；不会自动信任任意来源。
-`SAM3_ALLOWED_ORIGINS` 可用逗号列出多个来源。平台不能注入环境变量时，此 JSON
+`10.120.105.243:30008`，也不包含 `/inferenceStart`。
+
+写操作（POST/PUT/PATCH/DELETE）的来源校验不再依赖预先写好的地址：浏览器发来的
+`Origin`（或 `Referer`）只要与该请求的 `Host` 或 `X-Forwarded-Host` 一致（同源）
+即放行，因此平台重新分配 IP、端口或改用域名/HTTPS 时无需重新打包。
+`SAM3_ALLOWED_ORIGINS` 改为可选的额外来源（逗号分隔，可留空），只在反向代理
+改写了 `Host` 且未提供 `X-Forwarded-Host` 时才需要填写真实访问地址。
+其他站点的页面无法伪造这两个请求头，跨站写请求仍返回 403。平台不能注入环境变量时，此 JSON
 就是唯一配置入口：除上述五项外，也可写入其他字符串设置（例如
 `LAYOUT_MASK_VLM_BASE_URL`），启动时按同样规则载入。
 此 HTTP 配置只适用于当前内部验收，传输本身没有 HTTPS 加密。
@@ -89,7 +94,8 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 ```
 
 内部 HTTP 验收需显式设 `SAM3_SESSION_COOKIE_SECURE=0`、
-`SAM3_ALLOW_INSECURE_COOKIE=1`，并把允许来源改成实际端口地址。
+`SAM3_ALLOW_INSECURE_COOKIE=1`。非 Secure Cookie 在 HTTPS 下同样可用；
+`SAM3_SESSION_COOKIE_SECURE=1` 时额外来源不能是 `http://`。
 不同服务使用不同 Cookie 名称；Cookie 本身不按端口隔离。
 不配置任何会话签名密钥变量或挂载目录。
 
@@ -100,7 +106,7 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 
 入口只做两项检查，通过后用同一个 Python 解释器执行 `sam3_demo.app`：
 
-- 载入 `xingzhou-config.json` 并执行原有会话配置校验，要求来源协议与 Secure Cookie 配置一致。
+- 载入 `xingzhou-config.json` 并执行原有会话配置校验，`SAM3_SESSION_COOKIE_SECURE=1` 时拒绝 `http://` 额外来源。
 - CUDA 是否可用、设备名称、可用显存及 BF16 能力；空闲显存少于 8192 MiB
   只警告，模型加载仍由原有 supervisor 决定，不在自检中加载模型或执行推理。
 

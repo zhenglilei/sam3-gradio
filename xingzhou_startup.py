@@ -36,9 +36,9 @@ def configure(root):
     from sam3_demo.session_web import load_session_cookie_settings
 
     settings = load_session_cookie_settings()
-    expected_scheme = "https://" if settings.secure_cookie else "http://"
-    if not all(origin.startswith(expected_scheme) for origin in settings.allowed_origins):
-        raise StartupError("SAM3_SESSION_COOKIE_SECURE must match every SAM3_ALLOWED_ORIGINS scheme")
+    # A Secure cookie is never sent over HTTP; a non-Secure cookie works on both.
+    if settings.secure_cookie and any(origin.startswith("http://") for origin in settings.allowed_origins):
+        raise StartupError("SAM3_SESSION_COOKIE_SECURE=1 cannot be used with http:// SAM3_ALLOWED_ORIGINS")
     return {"deployment_id": settings.deployment_id, "origins": sorted(settings.allowed_origins),
             "secure_cookie": settings.secure_cookie, "configuration_sources": sources}
 

@@ -70,7 +70,7 @@ class XingzhouStartupTests(unittest.TestCase):
 
     def test_invalid_explicit_session_settings_are_not_replaced_by_defaults(self):
         for name, value in (
-            ("SAM3_ALLOWED_ORIGINS", ""), ("SAM3_ALLOWED_ORIGINS", "http://host/inferenceStart"),
+            ("SAM3_ALLOWED_ORIGINS", "http://host/inferenceStart"),
             ("SAM3_ALLOWED_ORIGINS", "*"), ("SAM3_SESSION_COOKIE_SECURE", "maybe"),
             ("SAM3_ALLOW_INSECURE_COOKIE", "0"), ("SAM3_SESSION_COOKIE_NAME", "bad"),
         ):
@@ -78,12 +78,18 @@ class XingzhouStartupTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     startup.configure(self.root)
 
-    def test_http_secure_cookie_and_https_insecure_cookie_mismatch_fail(self):
-        for overrides in ({"SAM3_SESSION_COOKIE_SECURE": "1"},
-                          {"SAM3_ALLOWED_ORIGINS": "https://example.test"}):
-            with self.subTest(overrides=overrides), patch.dict(os.environ, overrides, clear=True):
-                with self.assertRaisesRegex(startup.StartupError, "must match"):
-                    startup.configure(self.root)
+    def test_secure_cookie_with_http_origin_fails(self):
+        with patch.dict(os.environ, {"SAM3_SESSION_COOKIE_SECURE": "1"}, clear=True):
+            with self.assertRaisesRegex(startup.StartupError, "cannot be used with http://"):
+                startup.configure(self.root)
+
+    def test_https_origin_with_non_secure_cookie_is_allowed(self):
+        with patch.dict(os.environ, {"SAM3_ALLOWED_ORIGINS": "https://example.test"}, clear=True):
+            self.assertEqual(startup.configure(self.root)["origins"], ["https://example.test:443"])
+
+    def test_empty_origin_list_means_same_origin_only(self):
+        self.edit_profile(SAM3_ALLOWED_ORIGINS="")
+        self.assertEqual(startup.configure(self.root)["origins"], [])
 
     def test_manifest_sha_is_passed_through_without_validation(self):
         startup.configure(self.root)
