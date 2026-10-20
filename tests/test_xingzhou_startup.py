@@ -1,8 +1,6 @@
 """Xingzhou startup checks using tiny bundles and mocked CUDA, never live models."""
 
-import builtins
 import contextlib
-import errno
 import importlib.util
 import io
 import json
@@ -26,23 +24,15 @@ class XingzhouStartupTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.manifest = {"schema": 2, "container_port": 8030, "entrypoint": "/src/run.sh",
-                         "git_sha": "a" * 40, "files": {}}
-        for name in startup.REQUIRED:
-            path = self.root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"fixture")
-            self.manifest["files"][name] = {"size": 7}
-        profile = (ROOT / "xingzhou-config.json").read_bytes()
-        (self.root / "xingzhou-config.json").write_bytes(profile)
-        self.manifest["files"]["xingzhou-config.json"]["size"] = len(profile)
-        self.save_manifest()
+        (self.root / "xingzhou-config.json").write_bytes((ROOT / "xingzhou-config.json").read_bytes())
         self.environment = patch.dict(os.environ, {}, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
-    def save_manifest(self):
-        (self.root / "bundle-manifest.json").write_text(json.dumps(self.manifest))
+    def edit_profile(self, **changes):
+        profile = json.loads((self.root / "xingzhou-config.json").read_text())
+        profile.update(changes)
+        (self.root / "xingzhou-config.json").write_text(json.dumps(profile))
 
     def test_packaged_http_profile_needs_no_injected_variables_or_secret(self):
         result = startup.configure(self.root)
@@ -66,19 +56,17 @@ class XingzhouStartupTests(unittest.TestCase):
         self.assertEqual(result["configuration_sources"]["SAM3_ALLOWED_ORIGINS"], "environment")
         self.assertEqual(result["configuration_sources"]["SAM3_ALLOW_INSECURE_COOKIE"], "profile")
 
-    def test_placeholder_environment_and_profile_fail_without_echoing_value(self):
-        value = "http://REPLACE_WITH_SERVICE_HOST:30231"
-        with patch.dict(os.environ, {"SAM3_ALLOWED_ORIGINS": value}):
-            with self.assertRaisesRegex(startup.StartupError, "SAM3_ALLOWED_ORIGINS contains a placeholder") as result:
-                startup.configure(self.root)
-            self.assertNotIn(value, str(result.exception))
-            self.assertEqual(os.environ["SAM3_ALLOWED_ORIGINS"], value)
-        profile = json.loads((self.root / "xingzhou-config.json").read_text())
-        profile["SAM3_ALLOWED_ORIGINS"] = value
-        (self.root / "xingzhou-config.json").write_text(json.dumps(profile))
-        with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(startup.StartupError, "placeholder"):
-                startup.configure(self.root)
+    def test_profile_can_carry_additional_settings(self):
+        self.edit_profile(LAYOUT_MASK_VLM_BASE_URL="http://vlm.example.test/v1",
+                          SAM3_ALLOWED_ORIGINS="http://10.0.0.1:30231,http://sam3.example.test")
+        result = startup.configure(self.root)
+        self.assertEqual(os.environ["LAYOUT_MASK_VLM_BASE_URL"], "http://vlm.example.test/v1")
+        self.assertEqual(result["origins"], ["http://10.0.0.1:30231", "http://sam3.example.test:80"])
+
+    def test_non_string_profile_is_rejected(self):
+        self.edit_profile(SAM3_SESSION_COOKIE_SECURE=0)
+        with self.assertRaisesRegex(startup.StartupError, "string settings"):
+            startup.configure(self.root)
 
     def test_invalid_explicit_session_settings_are_not_replaced_by_defaults(self):
         for name, value in (
@@ -97,83 +85,12 @@ class XingzhouStartupTests(unittest.TestCase):
                 with self.assertRaisesRegex(startup.StartupError, "must match"):
                     startup.configure(self.root)
 
-    def test_profile_cannot_inject_unrelated_environment(self):
-        profile = json.loads((self.root / "xingzhou-config.json").read_text())
-        profile["PYTHONPATH"] = "/unreviewed"
-        (self.root / "xingzhou-config.json").write_text(json.dumps(profile))
-        with self.assertRaisesRegex(startup.StartupError, "five documented"):
-            startup.configure(self.root)
-        self.assertNotIn("PYTHONPATH", os.environ)
-
-    def test_manifest_sha_reaches_runtime_environment_without_git(self):
-        result = startup.check_bundle(self.root)
-        self.assertEqual(result["git_sha"], "a" * 40)
+    def test_manifest_sha_is_passed_through_without_validation(self):
+        startup.configure(self.root)
+        self.assertNotIn("SAM3_BUILD_GIT_SHA", os.environ)
+        (self.root / "bundle-manifest.json").write_text(json.dumps({"git_sha": "a" * 40}))
+        startup.configure(self.root)
         self.assertEqual(os.environ["SAM3_BUILD_GIT_SHA"], "a" * 40)
-        self.assertNotIn("PATH", os.environ)
-
-    def test_malformed_or_conflicting_build_sha_fails(self):
-        for sha in ("unknown", "abc123", "a" * 39 + ";", 123):
-            with self.subTest(sha=sha):
-                self.manifest["git_sha"] = sha
-                self.save_manifest()
-                with self.assertRaisesRegex(startup.StartupError, "full Git SHA"):
-                    startup.check_bundle(self.root)
-        self.manifest["git_sha"] = "a" * 40
-        self.save_manifest()
-        os.environ["SAM3_BUILD_GIT_SHA"] = "b" * 40
-        with self.assertRaisesRegex(startup.StartupError, "conflicts"):
-            startup.check_bundle(self.root)
-
-    def test_missing_manifest_or_required_file_fails(self):
-        (self.root / "bundle-manifest.json").unlink()
-        with self.assertRaises(FileNotFoundError):
-            startup.check_bundle(self.root)
-        self.save_manifest()
-        for name in startup.REQUIRED:
-            with self.subTest(name=name):
-                target = self.root / name
-                content = target.read_bytes()
-                target.unlink()
-                with self.assertRaisesRegex(startup.StartupError, "missing or empty"):
-                    startup.check_bundle(self.root)
-                target.write_bytes(content)
-
-    def test_unlisted_required_resource_and_wrong_port_fail(self):
-        name = startup.SKILL + "SKILL.md"
-        entry = self.manifest["files"].pop(name)
-        self.save_manifest()
-        with self.assertRaisesRegex(startup.StartupError, "Missing required manifest entry"):
-            startup.check_bundle(self.root)
-        self.manifest["files"][name] = entry
-        self.manifest["container_port"] = 7893
-        self.save_manifest()
-        with self.assertRaisesRegex(startup.StartupError, "contract"):
-            startup.check_bundle(self.root)
-
-    def test_size_change_and_unsafe_manifest_path_fail(self):
-        (self.root / "run.sh").write_bytes(b"changed contents")
-        with self.assertRaisesRegex(startup.StartupError, "size differs"):
-            startup.check_bundle(self.root)
-        (self.root / "run.sh").write_bytes(b"fixture")
-        self.manifest["files"]["../escape"] = {"size": 0}
-        self.save_manifest()
-        with self.assertRaisesRegex(startup.StartupError, "Unsafe relative path"):
-            startup.check_bundle(self.root)
-
-    def test_external_models_and_empty_package_init_are_supported(self):
-        for name in ("models/sam3.pt", "models/big-lama.pt"):
-            del self.manifest["files"][name]
-        name = "sam3_demo/__init__.py"
-        (self.root / name).write_bytes(b"")
-        self.manifest["files"][name] = {"size": 0}
-        self.save_manifest()
-        startup.check_bundle(self.root)
-
-    def test_dependency_failure_names_module_without_exception_secrets(self):
-        with patch.object(startup.importlib, "import_module", side_effect=ImportError("sensitive value")):
-            with self.assertRaisesRegex(startup.StartupError, "Cannot import torch") as result:
-                startup.check_dependencies(self.root)
-            self.assertNotIn("sensitive value", str(result.exception))
 
     def test_gpu_unavailable_fails_and_low_memory_only_warns(self):
         import torch
@@ -190,44 +107,8 @@ class XingzhouStartupTests(unittest.TestCase):
             self.assertEqual(result["free_mib"], 1024)
             self.assertEqual(json.loads(output.getvalue())["status"], "warning")
 
-    def test_directory_write_failure_is_actionable(self):
-        directories = SimpleNamespace(runtime_dir=self.root / ".runtime", runtime_tmp_dir=self.root / ".runtime/tmp",
-                                      public_download_dir=self.root / "downloads", qiyuan_cache_dir=self.root / "cache",
-                                      runtime_feedback_dir=self.root / ".runtime/feedback")
-        with patch.dict(sys.modules, {"sam3_demo.config": directories}), \
-             patch.object(startup.tempfile, "TemporaryFile", side_effect=PermissionError()):
-            with self.assertRaisesRegex(startup.StartupError, "not writable") as result:
-                startup.check_directories(self.root)
-            self.assertIn(str(self.root), str(result.exception))
-
-    def test_directory_initialization_failure_reports_path_before_dependencies(self):
-        blocked = str(self.root / ".runtime/tmp")
-        original_import = builtins.__import__
-
-        def import_with_blocked_config(name, globals=None, locals=None, fromlist=(), level=0):
-            if name == "sam3_demo" and "config" in fromlist:
-                raise PermissionError(errno.EACCES, "sensitive error contents", blocked)
-            return original_import(name, globals, locals, fromlist, level)
-
-        with patch.object(builtins, "__import__", side_effect=import_with_blocked_config), \
-             patch.object(startup, "check_bundle", return_value={}), \
-             patch.object(startup, "check_dependencies") as dependencies, \
-             patch.object(startup, "configure") as configure, patch.object(startup.os, "execv") as execute, \
-             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as output:
-            self.assertEqual(startup.main([]), 1)
-            record = json.loads(output.getvalue())
-            self.assertEqual(record["check"], "directories")
-            self.assertIn(blocked, record["message"])
-            self.assertNotIn("sensitive error contents", record["message"])
-            dependencies.assert_not_called()
-            configure.assert_not_called()
-            execute.assert_not_called()
-
     def test_main_check_only_does_not_exec_and_success_execs_same_python(self):
-        with patch.object(startup, "check_bundle", return_value={}), \
-             patch.object(startup, "configure", return_value={}), \
-             patch.object(startup, "check_dependencies", return_value={}), \
-             patch.object(startup, "check_directories", return_value={}), \
+        with patch.object(startup, "configure", return_value={}), \
              patch.object(startup, "check_gpu", return_value={}), \
              patch.object(startup.os, "execv") as execute, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(startup.main(["--check"]), 0)
@@ -236,14 +117,14 @@ class XingzhouStartupTests(unittest.TestCase):
             execute.assert_called_once_with(sys.executable, [sys.executable, "-m", "sam3_demo.app"])
 
     def test_main_stops_before_launch_and_suppresses_unknown_exception_values(self):
-        with patch.object(startup, "check_bundle", side_effect=ValueError("secret value")), \
-             patch.object(startup, "configure") as configure, patch.object(startup.os, "execv") as execute, \
+        with patch.object(startup, "configure", side_effect=ValueError("secret value")), \
+             patch.object(startup, "check_gpu") as gpu, patch.object(startup.os, "execv") as execute, \
              contextlib.redirect_stderr(io.StringIO()) as output:
             self.assertEqual(startup.main([]), 1)
-            configure.assert_not_called()
+            gpu.assert_not_called()
             execute.assert_not_called()
             self.assertNotIn("secret value", output.getvalue())
-            self.assertEqual(json.loads(output.getvalue())["check"], "bundle")
+            self.assertEqual(json.loads(output.getvalue())["check"], "session")
 
 
 if __name__ == "__main__":

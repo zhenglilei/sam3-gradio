@@ -55,8 +55,7 @@ sh deploy/xingzhou/build-image.sh "$OUT/sam3-runtime.tar"
    绑定宿主机目录时需由部署方预先匹配目录所有权，或选择有相应写权限的 UID。
 4. 执行 `/bin/sh /src/run.sh`，固定监听 `0.0.0.0:8030`。
    这是平台约定的容器端口，不由 `SAM3_SERVER_PORT` 覆盖；外部访问端口由平台映射。
-   入口优先使用显式 `PYTHON_BIN`，未指定时依次查找 `python3`、`python`。
-   显式解释器不可执行时直接失败，不自动切换环境；解释器仍须满足 Python 3.12+。
+   入口依次查找 `python3`、`python`；解释器须满足 Python 3.12+。
 5. 本包的 `xingzhou-config.json` 已配置星舟服务 **10259** 的实际访问地址：
 
 ```text
@@ -71,11 +70,13 @@ SAM3_ALLOW_INSECURE_COOKIE=1
 该地址是 2026-10-16 在“接口信息”核实的服务来源，不是管理页面
 `10.120.105.243:30008`，也不包含 `/inferenceStart`。平台若重新分配地址，
 必须更新此 JSON 后提交并重新打包，或通过环境变量覆盖；不会自动信任任意来源。
+`SAM3_ALLOWED_ORIGINS` 可用逗号列出多个来源。平台不能注入环境变量时，此 JSON
+就是唯一配置入口：除上述五项外，也可写入其他字符串设置（例如
+`LAYOUT_MASK_VLM_BASE_URL`），启动时按同样规则载入。
 此 HTTP 配置只适用于当前内部验收，传输本身没有 HTTPS 加密。
 
 环境变量优先于 JSON，显式空值或错误值仍会失败，不会被默认值掩盖。
-旧配置中的 `REPLACE_WITH_SERVICE_HOST` 等占位值会在启动时拒绝；删除残留的
-环境变量可恢复使用包内配置。会话检查日志同时列出各设置来自环境还是包内配置。
+会话检查日志同时列出各设置来自环境还是包内配置。
 部署到其他服务时同时指定独立部署 ID、Cookie 名称、真实来源和协议配置：
 
 ```sh
@@ -97,16 +98,15 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 
 ## 启动自检与版本
 
-入口先检查以下内容，通过后用同一个 Python 解释器执行 `sam3_demo.app`：
+入口只做两项检查，通过后用同一个 Python 解释器执行 `sam3_demo.app`：
 
-- 包清单、必需文件及大小，包括模型、词表、技能文档和五个组件的编译入口。
-- 缓存、临时文件、导出、反馈、布局、日志等运行目录的实际写入权限。
-  此项在重型依赖导入前执行；配置模块初始化目录失败时也会报告具体路径。
-  入口不会更改挂载目录归属、放宽权限或绕过只读挂载，需部署方提供可写目录。
-- Python 3.12+、核心依赖、SAM3 模型构建器和本包组件的实际导入。
-- 原有会话配置校验，并要求来源协议与 Secure Cookie 配置一致。
+- 载入 `xingzhou-config.json` 并执行原有会话配置校验，要求来源协议与 Secure Cookie 配置一致。
 - CUDA 是否可用、设备名称、可用显存及 BF16 能力；空闲显存少于 8192 MiB
   只警告，模型加载仍由原有 supervisor 决定，不在自检中加载模型或执行推理。
+
+文件完整性由发布前的 `bundle.py verify` 负责（逐文件 SHA-256），启动时不再
+比对清单，因此改配置后无需同步修改 `bundle-manifest.json`。缺依赖、缺模型或
+运行目录不可写时，应用自身导入或初始化会直接报错退出。
 
 自检不会安装依赖、下载模型、调用外部模型 API 或开启监听。可单独执行：
 
@@ -114,13 +114,10 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 /bin/sh /src/run.sh --check
 ```
 
-标准输出使用 `xingzhou_startup` JSON 事件记录检查阶段、实际依赖版本及结果。
+标准输出使用 `xingzhou_startup` JSON 事件记录检查阶段及结果。
 失败写入标准错误并返回非零退出码，不打印环境全集、Cookie 值或密钥。
-Git SHA 从 `bundle-manifest.json` 读取并设置 `SAM3_BUILD_GIT_SHA`，因此无 Git 的
-镜像中操作日志也能识别版本；如果外部注入了冲突 SHA，启动会拒绝。
-此入口用于解压后的发布包，直接在源码树运行时缺少清单会失败，应先打包解压。
-启动自检只核对文件存在性和大小；完整 SHA-256 检查由发布前的 `bundle.py verify`
-执行，避免每次启动重复读取数 GB 权重。没有改变公共会话模块、算法或 UI。
+若存在 `bundle-manifest.json`，其 Git SHA 只作为 `SAM3_BUILD_GIT_SHA` 的默认值
+写入日志版本标识，不做校验。
 
 ## 验收边界
 
@@ -141,7 +138,7 @@ Docker socket 权限、用户组、系统依赖，也不停止现有服务。当
 ## 依赖与验证
 
 沿用 torch 2.7.0 / torchvision 0.22.0 / CUDA 12.6 的组合，不改宿主机环境。
-容器使用 headless OpenCV；Pydantic 2.12.5 满足 Gradio 6.14.0 的版本约束。
+容器使用 headless OpenCV；Pydantic 2.13.4 与开发环境 sam3 一致，满足 Gradio 6.14.0 的版本约束。
 SAM3 模型构建器的导入链需要 `psutil`，模型下载辅助模块需要 `requests`，
 两者显式列入运行依赖，不能假设宿主机安装会自动带进镜像。
 删除应用对 Cookie 签名包的直接依赖。基础镜像与全部传递依赖尚未按摘要锁定，

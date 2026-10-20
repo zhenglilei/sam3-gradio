@@ -30,7 +30,6 @@ class XingzhouEntrypointTests(unittest.TestCase):
         python.chmod(0o700)
         self.env = {
             "PATH": os.environ["PATH"],
-            "PYTHON_BIN": str(python),
             "SAM3_ALLOWED_ORIGINS": "https://sam3.example.test",
             "SAM3_SESSION_COOKIE_SECURE": "1",
             "SAM3_SERVER_PORT": "7893",
@@ -50,7 +49,6 @@ class XingzhouEntrypointTests(unittest.TestCase):
         for name in names:
             (directory / name).symlink_to(self.directory / "python-probe")
         self.env["PATH"] = str(directory)
-        self.env.pop("PYTHON_BIN", None)
 
     def test_python3_only_is_discovered_and_check_is_forwarded(self):
         self.use_interpreter_path("python3")
@@ -60,9 +58,8 @@ class XingzhouEntrypointTests(unittest.TestCase):
         self.assertEqual(record["interpreter"], "python3")
         self.assertEqual(record["args"], [str(self.directory / "xingzhou_startup.py"), "--check"])
 
-    def test_python_only_is_discovered_with_empty_override(self):
+    def test_python_only_is_discovered(self):
         self.use_interpreter_path("python")
-        self.env["PYTHON_BIN"] = ""
         result = self.launch()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["interpreter"], "python")
@@ -79,30 +76,9 @@ class XingzhouEntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 127)
         self.assertEqual(result.stdout, "")
         self.assertIn("Python interpreter not found", result.stderr)
-        self.assertIn("PYTHON_BIN", result.stderr)
-
-    def test_invalid_explicit_interpreter_does_not_fall_back(self):
-        self.use_interpreter_path("python3", "python")
-        nonexecutable = self.directory / "nonexecutable-python"
-        nonexecutable.write_text("#!/bin/sh\nexit 0\n")
-        nonexecutable.chmod(0o600)
-        for value in ("missing-python", str(nonexecutable), str(self.directory)):
-            with self.subTest(value=value):
-                self.env["PYTHON_BIN"] = value
-                result = self.launch()
-                self.assertEqual(result.returncode, 127)
-                self.assertEqual(result.stdout, "")
-                self.assertIn("Invalid PYTHON_BIN", result.stderr)
-                self.assertIn("executable Python interpreter", result.stderr)
-
-    def test_explicit_interpreter_name_overrides_python3_preference(self):
-        self.use_interpreter_path("python3", "python")
-        self.env["PYTHON_BIN"] = "python"
-        result = self.launch()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["interpreter"], "python")
 
     def test_entrypoint_fixed_port_and_bundle_workdir(self):
+        self.use_interpreter_path("python3")
         result = self.launch()
         self.assertEqual(result.returncode, 0, result.stderr)
         records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
@@ -114,6 +90,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
         self.assertEqual(records[0]["cache"], str(self.directory / ".runtime/cache"))
 
     def test_check_only_is_forwarded_without_shell_security_defaults(self):
+        self.use_interpreter_path("python3")
         self.env.pop("SAM3_ALLOWED_ORIGINS")
         self.env.pop("SAM3_SESSION_COOKIE_SECURE")
         result = self.launch("--check")
@@ -123,6 +100,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
         ])
 
     def test_explicit_cache_is_preserved(self):
+        self.use_interpreter_path("python3")
         self.env["XDG_CACHE_HOME"] = "/cache/sam3"
         result = self.launch()
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -4853,6 +4853,9 @@ def main():
         print("⚠️ 模型文件缺失")
         print(f"请确保以下文件存在:\n1. {checkpoint_path}\n2. {bpe_path}")
 
+        if not sys.stdin.isatty():
+            # Containers have no interactive stdin; fail clearly instead of EOFError.
+            raise SystemExit(1)
         response = input("是否尝试自动下载模型文件？(y/n): ").lower().strip()
         if response == "y":
             try:
