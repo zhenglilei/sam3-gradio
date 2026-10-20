@@ -50,6 +50,7 @@ run.sh
 requirements-offline.txt
 xingzhou-config.json
 xingzhou_startup.py
+xingzhou_envreport.py
 sam3/__init__.py
 sam3/logger.py
 sam3/model/__init__.py

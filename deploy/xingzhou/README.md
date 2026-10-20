@@ -136,6 +136,21 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 启动脚本只运行一个 Uvicorn worker，禁用自动重载。Cookie 凭证及内部临时校验材料只存在于进程内；
 重启后旧页面须重新打开首页，不承诺恢复未保存的工作。
 
+## 基础镜像环境报告
+
+`run.sh` 在离线安装之前先执行 `xingzhou_envreport.py`，把平台镜像的原始环境写到
+容器日志（标准错误），每段一行 JSON，`event` 为 `xingzhou_env`：
+
+| `section` | 内容 |
+|---|---|
+| `system` | Python 版本与路径、OS、glibc、架构、运行 UID/GID、`/src` 是否可写及剩余空间、pip 版本 |
+| `gpu` | `nvidia-smi` 的显卡、驱动、显存、算力，驱动支持的 CUDA 版本，`nvcc`，以及 `CUDA*`/`NV_*`/`NVIDIA*`/`LD_LIBRARY_PATH` 环境变量 |
+| `torch` | 镜像自带的 Torch/Torchvision/Triton 版本、Torch 编译的 CUDA 与 cuDNN、可用架构、显卡算力及是否原生支持 BF16 |
+| `packages` | 镜像预装的全部 Python 包版本，以及本包通过 `PYTHONPATH` 覆盖的同名包（镜像版本 vs 本包版本） |
+
+报告只读、不联网，任何探测失败都只记为该字段的错误，不会阻止启动。环境变量只输出
+上述名称前缀，名称含 KEY/TOKEN/SECRET/PASS/CRED/AUTH 的一律跳过。
+
 ## 启动自检与版本
 
 入口先准备离线应用依赖，再做原有两项检查，通过后用同一个 Python 解释器执行 `sam3_demo.app`：

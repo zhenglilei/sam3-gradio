@@ -26,7 +26,8 @@ REQUIRED = ("run.sh", "sam3_demo/app.py", "sam3_demo/config.py",
 ROOT_FILES = {"run.sh", "LICENSE", "layout_categories.json", "download_models.py",
               "image_crop_utils.py", "layout_region_utils.py", "layout_transform_utils.py",
               "periodic_template_matching.py", "public_download_utils.py", "template_match_workflow.py",
-              "xingzhou_startup.py", "xingzhou-config.json", "requirements-offline.txt"}
+              "xingzhou_startup.py", "xingzhou-config.json", "requirements-offline.txt",
+              "xingzhou_envreport.py"}
 # These modules are imported by inference; the rest of sam3/train is excluded.
 TRAIN_RUNTIME = {"sam3/train/__init__.py", "sam3/train/masks_ops.py", "sam3/train/matcher.py",
                  "sam3/train/data/__init__.py", "sam3/train/data/collator.py",

@@ -15,6 +15,10 @@ if [ -z "$PYTHON_BIN" ]; then
     exit 127
 fi
 
+# Report the base image (Python, OS, GPU/CUDA, preinstalled packages) before the
+# offline overlay is added. Diagnostics only: a failure here never blocks startup.
+"$PYTHON_BIN" "$PWD/xingzhou_envreport.py" >&2 || true
+
 # Only application wheels go here; Torch/Torchvision/CUDA stay in the image.
 DEPS_DIR="$("$PYTHON_BIN" -c 'import hashlib, pathlib, sys; root = pathlib.Path.cwd(); key = hashlib.sha256((root / "requirements-offline.txt").read_bytes()).hexdigest()[:16]; print(root / ".runtime" / ("python-deps-%d%d-" % sys.version_info[:2] + key))')"
 if [ ! -f "$DEPS_DIR/.installed" ]; then

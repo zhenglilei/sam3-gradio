@@ -41,6 +41,10 @@ class XingzhouEntrypointTests(unittest.TestCase):
             "    target.mkdir(parents=True, exist_ok=True)\n"
             "    if os.environ.get('PROBE_PIP_FAIL') == '1':\n"
             "        raise SystemExit(23)\n"
+            "elif len(sys.argv) > 1 and sys.argv[1].endswith('xingzhou_envreport.py'):\n"
+            "    record({'kind': 'envreport', 'pythonpath': os.environ.get('PYTHONPATH', '')})\n"
+            "    if os.environ.get('PROBE_REPORT_FAIL') == '1':\n"
+            "        raise SystemExit(5)\n"
             "elif len(sys.argv) > 1 and sys.argv[1].endswith('xingzhou_startup.py'):\n"
             "    record({'kind': 'startup', 'args': sys.argv[1:], 'cwd': os.getcwd(), "
             "'pythonpath': os.environ.get('PYTHONPATH', '')})\n"
@@ -188,6 +192,15 @@ class XingzhouEntrypointTests(unittest.TestCase):
             self.assertEqual(pythonpath[0], overlay)
             self.assertIn(str(existing), pythonpath)
         self.assertTrue((self.expected_deps_dir() / ".installed").is_file())
+
+    def test_environment_report_runs_first_without_overlay_and_never_blocks(self):
+        self.use_interpreter_path("python3")
+        self.env["PROBE_REPORT_FAIL"] = "1"
+        result = self.launch("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        kinds = [record["kind"] for record in self.records()]
+        self.assertEqual(kinds, ["envreport", "pip", "startup"])
+        self.assertNotIn(str(self.expected_deps_dir()), self.records()[0]["pythonpath"])
 
     def test_config_cache_override(self):
         tree = ast.parse((ROOT / "sam3_demo/config.py").read_text())
