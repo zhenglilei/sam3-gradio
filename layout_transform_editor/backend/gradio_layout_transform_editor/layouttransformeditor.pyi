@@ -32,7 +32,11 @@ class LayoutTransformEditor(Component):
         key: int | str | tuple[int | str, ...] | None = None,
         preserved_by_key: list[str] | str | None = "value",
         height: int | str = 520,
+        editor_mode: Literal["pvs", "overlap"] = "pvs",
     ):
+        if editor_mode not in {"pvs", "overlap"}:
+            raise ValueError("editor_mode must be 'pvs' or 'overlap'")
+        self.editor_mode = editor_mode
         self.height = height
         super().__init__(
             label=label,

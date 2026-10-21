@@ -601,6 +601,11 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
             [demo_module._LAYOUT_PROMPT_SCOPE_FULL],
         )
         self.assertFalse(layout_prompt_selector["props"]["interactive"])
+        layout_editor = next(
+            component for component in config["components"]
+            if component.get("props", {}).get("elem_id") == "layout_transform_editor"
+        )
+        self.assertEqual(layout_editor["props"]["editor_mode"], "pvs")
 
         morph_controls = [
             component

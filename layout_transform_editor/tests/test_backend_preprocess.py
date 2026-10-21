@@ -15,6 +15,13 @@ class LayoutTransformEditorPreprocessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.component = LayoutTransformEditor()
 
+    def test_pvs_is_default_and_overlap_must_be_requested(self) -> None:
+        self.assertEqual(self.component.get_config()["editor_mode"], "pvs")
+        overlap = LayoutTransformEditor(editor_mode="overlap")
+        self.assertEqual(overlap.get_config()["editor_mode"], "overlap")
+        with self.assertRaises(ValueError):
+            LayoutTransformEditor(editor_mode="unknown")
+
     def test_group_payload_keeps_only_client_transform_intent(self) -> None:
         payload = {
             "enabled": True,

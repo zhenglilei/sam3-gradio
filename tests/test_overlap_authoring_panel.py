@@ -13,6 +13,16 @@ from sam3_demo.ui.overlap_prediction_tab import build_overlap_prediction_tab
 
 
 class OverlapAuthoringPanelTests(unittest.TestCase):
+    def test_authoring_panel_explicitly_uses_overlap_editor(self):
+        from sam3_demo.app import LayoutTransformEditor
+
+        self.assertIsNotNone(LayoutTransformEditor)
+        with gr.Blocks():
+            refs = build_overlap_authoring_panel(
+                LayoutTransformEditor=LayoutTransformEditor,
+            )
+        self.assertEqual(refs.editor.get_config()["editor_mode"], "overlap")
+
     def test_optional_panel_binds_without_pvs_or_session_state(self):
         with gr.Blocks() as demo:
             viewer_refs = build_overlap_prediction_tab(

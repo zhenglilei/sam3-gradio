@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 COMPONENT_ROOT = Path(__file__).resolve().parents[1]
-INDEX_SOURCE = COMPONENT_ROOT / "frontend" / "Index.svelte"
+INDEX_SOURCE = COMPONENT_ROOT / "frontend" / "OverlapEditor.svelte"
 TYPES_SOURCE = COMPONENT_ROOT / "frontend" / "types.ts"
 
 

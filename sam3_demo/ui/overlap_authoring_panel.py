@@ -108,6 +108,7 @@ def build_overlap_authoring_panel(*, LayoutTransformEditor, import_error=None):
                 label="叠层位置编辑器",
                 show_label=False,
                 height=620,
+                editor_mode="overlap",
                 elem_id="overlap_authoring_editor",
             )
         else:

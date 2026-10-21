@@ -100,6 +100,7 @@ export interface LayoutTransformValue {
 export interface LayoutTransformEditorProps {
 	value: null | LayoutTransformValue;
 	height: number | string;
+	editor_mode?: "pvs" | "overlap";
 }
 
 export interface LayoutTransformEditorEvents {
