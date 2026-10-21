@@ -3846,19 +3846,14 @@ def _validate_layout_transform_snapshot(layout_state, transform):
 def _load_layout_prompt_choices(image_state, layout_state):
     return _load_layout_prompt_choices_impl(
         {
-            '_LAYOUT_PROMPT_SCOPE_FULL': _LAYOUT_PROMPT_SCOPE_FULL,
-            '_LAYOUT_PROMPT_SCOPE_REGION_LABELS': _LAYOUT_PROMPT_SCOPE_REGION_LABELS,
             '_advance_layout_prompt_epoch': _advance_layout_prompt_epoch,
             '_layout_cache_get': _layout_cache_get,
             '_layout_editor_empty': _layout_editor_empty,
             '_layout_editor_payload': _layout_editor_payload,
             '_layout_prompt_choice_update': _layout_prompt_choice_update,
-            '_layout_prompt_selection_token': _layout_prompt_selection_token,
             '_layout_regions': _layout_regions,
             '_load_layout_prompt_region_document': _load_layout_prompt_region_document,
             '_reset_layout_prompt_selection_state': _reset_layout_prompt_selection_state,
-            '_select_layout_prompt_mask': _select_layout_prompt_mask,
-            'gr': gr,
         },
         image_state,
         layout_state,

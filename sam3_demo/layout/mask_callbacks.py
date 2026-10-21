@@ -920,10 +920,6 @@ def _sync_layout_controls_from_editor_with_prompt_epoch_impl(_deps, layout_state
     _layout_group_control_values = _deps['_layout_group_control_values']
     _sync_layout_controls_from_editor = _deps['_sync_layout_controls_from_editor']
     gr = _deps['gr']
-    payload = editor_payload if isinstance(editor_payload, dict) else {}
-    if payload.get("payload_kind") in {"ack", "ack_error"}:
-        # Updating the component with an acknowledgement can itself fire change.
-        return (gr.skip(),) * 9
     _advance_layout_prompt_epoch(layout_state=layout_state)
     if (
         isinstance(layout_state, dict)
@@ -931,27 +927,7 @@ def _sync_layout_controls_from_editor_with_prompt_epoch_impl(_deps, layout_state
         == _LAYOUT_PROMPT_SCOPE_REGION_LABELS
     ):
         state = dict(layout_state)
-        intent = payload.get("group_intent") or {}
-        ack = gr.skip()
-        if isinstance(intent, dict) and payload.get("payload_kind") == "intent":
-            ack = {
-                "payload_kind": "ack",
-                "editor_session_id": str(intent.get("editor_session_id") or ""),
-                "document_epoch": str(intent.get("document_epoch") or ""),
-                "server_ack_revision": intent.get("client_revision"),
-                "payload_hash": str(intent.get("payload_hash") or ""),
-            }
         try:
-            if ack.get("payload_kind") == "ack":
-                revision = ack["server_ack_revision"]
-                if (
-                    isinstance(revision, bool)
-                    or not isinstance(revision, int)
-                    or revision < 0
-                    or revision != intent.get("transform_set_revision")
-                    or ack["document_epoch"] != intent.get("selection_signature")
-                ):
-                    raise ValueError("标注变换的同步版本无效")
             transform = _layout_editor_transform(editor_payload) or {}
             image_state = {
                 "image_id": transform.get("image_id")
@@ -977,14 +953,11 @@ def _sync_layout_controls_from_editor_with_prompt_epoch_impl(_deps, layout_state
                 )
             )
             label = active_transform.get("label") or "Label"
-            info = f"已同步 {label}；可直接拖动其他标注"
-            return state, True, tx, ty, scale, rotation, alpha, info, ack
+            info = f"已激活 {label}；下方数值控件仅修改该 Label"
+            return state, True, tx, ty, scale, rotation, alpha, info
         except Exception as exc:
-            info = f"标注同步失败：{exc}"
-            if ack.get("payload_kind") == "ack":
-                ack.update(payload_kind="ack_error", status=info)
-            return state, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), info, ack
-    return (*_sync_layout_controls_from_editor(layout_state, editor_payload), gr.skip())
+            return state, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"Label Canvas 同步失败：{exc}"
+    return _sync_layout_controls_from_editor(layout_state, editor_payload)
 
 
 def _run_layout_mask_page_impl(_deps, session_state, image_state, input_image, threshold, invert, open_kernel, close_kernel, min_component_area, region_mode, morph_pixels):

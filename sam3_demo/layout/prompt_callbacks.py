@@ -143,7 +143,7 @@ def _switch_mode_with_layout_editor_impl(_deps, mode, image_state, pcs_state, pv
     _advance_layout_prompt_epoch(image_state, layout_state)
     result = _switch_mode(mode, image_state, pcs_state, pvs_state)
     if _is_layout_mask_mode(mode):
-        editor = _layout_editor_payload(image_state, layout_state, "版图 mask 提示分割：载入版图后可直接拖动标注，其他标注始终可见。")
+        editor = _layout_editor_payload(image_state, layout_state, "已切换到版图 mask 提示分割，Canvas payload 已刷新。")
     else:
         editor = gr.update()
     return (*result, editor)
@@ -673,7 +673,6 @@ def _layout_prompt_group_payload_impl(_deps, layout_state, source_mask, base_tra
         "group_view": {
             "selection_signature": signature,
             "regions_revision": int(document.get("regions_revision") or 0),
-            "same_layer": True,
             "groups": groups,
         },
         "group_intent": {
@@ -1015,19 +1014,14 @@ def _validate_layout_transform_snapshot_impl(_deps, layout_state, transform):
 
 
 def _load_layout_prompt_choices_impl(_deps, image_state, layout_state):
-    _LAYOUT_PROMPT_SCOPE_FULL = _deps['_LAYOUT_PROMPT_SCOPE_FULL']
-    _LAYOUT_PROMPT_SCOPE_REGION_LABELS = _deps['_LAYOUT_PROMPT_SCOPE_REGION_LABELS']
     _advance_layout_prompt_epoch = _deps['_advance_layout_prompt_epoch']
     _layout_cache_get = _deps['_layout_cache_get']
     _layout_editor_empty = _deps['_layout_editor_empty']
     _layout_editor_payload = _deps['_layout_editor_payload']
     _layout_prompt_choice_update = _deps['_layout_prompt_choice_update']
-    _layout_prompt_selection_token = _deps['_layout_prompt_selection_token']
     _layout_regions = _deps['_layout_regions']
     _load_layout_prompt_region_document = _deps['_load_layout_prompt_region_document']
     _reset_layout_prompt_selection_state = _deps['_reset_layout_prompt_selection_state']
-    _select_layout_prompt_mask = _deps['_select_layout_prompt_mask']
-    gr = _deps['gr']
     _advance_layout_prompt_epoch(image_state, layout_state)
     state = _reset_layout_prompt_selection_state(layout_state)
     try:
@@ -1039,24 +1033,19 @@ def _load_layout_prompt_choices_impl(_deps, image_state, layout_state):
             _layout_editor_empty(image_state, info),
             _layout_prompt_choice_update(),
             info,
-            *[gr.update() for _ in range(6)],
         )
     try:
         document, _ = _load_layout_prompt_region_document(state)
-        # Labels on one layout are parts of the same layer. Load them together;
-        # selecting a canvas object determines what moves, not what is visible.
-        records = _layout_regions.active_regions(document)
-        selection = [
-            _layout_prompt_selection_token(
-                _LAYOUT_PROMPT_SCOPE_REGION_LABELS, int(record["region_id"])
-            )
-            for record in records
-        ] or [_LAYOUT_PROMPT_SCOPE_FULL]
-        selected = _select_layout_prompt_mask(image_state, state, selection)
+        label_count = len(_layout_regions.active_regions(document))
+        info = (
+            f"当前已保存版图 mask 已加载；可选择完整 mask 或 "
+            f"{label_count} 个独立 Label。"
+        )
         return (
-            *selected[:2],
-            _layout_prompt_choice_update(document, selected[2].get("value")),
-            *selected[3:],
+            state,
+            _layout_editor_payload(image_state, state, info),
+            _layout_prompt_choice_update(document),
+            info,
         )
     except Exception as exc:
         info = (
@@ -1068,12 +1057,6 @@ def _load_layout_prompt_choices_impl(_deps, image_state, layout_state):
             _layout_editor_payload(image_state, state, info),
             _layout_prompt_choice_update(),
             info,
-            bool(state.get("enabled", True)),
-            float(state.get("tx") or 0.0),
-            float(state.get("ty") or 0.0),
-            float(state.get("scale") or 1.0),
-            float(state.get("rotation_deg") or 0.0),
-            float(state.get("preview_alpha", 0.35)),
         )
 
 
@@ -1106,7 +1089,7 @@ def _select_layout_prompt_mask_impl(_deps, image_state, layout_state, selection)
         )
         if scope == _LAYOUT_PROMPT_SCOPE_FULL:
             state = _reset_layout_prompt_selection_state(state)
-            info = "已载入完整版图 mask，可直接拖动调整并生成分割结果。"
+            info = "已选择全部版图 mask；将保持原有单实例创建行为。"
             return (
                 state,
                 _layout_editor_payload(image_state, state, info),
@@ -1158,7 +1141,7 @@ def _select_layout_prompt_mask_impl(_deps, image_state, layout_state, selection)
         editor = _layout_editor_payload(
             image_state,
             state,
-            "正在载入全部版图标注。",
+            "正在初始化独立 Label 图层。",
         )
         state, _, _, _, active_transform = (
             _commit_layout_group_transforms(
@@ -1185,8 +1168,8 @@ def _select_layout_prompt_mask_impl(_deps, image_state, layout_state, selection)
             )
         )
         info = (
-            f"已载入 {len(region_ids)} 个标注，全部保持显示；"
-            "直接拖动要调整的标注，再一键生成全部分割结果。"
+            f"已选择 {len(region_ids)} 个 Label；每个 Label 可独立拖动，"
+            "并各自生成一个 PVS instance。"
         )
         editor["status"] = info
         return (

@@ -208,16 +208,15 @@ def build_image_tab(
 
                     with gr.Group(visible=False) as pvs_layout_panel:
                         gr.Markdown("### PVS 版图 mask 提示")
-                        gr.Markdown("载入版图后，全部标注同时显示。直接在右侧拖动要调整的标注，其他标注保持可见；滚轮缩放，拖动圆形手柄旋转。")
+                        gr.Markdown("上传或选择二值版图 mask；多选 Label 后，每个 Label 可在右侧独立拖动、缩放和旋转。")
                         with gr.Row():
                             use_current_layout_btn = gr.Button("使用当前已保存版图 mask", variant="secondary")
                             load_layout_binary_btn = gr.Button("载入二值 mask PNG", variant="secondary")
                         layout_prompt_mask_selector = gr.CheckboxGroup(
                             choices=[("全部版图 mask", _LAYOUT_PROMPT_SCOPE_FULL)],
                             value=[_LAYOUT_PROMPT_SCOPE_FULL],
-                            label="版图标注",
+                            label="版图 mask 选择（可多选 Label）",
                             interactive=False,
-                            visible=False,
                             elem_id="layout_prompt_mask_selector",
                         )
                         gr.Markdown("#### 直接上传二值 mask PNG")
@@ -241,8 +240,8 @@ def build_image_tab(
                     else:
                         gr.Markdown(f"版图 Canvas 编辑器组件不可用；仍可使用数值控件。错误：{_layout_editor_import_error}")
                         layout_editor = gr.JSON(value=_layout_editor_empty(), label="layout transform payload", visible=False)
-                    layout_enabled = gr.Checkbox(value=False, label="显示版图")
-                    gr.Markdown("直接点击或拖动标注进行调整；全部标注始终显示，下方参数对应当前选中的标注。")
+                    layout_enabled = gr.Checkbox(value=False, label="显示/启用版图 overlay")
+                    gr.Markdown("多选 Label 时，下方数值只对应 Canvas 中当前激活的 Label。")
                     with gr.Row():
                         layout_tx = gr.Number(value=0.0, label="水平偏移 tx")
                         layout_ty = gr.Number(value=0.0, label="垂直偏移 ty")
@@ -253,7 +252,7 @@ def build_image_tab(
                     with gr.Row():
                         reset_layout_btn = gr.Button("重置", variant="secondary")
                         update_layout_preview_btn = gr.Button("更新预览", variant="primary")
-                    create_from_layout_btn = gr.Button("生成全部版图分割结果", variant="primary")
+                    create_from_layout_btn = gr.Button("用所选版图 mask / Label 创建实例", variant="primary")
                     layout_pvs_info = gr.Textbox(label="版图提示状态", lines=5, interactive=False)
                 with gr.Group(visible=True) as pvs_action_panel:
                     gr.Markdown("### PVS 实例操作")
