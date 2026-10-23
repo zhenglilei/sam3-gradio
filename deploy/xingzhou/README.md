@@ -63,7 +63,7 @@ python3 deploy/xingzhou/bundle.py verify "$OUT/sam3-el-mask.zip"
 
 ```sh
 python3 -m pip --isolated install --disable-pip-version-check \
-    --no-index --find-links /src/wheels --only-binary=:all: --no-deps \
+    --no-index --find-links /src/wheels --only-binary=:all: --no-deps --no-compile \
     --target /src/.runtime/python-deps-312-<lock-hash> --upgrade \
     -r /src/requirements-offline.txt
 ```
@@ -72,6 +72,8 @@ python3 -m pip --isolated install --disable-pip-version-check \
 同一锁文件再次启动复用此目录；依赖版本变化或 Python 小版本变化使用新目录。
 安装失败立即退出，不继续启动不完整的环境。不会修改镜像或宿主机的全局
 site-packages，也不会递归下载 `timm` 所声明的 Torch/CUDA 依赖。
+`--no-compile` 跳过安装时的批量 `.pyc` 预编译，减少启动前的 CPU/写盘开销，
+不改变版本、依赖解析或目标路径。首次导入仍可能生成所需模块的字节码。
 
 Web/CV 依赖并不全是纯 Python：NumPy、Pydantic Core、Pillow、OpenCV、
 SciPy 等使用已编译 Linux wheel，不能换成 Windows wheel。本批包面向
@@ -143,11 +145,14 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 
 | `section` | 内容 |
 |---|---|
-| `system` | Python 版本与路径、OS、glibc、架构、运行 UID/GID、`/src` 是否可写及剩余空间、pip 版本 |
+| `system` | Python 版本与路径、OS、glibc、架构、运行 UID/GID、`/src` 是否可写、剩余空间及所在挂载的文件系统类型、容器内存上限（cgroup）、pip 版本 |
 | `gpu` | `nvidia-smi` 的显卡、驱动、显存、算力，驱动支持的 CUDA 版本，`nvcc`，以及 `CUDA*`/`NV_*`/`NVIDIA*`/`LD_LIBRARY_PATH` 环境变量 |
 | `torch` | 镜像自带的 Torch/Torchvision/Triton 版本、Torch 编译的 CUDA 与 cuDNN、可用架构、显卡算力及是否原生支持 BF16 |
 | `packages` | 镜像预装的全部 Python 包版本，以及本包通过 `PYTHONPATH` 覆盖的同名包（镜像版本 vs 本包版本） |
 
+每段先打印 `status=begin`，完成后记录结果及 `duration_s`。报告子进程最多运行
+90 秒；超时会打印线程栈并退出，`run.sh` 记录警告后继续应用启动。这个限制只作用
+于可选环境报告，不是 Web 服务或模型加载的超时。
 报告只读、不联网，任何探测失败都只记为该字段的错误，不会阻止启动。环境变量只输出
 上述名称前缀，名称含 KEY/TOKEN/SECRET/PASS/CRED/AUTH 的一律跳过。
 
@@ -174,6 +179,38 @@ export SAM3_ALLOW_INSECURE_COOKIE=0
 失败写入标准错误并返回非零退出码，不打印环境全集、Cookie 值或密钥。
 若存在 `bundle-manifest.json`，其 Git SHA 只作为 `SAM3_BUILD_GIT_SHA` 的默认值
 写入日志版本标识，不做校验。
+
+### 启动阶段诊断
+
+平台选择“运行日志 → 容器实时日志”，再选择实际版本和实例；默认的“算法日志”
+依赖平台 Loki，Loki 超时并不代表容器没有输出。
+
+`run.sh` 输出 `[xingzhou_boot]` 行，含 UTC 时间、进程 PID、启动累计秒数和当前阶段；
+Python 启动器输出 `xingzhou_startup` JSON，含阶段开始、结束、耗时、运行解释器和
+实际 Torch 版本及路径。按最后一条完整日志区分：
+
+| 最后阶段 | 说明 |
+|---|---|
+| `offline_install begin`，只有 pip 的 `Successfully installed` | pip 仍可能在把临时文件移动到目标目录，不能算安装已返回 |
+| `offline_install ok exit_code=0` | pip 已真实退出；随后才写 `.installed` 标记 |
+| `dependency_marker ok` / `offline_install skipped cache=hit` | 依赖准备完成；同一安装目录可复用，容器重建后是否保留取决于平台挂载 |
+| `python begin` / `entry begin` | 区分 shell 启动 Python 子进程与 Python 启动器真正运行 |
+| `session begin` / `torch_import begin` / `cuda_init begin` | 区分配置及依赖导入、Torch 导入、CUDA 初始化 |
+| `app_exec begin` | 即将执行 `python -m sam3_demo.app`，不等于端口已监听；后续看应用和 Uvicorn 日志及 `/healthz` |
+
+离线安装失败保留 pip 的退出码；配置或 CUDA 检查失败记录异常类型、堆栈和原始原因。
+会话配置 `ValueError` 可能带入含凭据的非法 URL，因此只显示调用位置、不回显错误值。
+预检查卡住超过 60 秒会重复打印 Python 线程栈，但不会新增强制退出或就绪条件。
+应用继承 `PYTHONFAULTHANDLER=1`，原生崩溃可输出线程栈；这些日志不采集图像、
+Cookie、提示词或环境变量全集。
+
+若日志突然中断、随后重新出现 `entry begin`，还需平台侧核对容器
+`lastState.reason`、`exitCode`、`restartCount` 和探针事件。
+SIGKILL/OOM kill 无法由进程内代码捕获；没有应用 traceback 不能据此排除平台终止。
+`run.sh` 以子进程运行 Python（启动器再原地执行应用，PID 不变）并等待其退出，
+最后记录 `stage=python status=failed exit_code=N`：大于 128 时附 `signal=N-128`，
+例如 137 为 SIGKILL（常见于内存超限），139 为段错误。若整个容器被平台终止，
+`run.sh` 自身也会被终止，这一行可能缺失。
 
 ## 验收边界
 

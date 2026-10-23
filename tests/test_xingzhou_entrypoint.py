@@ -52,6 +52,11 @@ class XingzhouEntrypointTests(unittest.TestCase):
             "'cwd': os.getcwd(), 'host': os.environ['SAM3_SERVER_NAME'], "
             "'port': os.environ['SAM3_SERVER_PORT'], 'cache': os.environ['XDG_CACHE_HOME'], "
             "'pythonpath': os.environ.get('PYTHONPATH', '')}))\n"
+            "    mode = os.environ.get('PROBE_STARTUP_EXIT')\n"
+            "    if mode == 'kill':\n"
+            "        os.kill(os.getpid(), 9)\n"
+            "    elif mode:\n"
+            "        raise SystemExit(int(mode))\n"
             "else:\n"
             "    record({'kind': 'unknown', 'args': sys.argv[1:]})\n"
             "    raise SystemExit(97)\n"
@@ -88,6 +93,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
         directory.mkdir()
         (directory / "dirname").symlink_to(shutil.which("dirname"))
         (directory / "touch").symlink_to(shutil.which("touch"))
+        (directory / "date").symlink_to(shutil.which("date"))
         for name in names:
             (directory / name).symlink_to(self.directory / "python-probe")
         self.env["PATH"] = str(directory)
@@ -155,7 +161,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
         pip_records = [record for record in self.records() if record["kind"] == "pip"]
         self.assertEqual(len(pip_records), 1)
         args = pip_records[0]["args"]
-        for flag in ("--isolated", "--no-index", "--only-binary=:all:", "--no-deps", "--upgrade"):
+        for flag in ("--isolated", "--no-index", "--only-binary=:all:", "--no-deps", "--upgrade", "--no-compile"):
             self.assertIn(flag, args)
         self.assertNotIn("--index-url", args)
         self.assertEqual(args[args.index("--find-links") + 1], str(self.directory / "wheels"))
@@ -173,6 +179,8 @@ class XingzhouEntrypointTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertFalse(any(record["kind"] == "startup" for record in self.records()))
         self.assertFalse((self.expected_deps_dir() / ".installed").exists())
+        self.assertIn("stage=offline_install status=failed exit_code=23", result.stderr)
+        self.assertNotIn("stage=python status=begin", result.stderr)
 
     def test_successful_marker_skips_reinstall_and_prepends_pythonpath_overlay(self):
         self.use_interpreter_path("python3")
@@ -192,6 +200,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
             self.assertEqual(pythonpath[0], overlay)
             self.assertIn(str(existing), pythonpath)
         self.assertTrue((self.expected_deps_dir() / ".installed").is_file())
+        self.assertIn("stage=offline_install status=skipped cache=hit", second.stderr)
 
     def test_environment_report_runs_first_without_overlay_and_never_blocks(self):
         self.use_interpreter_path("python3")
@@ -201,6 +210,32 @@ class XingzhouEntrypointTests(unittest.TestCase):
         kinds = [record["kind"] for record in self.records()]
         self.assertEqual(kinds, ["envreport", "pip", "startup"])
         self.assertNotIn(str(self.expected_deps_dir()), self.records()[0]["pythonpath"])
+        self.assertIn("stage=environment_report status=warning exit_code=5 continuing=true", result.stderr)
+
+    def test_boot_stages_distinguish_pip_return_marker_and_exec(self):
+        self.use_interpreter_path("python3")
+        result = self.launch("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stages = [
+            "stage=entry status=begin", "stage=environment_report status=begin",
+            "stage=environment_report status=ok", "stage=dependency_target status=begin",
+            "stage=dependency_target status=ok", "stage=offline_install status=begin cache=miss",
+            "stage=offline_install status=ok exit_code=0", "stage=dependency_marker status=ok",
+            "stage=python status=begin", "stage=python status=ok exit_code=0",
+        ]
+        positions = [result.stderr.index(stage) for stage in stages]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("elapsed_s=", result.stderr)
+
+    def test_python_exit_code_and_signal_are_logged_and_returned(self):
+        self.use_interpreter_path("python3")
+        for value, code, line in (("9", 9, "stage=python status=failed exit_code=9"),
+                                  ("kill", 137, "stage=python status=failed exit_code=137 signal=9")):
+            with self.subTest(value=value):
+                self.env["PROBE_STARTUP_EXIT"] = value
+                result = self.launch("--check")
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn(line, result.stderr)
 
     def test_config_cache_override(self):
         tree = ast.parse((ROOT / "sam3_demo/config.py").read_text())

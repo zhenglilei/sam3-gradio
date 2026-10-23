@@ -111,7 +111,10 @@ class XingzhouStartupTests(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()) as output:
             result = startup.check_gpu()
             self.assertEqual(result["free_mib"], 1024)
-            self.assertEqual(json.loads(output.getvalue())["status"], "warning")
+            records = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual([(row["check"], row["status"]) for row in records], [
+                ("torch_import", "begin"), ("torch_import", "ok"), ("cuda_init", "begin"), ("gpu", "warning")
+            ])
 
     def test_main_check_only_does_not_exec_and_success_execs_same_python(self):
         with patch.object(startup, "configure", return_value={}), \
@@ -125,12 +128,43 @@ class XingzhouStartupTests(unittest.TestCase):
     def test_main_stops_before_launch_and_suppresses_unknown_exception_values(self):
         with patch.object(startup, "configure", side_effect=ValueError("secret value")), \
              patch.object(startup, "check_gpu") as gpu, patch.object(startup.os, "execv") as execute, \
-             contextlib.redirect_stderr(io.StringIO()) as output:
+             contextlib.redirect_stderr(io.StringIO()) as output, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(startup.main([]), 1)
             gpu.assert_not_called()
             execute.assert_not_called()
             self.assertNotIn("secret value", output.getvalue())
-            self.assertEqual(json.loads(output.getvalue())["check"], "session")
+            self.assertEqual(json.loads(output.getvalue().splitlines()[0])["check"], "session")
+            self.assertIn("File ", output.getvalue())
+
+    def test_failure_preserves_dependency_cause_and_does_not_exec(self):
+        def broken_import():
+            try:
+                raise ImportError("libcuda.so.1: cannot open shared object file")
+            except ImportError as exc:
+                raise RuntimeError("Torch initialization failed") from exc
+
+        with patch.object(startup, "configure", return_value={}), \
+             patch.object(startup, "check_gpu", side_effect=broken_import), \
+             patch.object(startup.os, "execv") as execute, \
+             contextlib.redirect_stderr(io.StringIO()) as output, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(startup.main([]), 1)
+            execute.assert_not_called()
+            self.assertIn("libcuda.so.1: cannot open shared object file", output.getvalue())
+            self.assertIn("RuntimeError: Torch initialization failed", output.getvalue())
+            self.assertIn("Traceback (most recent call last)", output.getvalue())
+
+    def test_startup_stage_order_and_timing(self):
+        with patch.object(startup, "configure", return_value={}), \
+             patch.object(startup, "check_gpu", return_value={}), \
+             patch.object(startup.os, "execv"), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(startup.main([]), 0)
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([(row["check"], row["status"]) for row in records], [
+            ("entry", "begin"), ("session", "begin"), ("session", "ok"),
+            ("gpu", "begin"), ("gpu", "ok"), ("preflight", "ok"), ("app_exec", "begin")
+        ])
+        self.assertTrue(all(row["elapsed_s"] >= 0 and row["pid"] == os.getpid() for row in records))
+        self.assertTrue(all(row["duration_s"] >= 0 for row in records if "duration_s" in row))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ values and never stop startup. Environment values are limited to CUDA/NVIDIA
 names and never include anything that looks like a credential.
 """
 
+import faulthandler
 import importlib.metadata
 import json
 import os
@@ -13,8 +14,10 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 
 SENSITIVE = ("KEY", "TOKEN", "SECRET", "PASS", "CRED", "AUTH")
@@ -49,6 +52,26 @@ def os_release():
     return None
 
 
+def mount_of(path):
+    # Longest /proc/mounts entry containing path: device, mount point, fs type.
+    best = None
+    for line in Path("/proc/mounts").read_text().splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and (str(path) + "/").startswith(fields[1].rstrip("/") + "/"):
+            if best is None or len(fields[1]) > len(best[1]):
+                best = fields[:3]
+    return dict(zip(("device", "mount_point", "fs_type"), best)) if best else None
+
+
+def memory_limit_mib():
+    for name in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        path = Path(name)
+        if path.is_file():
+            value = path.read_text().strip()
+            return value if not value.isdigit() else int(value) // (1024 * 1024)
+    return None
+
+
 def system():
     root = Path.cwd()
     usage = shutil.disk_usage(root)
@@ -60,6 +83,7 @@ def system():
         "uid": os.getuid(), "gid": os.getgid(), "cwd": str(root),
         "cwd_writable": os.access(root, os.W_OK), "cwd_free_mib": usage.free // (1024 * 1024),
         "cpu_count": os.cpu_count(),
+        "cwd_mount": probe(lambda: mount_of(root)), "memory_limit_mib": probe(memory_limit_mib),
         "pip": run(sys.executable, "-m", "pip", "--version"),
     }
 
@@ -120,11 +144,19 @@ def packages():
 
 
 def main():
-    emit("system", **probe(system))
-    emit("gpu", **probe(gpu))
-    emit("torch", **probe(torch_stack))
-    emit("packages", **probe(packages))
+    for section, function in (("system", system), ("gpu", gpu),
+                              ("torch", torch_stack), ("packages", packages)):
+        started = time.monotonic()
+        emit(section, status="begin")
+        details = probe(function)
+        emit(section, status="warning" if "error" in details else "ok",
+             duration_s=round(time.monotonic() - started, 3), **details)
 
 
 if __name__ == "__main__":
+    # This optional child must not hold up the actual server startup.
+    faulthandler.register(signal.SIGALRM, all_threads=True, chain=True)
+    # Torch import from slow shared storage can take a while; 90 s keeps the
+    # report useful without holding up startup indefinitely.
+    signal.alarm(90)
     main()

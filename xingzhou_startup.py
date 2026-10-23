@@ -1,10 +1,16 @@
 """Load the packaged Xingzhou settings, check CUDA, then execute the single web worker."""
 
 import argparse
+import faulthandler
 import json
 import os
 from pathlib import Path
 import sys
+import time
+import traceback
+
+
+STARTED_AT = time.monotonic()
 
 
 class StartupError(ValueError):
@@ -12,7 +18,8 @@ class StartupError(ValueError):
 
 
 def emit(check, status, **details):
-    print(json.dumps({"event": "xingzhou_startup", "check": check, "status": status, **details}),
+    print(json.dumps({"event": "xingzhou_startup", "check": check, "status": status,
+                      "pid": os.getpid(), "elapsed_s": round(time.monotonic() - STARTED_AT, 3), **details}),
           file=sys.stderr if status == "failed" else sys.stdout, flush=True)
 
 
@@ -44,8 +51,13 @@ def configure(root):
 
 
 def check_gpu():
+    started = time.monotonic()
+    emit("torch_import", "begin")
     import torch
 
+    emit("torch_import", "ok", duration_s=round(time.monotonic() - started, 3),
+         version=torch.__version__, source=torch.__file__, cuda=torch.version.cuda)
+    emit("cuda_init", "begin")
     if not torch.cuda.is_available():
         raise StartupError("CUDA is unavailable; check GPU allocation, driver and PyTorch in the selected image")
     properties = torch.cuda.get_device_properties(0)
@@ -58,6 +70,8 @@ def check_gpu():
 
 
 def main(argv=None):
+    emit("entry", "begin", python=sys.version.split()[0], executable=sys.executable,
+         cwd=str(Path.cwd()))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Run preflight without starting a web server")
     args = parser.parse_args(argv)
@@ -66,18 +80,34 @@ def main(argv=None):
         ("session", lambda: configure(root)),
         ("gpu", check_gpu),
     ):
+        started = time.monotonic()
+        emit(name, "begin")
         try:
             details = check()
         except Exception as exc:
-            message = str(exc) if isinstance(exc, StartupError) else "Check " + name + " configuration and runtime"
-            emit(name, "failed", error_type=type(exc).__name__, message=message)
+            # Session validation can echo an invalid origin containing credentials.
+            hide_value = name == "session" and isinstance(exc, ValueError) and not isinstance(exc, StartupError)
+            message = "Check session configuration (invalid value omitted)" if hide_value else str(exc)
+            emit(name, "failed", error_type=type(exc).__name__, message=message,
+                 duration_s=round(time.monotonic() - started, 3))
+            if hide_value:
+                traceback.print_tb(exc.__traceback__, file=sys.stderr)
+            else:
+                traceback.print_exc()
             return 1
-        emit(name, "ok", **details)
+        emit(name, "ok", duration_s=round(time.monotonic() - started, 3), **details)
     emit("preflight", "ok", listen="0.0.0.0:8030", check_only=args.check)
     if not args.check:
+        emit("app_exec", "begin", module="sam3_demo.app", git_sha=os.environ.get("SAM3_BUILD_GIT_SHA", "unknown"))
         os.execv(sys.executable, [sys.executable, "-m", "sam3_demo.app"])
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    faulthandler.enable()
+    # Diagnose a stuck preflight without imposing another startup timeout.
+    faulthandler.dump_traceback_later(60, repeat=True)
+    try:
+        raise SystemExit(main())
+    finally:
+        faulthandler.cancel_dump_traceback_later()
