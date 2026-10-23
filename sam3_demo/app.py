@@ -4814,6 +4814,7 @@ def create_application(
         claims=claims,
         credentials=credentials,
         observability=observability,
+        on_user_activity=_model_activity_hook(demo),
     )
     application = gr.mount_gradio_app(
         application,
@@ -4836,6 +4837,43 @@ def create_application(
     application.state.observability = observability
     observability.emit("service_initialized")
     return application
+
+
+def _passive_dependencies(demo):
+    """Events the browser fires on its own: timers, page load/unload and their chains."""
+    dependencies = list(demo.config.get("dependencies") or [])
+    passive_ids = set()
+    changed = True
+    while changed:
+        changed = False
+        for dependency in dependencies:
+            dep_id = dependency.get("id")
+            if dep_id in passive_ids:
+                continue
+            triggers = {target[1] for target in dependency.get("targets") or [] if len(target) > 1}
+            if triggers & {"tick", "load", "unload"} or dependency.get("trigger_after") in passive_ids:
+                passive_ids.add(dep_id)
+                changed = True
+    passive_names = {
+        str(dependency["api_name"]) for dependency in dependencies
+        if dependency.get("id") in passive_ids and dependency.get("api_name")
+    }
+    return passive_ids, passive_names
+
+
+def _model_activity_hook(demo):
+    """Start/keep the model warm on any user-triggered event, not on background polling."""
+    passive_ids, passive_names = _passive_dependencies(demo)
+
+    def hook(path, body):
+        if body.get("fn_index") in passive_ids:
+            return
+        if path.startswith(("/gradio_api/run/", "/gradio_api/api/")):
+            if path.rstrip("/").rsplit("/", 1)[-1] in passive_names:
+                return
+        SUPERVISOR.note_user_activity()
+
+    return hook
 
 
 def main():

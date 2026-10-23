@@ -118,6 +118,30 @@ class BatchWorkspaceStateInheritanceTests(unittest.TestCase):
             restored[3]["instances"][7]["mask_fullres_bool"], mask
         )
 
+    def test_navigation_keeps_current_mode_but_restores_item_results(self):
+        second_values = self._restore(1)
+        mask = np.zeros((20, 24), dtype=bool)
+        mask[4:11, 6:15] = True
+        second_values[3]["instances"] = {7: {"mask_fullres_bool": mask, "category_name": "own"}}
+        second_values[6:10] = ["PVS Manual", "polygon", "own prompt", 0.21]
+        self.assertTrue(batch.save_snapshot(app, self.state, *second_values))
+        self._restore(0)
+        restored = batch.restore_item(
+            app, self.state, self.state["items"][1], self.session,
+            keep_mode=("PCS Auto", "bbox"),
+        )
+        # Mode and its tool follow the user; the item's own results stay.
+        self.assertEqual(restored[6:10], ("PCS Auto", "bbox", "own prompt", 0.21))
+        np.testing.assert_array_equal(restored[3]["instances"][7]["mask_fullres_bool"], mask)
+        same_mode = batch.restore_item(
+            app, self.state, self.state["items"][1], self.session,
+            keep_mode=("PVS Manual", "bbox"),
+        )
+        self.assertEqual(same_mode[6:8], ("PVS Manual", "polygon"))
+
+    def test_fresh_item_defaults_to_pcs(self):
+        self.assertEqual(self._restore(0)[6], "PCS Auto")
+
     def test_empty_text_prompt_is_inherited(self):
         restored = batch.restore_item(
             app, self.state, self.state["items"][1], self.session,

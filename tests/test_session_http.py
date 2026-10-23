@@ -24,6 +24,9 @@ COOKIE_NAME = "sam3_el_http_test"
 class SessionHttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # User events would otherwise start a real SAM3 worker on the GPU.
+        cls.activity_patch = mock.patch.object(app.SUPERVISOR, "note_user_activity")
+        cls.activity_patch.start()
         cls.temp_dir = tempfile.TemporaryDirectory()
         cls.settings = load_session_cookie_settings(
             {
@@ -68,6 +71,7 @@ class SessionHttpTests(unittest.TestCase):
         cls.web_registry.shutdown()
         app._SESSION_REGISTRY = app._new_session_registry()
         cls.temp_dir.cleanup()
+        cls.activity_patch.stop()
 
     def _client(self, ip: str, cookies=None, *, raise_exceptions=False):
         return TestClient(
@@ -196,6 +200,29 @@ class SessionHttpTests(unittest.TestCase):
                 moved.close()
         finally:
             first.close()
+
+    def test_user_events_wake_model_but_page_bootstrap_does_not(self):
+        session_hash = "model-activity-" + uuid.uuid4().hex
+        client, _ = self._new_owner("198.51.100.61")
+        try:
+            with mock.patch.object(app.SUPERVISOR, "note_user_activity") as activity:
+                response = self._bootstrap(client, session_hash)
+                self.assertEqual(response.status_code, 200, response.text)
+                activity.assert_not_called()
+                response = client.post(
+                    "/gradio_api/run/_clear_pcs_instances",
+                    json={
+                        "data": [None, None, None, app.MODE_PCS],
+                        "fn_index": self.clear_pcs["id"],
+                        "trigger_id": self.clear_pcs["id"],
+                        "session_hash": session_hash,
+                    },
+                    headers={"Origin": ORIGIN},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                activity.assert_called_once_with()
+        finally:
+            client.close()
 
     def test_different_owner_cannot_claim_or_write_existing_hash(self):
         session_hash = "owner-isolation-" + uuid.uuid4().hex

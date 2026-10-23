@@ -115,7 +115,8 @@ class BatchPromptPolicyTests(unittest.TestCase):
         self.assertEqual(self.state["selected_ids"], [first])
 
     def test_failed_step_keeps_previous_pvs_snapshot(self):
-        values = list(batch.restore_item(app, self.state, self.state["items"][0], self.session))
+        values = list(batch.restore_item(app, self.state, self.state["items"][0], self.session,
+                                         inherit_config={"mode": "PVS Manual"}))
         mask = fixtures.np.ones((20, 24), dtype=bool)
         values[3]["instances"] = {1: app._make_inst(1, "pvs", mask, [0, 0, 24, 20], 0.8, history=[])}
         batch.save_snapshot(app, self.state, *values)

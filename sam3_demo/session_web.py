@@ -735,8 +735,10 @@ class SessionSecurityMiddleware:
         claims: OwnerClaimRegistry,
         observability: "Observability | None" = None,
         credentials: BrowserCredentialRegistry | None = None,
+        on_user_activity: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.app = app
+        self.on_user_activity = on_user_activity
         self.settings = settings
         self.claims = claims
         self.observability = observability
@@ -929,6 +931,12 @@ class SessionSecurityMiddleware:
             await response(scope, original_receive, send)
             return
 
+        if self.on_user_activity is not None and route_kind in {"json_hash", "json_create_event"}:
+            # An accepted, owner-bound event: let the app note the interaction.
+            try:
+                self.on_user_activity(path, body_data)
+            except Exception:
+                logger.exception("user activity hook failed")
         token = _CURRENT_OWNER.set(owner_id)
         response_status: int | None = None
         response_content_type = ""

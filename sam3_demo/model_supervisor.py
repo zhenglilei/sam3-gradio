@@ -169,6 +169,8 @@ class ModelRuntimeSupervisor:
         self._active_requests = 0
         self._pending_requests = 0
         self._last_inference_completed_at = None
+        # Any user interaction (not only inference) keeps the model warm.
+        self._last_activity_at = None
         self._selected_gpu_uuid = None
         self._last_error = ""
         self._last_start_failure_at = None
@@ -218,6 +220,7 @@ class ModelRuntimeSupervisor:
             "active_requests": int(self._active_requests),
             "pending_requests": int(self._pending_requests),
             "last_inference_completed_at": self._last_inference_completed_at,
+            "last_activity_at": self._last_activity_at,
             "selected_gpu_uuid": self._selected_gpu_uuid,
             "last_error": self._last_error,
             "mask_input_size": self._mask_input_size,
@@ -545,6 +548,23 @@ class ModelRuntimeSupervisor:
         self._loader_thread = thread
         thread.start()
         return future
+
+    def note_user_activity(self):
+        """Record a UI interaction and start the model in the background if needed.
+
+        Called for every user-triggered Gradio event. It never blocks: loading
+        runs on the loader thread, and a recent failed start keeps its backoff
+        (unlike the explicit start button).
+        """
+        with self._condition:
+            self._last_activity_at = self._clock()
+            if self._closed or self._state in (READY, RUNNING, REHYDRATING):
+                return
+            self._start_future_locked()
+
+    def _last_used_at_locked(self):
+        times = [t for t in (self._last_inference_completed_at, self._last_activity_at) if t is not None]
+        return max(times) if times else None
 
     def request_start(self):
         with self._condition:
@@ -889,8 +909,8 @@ class ModelRuntimeSupervisor:
                     and self._active_requests == 0
                     and self._pending_requests == 0
                     and self._load_future is None
-                    and self._last_inference_completed_at is not None
-                    and self._clock() - self._last_inference_completed_at >= self._idle_seconds
+                    and self._last_used_at_locked() is not None
+                    and self._clock() - self._last_used_at_locked() >= self._idle_seconds
                 ):
                     self._state = STOPPING
                     process_to_stop = self._worker
