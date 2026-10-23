@@ -4471,9 +4471,9 @@ def _restore_stitch_mosaic(stitch_state):
     ))
 
 
-def _handoff_stitch_mosaic(stitch_state, mode, session_state, layout_state, confirmed=False):
-    if not confirmed:
-        raise gr.Error("请先确认替换当前工作区图片与实例")
+def _handoff_stitch_mosaic(stitch_state, mode, session_state, layout_state, confirmed=True):
+    # The import button replaces the workspace directly; `confirmed` is kept
+    # only for the existing event signature and is no longer required.
     try:
         mosaic = _stitch_cb.mosaic_for_handoff(stitch_state)
     except ValueError as exc:

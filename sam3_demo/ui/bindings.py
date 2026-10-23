@@ -977,9 +977,6 @@ def bind_demo_events(
         concurrency_id="image-prepost-state",
     )
     handoff_event.success(
-        fn=lambda: False, inputs=None, outputs=[stitch_refs.stitch_handoff_confirm],
-    )
-    handoff_event.success(
         fn=_stitch_handoff_source_image,
         inputs=[stitch_state],
         outputs=[source_image_upload],

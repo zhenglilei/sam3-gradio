@@ -109,16 +109,19 @@ def build_stitch_tab(
                                 stitch_show_loupe = gr.Checkbox(value=True, label="光标放大镜")
 
                         with gr.TabItem("导出", id="stitch_export"):
-                            gr.Markdown("输出设置", elem_classes="stitch-group-label")
-                            with gr.Row(elem_classes="stitch-toggle-row"):
-                                stitch_blend = gr.Checkbox(value=True, label="接缝融合")
-                                stitch_crop_periodic = gr.Checkbox(value=False, label="裁完整周期")
+                            # Export always blends seams and keeps the full mosaic; the
+                            # options stay as hidden inputs so callback signatures hold.
+                            gr.Markdown("输出设置", elem_classes="stitch-group-label", visible=False)
+                            with gr.Row(elem_classes="stitch-toggle-row", visible=False):
+                                stitch_blend = gr.Checkbox(value=True, label="接缝融合", visible=False)
+                                stitch_crop_periodic = gr.Checkbox(value=False, label="裁完整周期", visible=False)
                             stitch_export_btn = gr.Button(
                                 "生成拼接结果",
                                 variant="primary",
                                 elem_classes="stitch-action-btn",
                             )
-                            stitch_handoff_confirm = gr.Checkbox(value=False,
+                            # Importing replaces the workspace directly; no confirmation step.
+                            stitch_handoff_confirm = gr.Checkbox(value=True, visible=False,
                                 label="确认替换当前工作区图片与实例")
                             stitch_handoff_btn = gr.Button(
                                 "导入到智能图像分割",

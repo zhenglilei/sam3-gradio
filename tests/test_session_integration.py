@@ -304,7 +304,7 @@ class SessionIntegrationTests(unittest.TestCase):
         self.assertEqual(result[3]["width"], 9)
         self.assertEqual(result[3]["height"], 7)
 
-    def test_guarded_stitch_handoff_rejects_unconfirmed_request(self):
+    def test_guarded_stitch_handoff_no_longer_requires_confirmation(self):
         browser_hash = "browser-stitch-confirm-" + uuid.uuid4().hex
         bundle = self._bootstrap(browser_hash)
         stitch_state = bundle[10]
@@ -315,12 +315,11 @@ class SessionIntegrationTests(unittest.TestCase):
         )
         guarded = app._session_callback_registry()["_handoff_stitch_mosaic"]
         with mock.patch.object(app, "_source_upload_workspace") as source_upload:
-            with self.assertRaises(gr.Error):
-                guarded(
-                    stitch_state, app.MODE_PVS, bundle[0], bundle[7], False,
-                    _request(browser_hash),
-                )
-        source_upload.assert_not_called()
+            guarded(
+                stitch_state, app.MODE_PVS, bundle[0], bundle[7], False,
+                _request(browser_hash),
+            )
+        source_upload.assert_called_once()
 
     def test_create_demo_has_private_nonqueued_bootstrap(self):
         demo = app.create_demo()

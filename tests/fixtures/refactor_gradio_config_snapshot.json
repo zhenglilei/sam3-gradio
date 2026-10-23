@@ -3616,13 +3616,13 @@
       "props": {
         "show_label": false,
         "value": "输出设置",
-        "visible": true
+        "visible": false
       },
       "type": "markdown"
     },
     {
       "props": {
-        "visible": true
+        "visible": false
       },
       "type": "row"
     },
@@ -3631,7 +3631,7 @@
         "label": "接缝融合",
         "show_label": true,
         "value": true,
-        "visible": true
+        "visible": false
       },
       "type": "checkbox"
     },
@@ -3640,7 +3640,7 @@
         "label": "裁完整周期",
         "show_label": true,
         "value": false,
-        "visible": true
+        "visible": false
       },
       "type": "checkbox"
     },
@@ -3660,8 +3660,8 @@
       "props": {
         "label": "确认替换当前工作区图片与实例",
         "show_label": true,
-        "value": false,
-        "visible": true
+        "value": true,
+        "visible": false
       },
       "type": "checkbox"
     },
@@ -8473,28 +8473,6 @@
       "trigger_only_on_success": true
     },
     {
-      "api_name": "lambda_7",
-      "backend_fn": true,
-      "batch": false,
-      "cancels": [],
-      "inputs": [],
-      "max_batch_size": 4,
-      "outputs": [
-        424
-      ],
-      "queue": true,
-      "scroll_to_output": false,
-      "show_progress": "full",
-      "targets": [
-        [
-          null,
-          "success"
-        ]
-      ],
-      "trigger_after": 149,
-      "trigger_only_on_success": true
-    },
-    {
       "api_name": "_stitch_handoff_source_image",
       "backend_fn": true,
       "batch": false,
@@ -8766,7 +8744,7 @@
           "success"
         ]
       ],
-      "trigger_after": 160,
+      "trigger_after": 159,
       "trigger_only_on_success": true
     },
     {
@@ -8790,7 +8768,7 @@
           "success"
         ]
       ],
-      "trigger_after": 160,
+      "trigger_after": 159,
       "trigger_only_on_success": true
     },
     {
@@ -8812,7 +8790,7 @@
           "success"
         ]
       ],
-      "trigger_after": 160,
+      "trigger_after": 159,
       "trigger_only_on_success": true
     },
     {
@@ -8835,7 +8813,7 @@
           "success"
         ]
       ],
-      "trigger_after": 160,
+      "trigger_after": 159,
       "trigger_only_on_success": true
     },
     {
@@ -8862,7 +8840,7 @@
           "success"
         ]
       ],
-      "trigger_after": 160,
+      "trigger_after": 159,
       "trigger_only_on_success": true
     },
     {
@@ -8888,7 +8866,7 @@
           "success"
         ]
       ],
-      "trigger_after": 160,
+      "trigger_after": 159,
       "trigger_only_on_success": true
     },
     {
@@ -8915,7 +8893,7 @@
           "success"
         ]
       ],
-      "trigger_after": 160,
+      "trigger_after": 159,
       "trigger_only_on_success": true
     },
     {
@@ -11362,7 +11340,7 @@
           "success"
         ]
       ],
-      "trigger_after": 206,
+      "trigger_after": 205,
       "trigger_only_on_success": true
     },
     {
@@ -11472,7 +11450,7 @@
           "success"
         ]
       ],
-      "trigger_after": 207,
+      "trigger_after": 206,
       "trigger_only_on_success": true
     },
     {
@@ -11499,7 +11477,7 @@
           "success"
         ]
       ],
-      "trigger_after": 208,
+      "trigger_after": 207,
       "trigger_only_on_success": true
     },
     {
@@ -11524,7 +11502,7 @@
           "success"
         ]
       ],
-      "trigger_after": 209,
+      "trigger_after": 208,
       "trigger_only_on_success": true
     },
     {
@@ -11550,7 +11528,7 @@
           "success"
         ]
       ],
-      "trigger_after": 210,
+      "trigger_after": 209,
       "trigger_only_on_success": true
     },
     {
@@ -11609,7 +11587,7 @@
           "success"
         ]
       ],
-      "trigger_after": 212,
+      "trigger_after": 211,
       "trigger_only_on_success": true
     },
     {
@@ -11633,7 +11611,7 @@
       "trigger_only_on_success": false
     }
   ],
-  "dependency_count": 215,
+  "dependency_count": 214,
   "layout": {
     "children": [
       {
