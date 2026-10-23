@@ -384,6 +384,13 @@ class Sam3WorkerRuntime:
                 device=build_device,
                 enable_inst_interactivity=True,
             )
+            adapter_info = None
+            adapter_path = os.environ.get("SAM3_ADAPTER_CHECKPOINT", "").strip()
+            if adapter_path:
+                from sam3_demo.model_adapter import load_ge2_adapter
+
+                adapter_info = load_ge2_adapter(image_model, adapter_path)
+                print(f"SAM3 adapter loaded: {adapter_info}", file=sys.stderr, flush=True)
             self.model = image_model
             self.processor = Sam3Processor(image_model, device=build_device)
             size = tuple(int(v) for v in image_model.inst_interactive_predictor.model.sam_prompt_encoder.mask_input_size)
@@ -399,6 +406,8 @@ class Sam3WorkerRuntime:
                 "gpu_uuid": gpu_uuid,
                 "device": str(self.device),
             }
+            if adapter_info is not None:
+                self._capabilities["adapter"] = adapter_info
             return dict(self._capabilities)
         except WorkerRPCError:
             raise
@@ -477,7 +486,9 @@ class Sam3WorkerRuntime:
     def _common_inst_kwargs(self, args: Mapping[str, Any]) -> dict[str, Any]:
         import numpy as np
 
-        kwargs: dict[str, Any] = {"multimask_output": True, "return_logits": True}
+        # GE2 trains mask token 0; multimask=True selects the other three heads.
+        adapter = (self._capabilities or {}).get("adapter")
+        kwargs: dict[str, Any] = {"multimask_output": not bool(adapter), "return_logits": True}
         box = args.get("box_xyxy_px")
         if box is not None:
             box_array = _finite_array(box, "box_xyxy_px", dtype=np.float32).reshape(-1)
