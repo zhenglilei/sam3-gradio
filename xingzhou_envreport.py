@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -84,6 +85,8 @@ def system():
         "cwd_writable": os.access(root, os.W_OK), "cwd_free_mib": usage.free // (1024 * 1024),
         "cpu_count": os.cpu_count(),
         "cwd_mount": probe(lambda: mount_of(root)), "memory_limit_mib": probe(memory_limit_mib),
+        "tmp_dir": tempfile.gettempdir(), "tmp_mount": probe(lambda: mount_of(Path(tempfile.gettempdir()))),
+        "tmp_free_mib": probe(lambda: shutil.disk_usage(tempfile.gettempdir()).free // (1024 * 1024)),
         "pip": run(sys.executable, "-m", "pip", "--version"),
     }
 

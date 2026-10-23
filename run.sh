@@ -40,12 +40,24 @@ fi
 # Only application wheels go here; Torch/Torchvision/CUDA stay in the image.
 STAGE=dependency_target
 boot_log begin
-DEPS_DIR="$("$PYTHON_BIN" -c 'import hashlib, pathlib, sys; root = pathlib.Path.cwd(); key = hashlib.sha256((root / "requirements-offline.txt").read_bytes()).hexdigest()[:16]; print(root / ".runtime" / ("python-deps-%d%d-" % sys.version_info[:2] + key))')"
-boot_log ok "target=$DEPS_DIR"
+# /src can be a slow network mount (NFS on Xingzhou). pip --target installs into
+# a temp dir and then moves every file to the target, so a target on NFS turns
+# into copying tens of thousands of files over the network after pip has
+# already printed "Successfully installed". Keep the target and pip's temp dir
+# on the container's local disk; reinstalling there takes seconds per start.
+DEPS_ROOT="${XINGZHOU_DEPS_ROOT:-/tmp}"
+if ! mkdir -p "$DEPS_ROOT/xingzhou-pip-tmp" 2>/dev/null || [ ! -w "$DEPS_ROOT" ]; then
+    boot_log warning "deps_root_unwritable=$DEPS_ROOT fallback=$PWD/.runtime"
+    DEPS_ROOT="$PWD/.runtime"
+    mkdir -p "$DEPS_ROOT/xingzhou-pip-tmp"
+fi
+PIP_TMP="$DEPS_ROOT/xingzhou-pip-tmp"
+DEPS_DIR="$(XINGZHOU_DEPS_PARENT="$DEPS_ROOT" "$PYTHON_BIN" -c 'import hashlib, os, pathlib, sys; key = hashlib.sha256(pathlib.Path("requirements-offline.txt").read_bytes()).hexdigest()[:16]; print(pathlib.Path(os.environ["XINGZHOU_DEPS_PARENT"]) / ("python-deps-%d%d-" % sys.version_info[:2] + key))')"
+boot_log ok "target=$DEPS_DIR pip_tmp=$PIP_TMP"
 STAGE=offline_install
 if [ ! -f "$DEPS_DIR/.installed" ]; then
     boot_log begin "cache=miss"
-    if "$PYTHON_BIN" -m pip --isolated install --disable-pip-version-check \
+    if TMPDIR="$PIP_TMP" "$PYTHON_BIN" -m pip --isolated install --disable-pip-version-check \
         --no-index --find-links "$PWD/wheels" --only-binary=:all: --no-deps --no-compile \
         --target "$DEPS_DIR" --upgrade -r "$PWD/requirements-offline.txt"; then
         boot_log ok "exit_code=0"

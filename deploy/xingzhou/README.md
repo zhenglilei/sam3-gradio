@@ -64,12 +64,16 @@ python3 deploy/xingzhou/bundle.py verify "$OUT/sam3-el-mask.zip"
 ```sh
 python3 -m pip --isolated install --disable-pip-version-check \
     --no-index --find-links /src/wheels --only-binary=:all: --no-deps --no-compile \
-    --target /src/.runtime/python-deps-312-<lock-hash> --upgrade \
+    --target /tmp/python-deps-312-<lock-hash> --upgrade \
     -r /src/requirements-offline.txt
 ```
 
 安装成功才写完成标记，再通过 `PYTHONPATH` 供主进程和模型子进程使用。
-同一锁文件再次启动复用此目录；依赖版本变化或 Python 小版本变化使用新目录。
+目标目录和 pip 临时目录放在容器本地盘 `/tmp`（可用 `XINGZHOU_DEPS_ROOT` 改写；不可写时退回
+`/src/.runtime`）。星舟的 `/src` 是 NFS 网络盘，pip `--target` 会在打印
+“Successfully installed”之后才把上万个文件移动到目标目录，2026-10-23 实测在 NFS 上
+耗时 246 秒，且之后的导入也要经网络读取。本地盘每次容器启动重新安装，约十几秒。
+同一容器内再次启动复用此目录；依赖版本变化或 Python 小版本变化使用新目录。
 安装失败立即退出，不继续启动不完整的环境。不会修改镜像或宿主机的全局
 site-packages，也不会递归下载 `timm` 所声明的 Torch/CUDA 依赖。
 `--no-compile` 跳过安装时的批量 `.pyc` 预编译，减少启动前的 CPU/写盘开销，

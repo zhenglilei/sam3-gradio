@@ -36,7 +36,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
             "    exec(compile(sys.argv[2], '<probe>', 'exec'), {'__name__': '__main__'})\n"
             "elif len(sys.argv) > 2 and sys.argv[1:3] == ['-m', 'pip']:\n"
             "    args = sys.argv[3:]\n"
-            "    record({'kind': 'pip', 'args': args})\n"
+            "    record({'kind': 'pip', 'args': args, 'tmpdir': os.environ.get('TMPDIR')})\n"
             "    target = pathlib.Path(args[args.index('--target') + 1])\n"
             "    target.mkdir(parents=True, exist_ok=True)\n"
             "    if os.environ.get('PROBE_PIP_FAIL') == '1':\n"
@@ -65,6 +65,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
         self.env = {
             "PATH": os.environ["PATH"],
             "PROBE_LOG": str(self.log),
+            "XINGZHOU_DEPS_ROOT": str(self.directory / "local-deps"),
             "SAM3_ALLOWED_ORIGINS": "https://sam3.example.test",
             "SAM3_SESSION_COOKIE_SECURE": "1",
             "SAM3_SERVER_PORT": "7893",
@@ -84,7 +85,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
 
     def expected_deps_dir(self):
         digest = hashlib.sha256(self.requirements.read_bytes()).hexdigest()[:16]
-        return self.directory / ".runtime" / (
+        return self.directory / "local-deps" / (
             f"python-deps-{sys.version_info[0]}{sys.version_info[1]}-{digest}"
         )
 
@@ -94,6 +95,7 @@ class XingzhouEntrypointTests(unittest.TestCase):
         (directory / "dirname").symlink_to(shutil.which("dirname"))
         (directory / "touch").symlink_to(shutil.which("touch"))
         (directory / "date").symlink_to(shutil.which("date"))
+        (directory / "mkdir").symlink_to(shutil.which("mkdir"))
         for name in names:
             (directory / name).symlink_to(self.directory / "python-probe")
         self.env["PATH"] = str(directory)
@@ -236,6 +238,27 @@ class XingzhouEntrypointTests(unittest.TestCase):
                 result = self.launch("--check")
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn(line, result.stderr)
+
+    def test_dependencies_and_pip_temp_stay_off_the_bundle_mount(self):
+        self.use_interpreter_path("python3")
+        result = self.launch("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pip = next(record for record in self.records() if record["kind"] == "pip")
+        local = self.directory / "local-deps"
+        self.assertEqual(pip["tmpdir"], str(local / "xingzhou-pip-tmp"))
+        self.assertTrue(str(self.expected_deps_dir()).startswith(str(local)))
+        self.assertFalse((self.directory / ".runtime").exists())
+
+    def test_unwritable_local_root_falls_back_to_bundle_runtime(self):
+        self.use_interpreter_path("python3")
+        blocker = self.directory / "not-a-directory"
+        blocker.write_text("")
+        self.env["XINGZHOU_DEPS_ROOT"] = str(blocker)
+        result = self.launch("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("deps_root_unwritable=" + str(blocker), result.stderr)
+        pip = next(record for record in self.records() if record["kind"] == "pip")
+        self.assertTrue(pip["args"][pip["args"].index("--target") + 1].startswith(str(self.directory / ".runtime")))
 
     def test_config_cache_override(self):
         tree = ast.parse((ROOT / "sam3_demo/config.py").read_text())
