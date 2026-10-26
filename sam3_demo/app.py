@@ -4739,7 +4739,10 @@ def create_application(
     )
     application = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-    @application.get("/healthz", include_in_schema=False)
+    # /heart is the Xingzhou platform's liveness probe; /health is a common alias.
+    @application.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
+    @application.api_route("/heart", methods=["GET", "HEAD"], include_in_schema=False)
+    @application.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
     async def healthz():
         return {
             "status": "ok",

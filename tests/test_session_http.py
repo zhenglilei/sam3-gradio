@@ -201,6 +201,35 @@ class SessionHttpTests(unittest.TestCase):
         finally:
             first.close()
 
+    def test_platform_probes_and_unknown_paths_never_require_a_session(self):
+        client = self._client("198.51.100.62")
+        try:
+            for method, path in (("GET", "/heart"), ("HEAD", "/heart"), ("GET", "/health"),
+                                 ("GET", "/healthz"), ("HEAD", "/healthz")):
+                with self.subTest(method=method, path=path):
+                    response = client.request(method, path)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertNotIn("set-cookie", response.headers)
+            for path in ("/inferenceStart", "/no-such-route"):
+                with self.subTest(path=path):
+                    self.assertEqual(client.get(path).status_code, 404)
+                    self.assertEqual(client.post(path, json={}).status_code, 404)
+        finally:
+            client.close()
+
+    def test_gradio_data_routes_still_require_a_session(self):
+        client = self._client("198.51.100.63")
+        try:
+            for path in ("/config", "/gradio_api/info", "/gradio_api/queue/data?session_hash=x"):
+                with self.subTest(path=path):
+                    self.assertEqual(client.get(path).status_code, 401)
+            response = client.post(
+                "/gradio_api/queue/join", json={"session_hash": "x"}, headers={"Origin": ORIGIN},
+            )
+            self.assertEqual(response.status_code, 401)
+        finally:
+            client.close()
+
     def test_user_events_wake_model_but_page_bootstrap_does_not(self):
         session_hash = "model-activity-" + uuid.uuid4().hex
         client, _ = self._new_owner("198.51.100.61")
