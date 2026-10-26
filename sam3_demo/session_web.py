@@ -33,7 +33,16 @@ _LEGACY_WARNING_EMITTED = False
 _MAX_JSON_CONTROL_BODY = 2 * 1024 * 1024
 _COOKIE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.-]{3,96}$")
-_OPERATIONAL_PATHS = frozenset({"/healthz", "/readyz", "/metrics"})
+_OPERATIONAL_PATHS = frozenset({"/healthz", "/readyz", "/metrics", "/heart", "/health"})
+# Only routes that carry or reveal per-browser data need the owner cookie.
+# Everything else (probes, static assets, unknown paths) goes straight to the
+# app, so a platform health check never meets a 401.
+_SESSION_EXACT_PATHS = frozenset({"/", "/config", "/config/", "/openapi.json", "/login", "/login/", "/logout"})
+_SESSION_PATH_PREFIXES = ("/gradio_api/", "/monitoring")
+
+
+def _requires_session(path: str) -> bool:
+    return path in _SESSION_EXACT_PATHS or path.startswith(_SESSION_PATH_PREFIXES)
 _CURRENT_OWNER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "sam3_session_cookie_owner",
     default=None,
@@ -760,8 +769,10 @@ class SessionSecurityMiddleware:
         claims: OwnerClaimRegistry,
         observability: "Observability | None" = None,
         credentials: BrowserCredentialRegistry | None = None,
+        on_user_activity: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.app = app
+        self.on_user_activity = on_user_activity
         self.settings = settings
         self.claims = claims
         self.observability = observability
@@ -776,7 +787,7 @@ class SessionSecurityMiddleware:
             return
         method = scope.get("method", "GET").upper()
         path = scope.get("path", "")
-        if method == "GET" and path in _OPERATIONAL_PATHS:
+        if not _requires_session(path):
             await self.app(scope, receive, send)
             return
         try:
@@ -954,6 +965,12 @@ class SessionSecurityMiddleware:
             await response(scope, original_receive, send)
             return
 
+        if self.on_user_activity is not None and route_kind in {"json_hash", "json_create_event"}:
+            # An accepted, owner-bound event: let the app note the interaction.
+            try:
+                self.on_user_activity(path, body_data)
+            except Exception:
+                logger.exception("user activity hook failed")
         token = _CURRENT_OWNER.set(owner_id)
         response_status: int | None = None
         response_content_type = ""

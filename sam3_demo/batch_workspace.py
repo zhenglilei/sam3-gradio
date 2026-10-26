@@ -97,10 +97,17 @@ def save_snapshot(app, batch, source, image, pcs, pvs, prompt, layout, mode, too
     return True
 
 
-def restore_item(app, batch, item, session, inherit_config=None):
+def restore_item(app, batch, item, session, inherit_config=None, keep_mode=None):
     snap = item.get("snapshot") or {}
     inherit_config = {} if snap else (inherit_config or {})
-    mode = snap.get("mode", inherit_config.get("mode", "PVS Manual"))
+    mode = snap.get("mode", inherit_config.get("mode", "PCS Auto"))
+    keep_tool = None
+    if keep_mode is not None:
+        # Navigation keeps the mode the user is working in; the item's own
+        # results, prompt text and threshold are still restored from its snapshot.
+        mode, keep_tool = keep_mode
+        if snap.get("mode") == mode:
+            keep_tool = None
     layout = app._new_layout_state(session["session_id"])
     layout.update(deepcopy(snap.get("layout") or {}))
     layout["session_id"] = session["session_id"]
@@ -122,7 +129,7 @@ def restore_item(app, batch, item, session, inherit_config=None):
     item["live_source_id"] = source["source_image_id"]
     batch["active_id"] = item["id"]
     return (source, image, pcs, pvs, prompt, layout, mode,
-            snap.get("tool", inherit_config.get("tool", "bbox")),
+            keep_tool or snap.get("tool", inherit_config.get("tool", "bbox")),
             snap.get("text", inherit_config.get("text", "")),
             snap.get("threshold", inherit_config.get("threshold", 0.4)))
 
@@ -427,7 +434,8 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                             "threshold": threshold,
                         }
                     values = restore_item(app, batch, target, session_state,
-                                          inherit_config=inherit_config)
+                                          inherit_config=inherit_config,
+                                          keep_mode=(mode, click_tool) if mode else None)
                     changed = True
                     message = f"{dest+1} / {len(ids)} · {batch['items'][dest]['name']}"
             elif action in ("select_all", "select_none", "selection"):

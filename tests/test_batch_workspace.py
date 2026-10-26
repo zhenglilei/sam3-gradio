@@ -68,7 +68,8 @@ class BatchWorkspaceTests(unittest.TestCase):
 
     def test_send_stitch_updates_stable_id(self):
         item = self.state["items"][0]
-        values = list(batch.restore_item(app, self.state, item, self.session))
+        values = list(batch.restore_item(app, self.state, item, self.session,
+                                         inherit_config={"mode": "PVS Manual"}))
         mask = np.ones((20, 24), dtype=bool)
         values[3]["instances"] = {1: app._make_inst(1, "pvs", mask, [0, 0, 24, 20], 0.8, history=[])}
         batch.save_snapshot(app, self.state, *values)

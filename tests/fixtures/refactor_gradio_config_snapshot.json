@@ -897,7 +897,7 @@
         ],
         "label": "分割方式",
         "show_label": false,
-        "value": "PVS Manual",
+        "value": "PCS Auto",
         "visible": true
       },
       "type": "radio"
@@ -1241,16 +1241,8 @@
       "props": {
         "choices": [
           [
-            "点提示 (Point)",
-            "point"
-          ],
-          [
             "框提示 (Box)",
             "bbox"
-          ],
-          [
-            "多边形Mask (Polygon)",
-            "polygon"
           ]
         ],
         "label": "选择模式",
@@ -1262,7 +1254,7 @@
     },
     {
       "props": {
-        "visible": false
+        "visible": true
       },
       "type": "group"
     },
@@ -1375,7 +1367,7 @@
     {
       "props": {
         "elem_id": "el-pcs-settings",
-        "visible": false
+        "visible": true
       },
       "type": "group"
     },
@@ -1465,7 +1457,7 @@
     },
     {
       "props": {
-        "visible": true
+        "visible": false
       },
       "type": "group"
     },
@@ -1479,7 +1471,7 @@
     },
     {
       "props": {
-        "visible": true
+        "visible": false
       },
       "type": "group"
     },
@@ -1625,7 +1617,7 @@
       "props": {
         "interactive": true,
         "value": "完成多边形对象",
-        "visible": true
+        "visible": false
       },
       "type": "button"
     },
@@ -1782,7 +1774,7 @@
     },
     {
       "props": {
-        "visible": true
+        "visible": false
       },
       "type": "group"
     },

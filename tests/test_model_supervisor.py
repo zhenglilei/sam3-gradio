@@ -172,6 +172,71 @@ class ModelSupervisorTests(unittest.TestCase):
             supervisor._candidate_gpus()
         self.assertEqual(ctx.exception.code, "CONFIG")
 
+    def test_user_activity_starts_unloaded_model_in_background(self):
+        supervisor = self.make_supervisor(clock=_Clock())
+        started = []
+        supervisor._load_worker = lambda future: started.append(future)
+        supervisor.note_user_activity()
+        supervisor.note_user_activity()
+        deadline = time.monotonic() + 1
+        while not started and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(started), 1)
+        self.assertEqual(supervisor.snapshot()["last_activity_at"], 0.0)
+
+    def test_user_activity_on_ready_model_only_records_time(self):
+        clock = _Clock()
+        supervisor = self.make_supervisor(clock=clock)
+        supervisor._load_worker = lambda future: self.fail("must not reload a ready model")
+        with supervisor._condition:
+            supervisor._worker = _FakeProcess()
+            supervisor._state = READY
+        clock.value = 42.0
+        supervisor.note_user_activity()
+        self.assertEqual(supervisor.snapshot()["last_activity_at"], 42.0)
+
+    def test_user_activity_respects_failed_start_backoff(self):
+        clock = _Clock()
+        supervisor = self.make_supervisor(clock=clock)
+        supervisor._load_worker = lambda future: self.fail("backoff must hold")
+        with supervisor._condition:
+            supervisor._state = ERROR
+            supervisor._last_start_failure_at = 0.0
+        clock.value = supervisor._restart_backoff / 2
+        supervisor.note_user_activity()
+        self.assertIsNone(supervisor._load_future)
+
+    def test_idle_release_counts_from_latest_interaction(self):
+        clock = _Clock()
+        supervisor = ModelRuntimeSupervisor(clock=clock, start_monitor=False)
+        supervisor._idle_check_seconds = 0.01
+        supervisor._idle_seconds = 10.0
+        supervisor._monitor_thread = threading.Thread(
+            target=supervisor._monitor_loop, name="test-sam3-activity-idle", daemon=True,
+        )
+        supervisor._monitor_thread.start()
+        process = _FakeProcess()
+        stopped = threading.Event()
+
+        def stop(candidate, *, graceful=True):
+            process.returncode = 0
+            stopped.set()
+
+        supervisor._stop_process = stop
+        with supervisor._condition:
+            supervisor._worker = process
+            supervisor._worker_pid = process.pid
+            supervisor._state = READY
+            supervisor._last_inference_completed_at = 0.0
+        clock.value = 8.0
+        supervisor.note_user_activity()
+        clock.value = 12.0
+        time.sleep(0.05)
+        self.assertFalse(stopped.is_set())
+        clock.value = 18.0
+        self.assertTrue(stopped.wait(timeout=1))
+        supervisor.shutdown(graceful_timeout=0)
+
     def test_idle_monitor_stops_ready_worker_at_boundary(self):
         clock = _Clock()
         supervisor = ModelRuntimeSupervisor(clock=clock, start_monitor=False)

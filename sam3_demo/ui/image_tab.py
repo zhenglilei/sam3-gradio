@@ -60,7 +60,7 @@ def build_image_tab(
                     with gr.Row(elem_classes="el-canvas-toolbar"):
                         mode = gr.Radio(
                             choices=[("PCS 自动分割", "PCS Auto"), ("PVS 手动标注", "PVS Manual"), ("版图 Mask", "Layout Mask")],
-                            value="PVS Manual",
+                            value="PCS Auto",
                             label="分割方式", show_label=False, container=False,
                             elem_classes="mode-radio", scale=3,
                         )
@@ -77,7 +77,7 @@ def build_image_tab(
                                     image_upload = gr.Image(type="numpy", label="原始图像", show_label=False, interactive=False, elem_id="input_image", height=400)
                                     if ImageGestureOverlay is not None:
                                         workspace_gesture_overlay = ImageGestureOverlay(
-                                            value=_workspace_gesture_payload({}, "PVS Manual", "bbox"),
+                                            value=_workspace_gesture_payload({}, "PCS Auto", "bbox"),
                                             label="分割交互手势",
                                             show_label=False,
                                             target_elem_id="input_image",
@@ -86,7 +86,7 @@ def build_image_tab(
                                         )
                                     else:
                                         workspace_gesture_overlay = gr.JSON(
-                                            value=_workspace_gesture_payload({}, "PVS Manual", "bbox"),
+                                            value=_workspace_gesture_payload({}, "PCS Auto", "bbox"),
                                             visible=False,
                                         )
                                 with gr.Column(min_width=180, elem_id="el-result-pane"):
@@ -117,13 +117,13 @@ def build_image_tab(
                             with gr.Group():
                                 gr.Markdown("### \u4ea4\u4e92\u6a21\u5f0f")
                                 click_tool = gr.Radio(
-                                    choices=[("\u70b9\u63d0\u793a (Point)", "point"), ("\u6846\u63d0\u793a (Box)", "bbox"), ("\u591a\u8fb9\u5f62Mask (Polygon)", "polygon")],
+                                    choices=[("框提示 (Box)", "bbox")],  # PCS default; mode switch swaps choices
                                     value="bbox",
                                     label="\u9009\u62e9\u6a21\u5f0f",
                                     show_label=False,
                                     elem_classes="mode-radio",
                                 )
-                                with gr.Group(visible=False) as pcs_bbox_tools:
+                                with gr.Group(visible=True) as pcs_bbox_tools:
                                     pcs_bbox_kind = gr.Radio(
                                         choices=[("\u6b63\u6837\u672c bbox", "Positive exemplar"), ("\u8d1f\u6837\u672c bbox", "Negative exemplar")],
                                         value="Positive exemplar",
@@ -144,7 +144,7 @@ def build_image_tab(
                                     elem_classes="mode-radio",
                                 )
                                 layout_point_btn = gr.Button("应用点提示", variant="primary")
-                            with gr.Group(visible=False, elem_id="el-pcs-settings") as pcs_panel:
+                            with gr.Group(visible=True, elem_id="el-pcs-settings") as pcs_panel:
                                 gr.Markdown("### PCS Auto \u81ea\u52a8\u6982\u5ff5\u5206\u5272")
                                 text_prompt = gr.Textbox(label="文本提示（可选）", placeholder="例如：circle", lines=1)
                                 confidence_threshold = gr.Slider(minimum=0.0, maximum=1.0, value=0.4, step=0.05, label="\u7f6e\u4fe1\u5ea6\u9608\u503c (Confidence)")
@@ -154,9 +154,9 @@ def build_image_tab(
                                     export_pcs_btn = gr.Button("\u5bfc\u51fa PCS")
                                 with gr.Accordion("PCS 实例明细", open=False):
                                     pcs_summary = gr.Textbox(label="PCS \u5b9e\u4f8b", lines=6, interactive=False)
-                            with gr.Group(visible=True) as pvs_panel:
+                            with gr.Group(visible=False) as pvs_panel:
                                 gr.Markdown("### PVS Manual \u624b\u52a8\u5b9e\u4f8b\u5206\u5272")
-                                with gr.Group(visible=True) as pvs_bbox_prompt_panel:
+                                with gr.Group(visible=False) as pvs_bbox_prompt_panel:
                                     gr.Markdown("#### BBox prompt")
                                     pvs_pending_count = gr.Markdown("\u5f85\u751f\u6210 bbox \u6570\u91cf: 0")
                                     pvs_pending_bbox_selector = gr.Dropdown(choices=[], label="PVS \u5f85\u751f\u6210 bbox \u5217\u8868", interactive=True)
@@ -181,7 +181,7 @@ def build_image_tab(
                                         label="\u591a\u8fb9\u5f62\u52a8\u4f5c",
                                         elem_classes="mode-radio",
                                     )
-                                    finish_polygon_btn = gr.Button("\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61", variant="primary", elem_classes="polygon-finish-btn")
+                                    finish_polygon_btn = gr.Button("\u5b8c\u6210\u591a\u8fb9\u5f62\u5bf9\u8c61", variant="primary", elem_classes="polygon-finish-btn", visible=False)
                                     with gr.Accordion("高级 Polygon 融合方式", open=False):
                                         polygon_combine_mode = gr.Radio(
                                             choices=[("Replace \u91cd\u65b0\u5b9a\u4e49\u5b9e\u4f8b", "replace"), ("Blend \u4e0e\u65e7 mask \u878d\u5408", "blend"), ("Union \u8865\u5145\u533a\u57df", "union"), ("Intersect \u9650\u5236\u8303\u56f4", "intersect")],
@@ -212,7 +212,7 @@ def build_image_tab(
                                 )
                                 gr.Markdown("#### 直接上传二值 mask PNG")
                                 layout_binary_upload = gr.Image(type="numpy", label="直接上传二值 mask PNG", show_label=False, sources=["upload", "clipboard"])
-                            with gr.Group(visible=True) as pvs_action_panel:
+                            with gr.Group(visible=False) as pvs_action_panel:
                                 gr.Markdown("### PVS 实例操作")
                                 active_pvs = gr.Dropdown(choices=[], label="\u5f53\u524d PVS \u5b9e\u4f8b")
                                 with gr.Row():
