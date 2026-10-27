@@ -853,6 +853,176 @@ class LayoutRegionCallbacksTest(unittest.TestCase):
         self.assertEqual(pvs_state["instances"], {})
         self.assertIsNone(pvs_state["active_instance_id"])
 
+    def test_layout_transform_commit_is_deferred_until_model_success(self):
+        image_id = "layout-concurrency-image"
+        image = Image.new("RGB", (48, 36), (80, 90, 100))
+        target_hash = demo_module._layout_tx.image_pixel_sha256(image)
+        image_state = {
+            "image_id": image_id,
+            "session_id": self.session_id,
+            "width": image.width,
+            "height": image.height,
+            "target_image_sha256": target_hash,
+        }
+        cache_key = demo_module._layout_cache_key(
+            self.session_id,
+            self.layout_id,
+        )
+        with demo_module._LAYOUT_CACHE_LOCK:
+            old_cache = demo_module._LAYOUT_CACHE.pop(cache_key, None)
+        old_workspace = demo_module._WORKSPACE_CACHE.get(image_id)
+        demo_module._WORKSPACE_CACHE[image_id] = {
+            "image": image,
+            "session_id": self.session_id,
+            "target_image_sha256": target_hash,
+        }
+        layout_dir = self.layout_masks / self.session_id / self.layout_id
+        meta_path = layout_dir / "layout_meta.json"
+        cached = demo_module._layout_cache_put(
+            self.session_id,
+            self.layout_id,
+            image,
+            self.source_mask,
+            [],
+            {},
+            mask_path=layout_dir / "source_mask.png",
+            layout_meta_path=meta_path,
+        )
+        prediction = {
+            "masks": np.asarray(
+                [self.source_mask.astype(bool)],
+                dtype=bool,
+            ),
+            "scores": np.asarray([0.91], dtype=np.float32),
+            "lowres_logits": np.full(
+                (1, 256, 256),
+                0.25,
+                dtype=np.float32,
+            ),
+        }
+        observed = {}
+
+        def competing_prediction(*args, **kwargs):
+            observed["committed_revision"] = cached["committed_revision"]
+            observed["backend_transform"] = cached["backend_transform"]
+            demo_module._commit_layout_transform(
+                image_state,
+                dict(self.layout_state),
+                True,
+                4.0,
+                0.0,
+                1.0,
+                0.0,
+                0.35,
+            )
+            return prediction
+
+        try:
+            pvs_state = demo_module._new_pvs_state(self.session_id)
+            with (
+                mock.patch.object(demo_module.SUPERVISOR, "lease"),
+                mock.patch.object(demo_module, "_prompt_mask_size", return_value=(256, 256)),
+                mock.patch.multiple(
+                    demo_module,
+                    _fresh_state=mock.DEFAULT,
+                    _layout_editor_payload=mock.DEFAULT,
+                    _predict_inst=mock.DEFAULT,
+                    _pvs_progress=mock.DEFAULT,
+                    _view=mock.DEFAULT,
+                ) as patched,
+            ):
+                patched["_fresh_state"].return_value = image_state
+                patched["_layout_editor_payload"].return_value = {
+                    "status": "ok"
+                }
+                patched["_predict_inst"].side_effect = competing_prediction
+                patched["_view"].return_value = (None,) * 8
+                result = demo_module._create_pvs_from_layout_mask(
+                    image_state,
+                    demo_module._new_pcs_state(self.session_id),
+                    pvs_state,
+                    demo_module.MODE_LAYOUT,
+                    dict(self.layout_state),
+                    True,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.35,
+                    {},
+                    progress=None,
+                )
+
+            self.assertIn("committed_revision", observed, result[3])
+            self.assertEqual(observed["committed_revision"], 0)
+            self.assertIsNone(observed["backend_transform"])
+            self.assertIn(
+                "revision is stale",
+                result[3],
+            )
+            self.assertEqual(pvs_state["instances"], {})
+            self.assertEqual(cached["committed_revision"], 1)
+            self.assertAlmostEqual(
+                cached["backend_transform"]["center_x"],
+                28.0,
+            )
+            committed_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(committed_meta["committed_revision"], 1)
+            self.assertAlmostEqual(
+                committed_meta["backend_transform"]["center_x"],
+                28.0,
+            )
+
+            normal_layout_state = dict(self.layout_state)
+            normal_layout_state["revision"] = 1
+            pvs_state = demo_module._new_pvs_state(self.session_id)
+            with (
+                mock.patch.object(demo_module.SUPERVISOR, "lease"),
+                mock.patch.object(demo_module, "_prompt_mask_size", return_value=(256, 256)),
+                mock.patch.multiple(
+                    demo_module,
+                    _fresh_state=mock.DEFAULT,
+                    _layout_editor_payload=mock.DEFAULT,
+                    _predict_inst=mock.DEFAULT,
+                    _pvs_progress=mock.DEFAULT,
+                    _view=mock.DEFAULT,
+                ) as patched,
+            ):
+                patched["_fresh_state"].return_value = image_state
+                patched["_layout_editor_payload"].return_value = {
+                    "status": "ok"
+                }
+                patched["_predict_inst"].return_value = prediction
+                patched["_view"].return_value = (None,) * 8
+                result = demo_module._create_pvs_from_layout_mask(
+                    image_state,
+                    demo_module._new_pcs_state(self.session_id),
+                    pvs_state,
+                    demo_module.MODE_LAYOUT,
+                    normal_layout_state,
+                    True,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.35,
+                    {},
+                    progress=None,
+                )
+
+            self.assertIn("已用版图 mask prompt 创建 PVS #1", result[3])
+            self.assertEqual(pvs_state["next_instance_id"], 2)
+            self.assertEqual(cached["committed_revision"], 2)
+        finally:
+            with demo_module._LAYOUT_CACHE_LOCK:
+                demo_module._LAYOUT_CACHE.pop(cache_key, None)
+                if old_cache is not None:
+                    demo_module._LAYOUT_CACHE[cache_key] = old_cache
+            if old_workspace is None:
+                demo_module._WORKSPACE_CACHE.pop(image_id, None)
+            else:
+                demo_module._WORKSPACE_CACHE[image_id] = old_workspace
+
 
 if __name__ == "__main__":
     unittest.main()

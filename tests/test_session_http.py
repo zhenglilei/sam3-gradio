@@ -197,6 +197,53 @@ class SessionHttpTests(unittest.TestCase):
         finally:
             first.close()
 
+    def test_public_probes_and_unknown_paths_do_not_create_sessions(self):
+        client = self._client("198.51.100.62")
+        before = app._SESSION_REGISTRY.snapshot()["count"]
+        try:
+            for method, path in (
+                ("GET", "/heart"),
+                ("HEAD", "/heart"),
+                ("GET", "/health"),
+                ("HEAD", "/health"),
+                ("GET", "/healthz"),
+                ("HEAD", "/healthz"),
+            ):
+                with self.subTest(method=method, path=path):
+                    response = client.request(method, path)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertNotIn("set-cookie", response.headers)
+            for method in ("GET", "POST"):
+                with self.subTest(method=method, path="/no-such-route"):
+                    response = (
+                        client.get("/no-such-route")
+                        if method == "GET"
+                        else client.post("/no-such-route", json={})
+                    )
+                    self.assertEqual(response.status_code, 404, response.text)
+        finally:
+            client.close()
+        self.assertEqual(app._SESSION_REGISTRY.snapshot()["count"], before)
+
+    def test_gradio_paths_still_require_a_session(self):
+        client = self._client("198.51.100.63")
+        try:
+            for path in (
+                "/config",
+                "/gradio_api/info",
+                "/gradio_api/queue/data?session_hash=x",
+            ):
+                with self.subTest(path=path):
+                    self.assertEqual(client.get(path).status_code, 401)
+            response = client.post(
+                "/gradio_api/queue/join",
+                json={"session_hash": "x"},
+                headers={"Origin": ORIGIN},
+            )
+            self.assertEqual(response.status_code, 401)
+        finally:
+            client.close()
+
     def test_different_owner_cannot_claim_or_write_existing_hash(self):
         session_hash = "owner-isolation-" + uuid.uuid4().hex
         first, _ = self._new_owner("198.51.100.30")
