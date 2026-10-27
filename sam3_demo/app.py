@@ -4335,20 +4335,30 @@ def _template_stitch_handoff_status(source_status):
 
 # These actions replace segmentation inputs/results. Exports, template previews,
 # crop selection (before Apply), and independent stitch edits do not cancel SAM3.
+# Selecting an existing PVS instance only changes the highlighted/active ID.
+# Point refinement already checks its captured target before writing back, so
+# _set_active_pvs must not invalidate unrelated PCS/PVS creation requests.
 _INFERENCE_INVALIDATING_CALLBACKS = frozenset({
     "_source_upload_workspace", "_apply_source_crop", "_use_full_source_image",
     "_handoff_stitch_mosaic", "_handoff_template_stitch",
+    # Drawing adds positive/negative PCS boxes or pending PVS prompts. A result
+    # computed from the previous prompt set must not replace the edited workspace.
     "_workspace_gesture_input", "_clear_prompt_selection",
     "_switch_mode_with_layout_editor", "_delete_selected_pcs_bbox",
     "_clear_pcs_instances", "_run_pcs", "_create_pvs_from_pending_boxes",
     "_delete_selected_pending_pvs_bbox", "_clear_pending_pvs_boxes",
     "_finish_native_polygon", "_pvs_point_prompt", "_layout_point_refine",
-    "_set_active_pvs", "_delete_active_pvs", "_clear_pvs",
+    "_delete_active_pvs", "_clear_pvs",
     "_run_layout_mask_page_with_downloads", "_save_current_layout_mask",
     "_clear_current_layout_mask_with_prompt_epoch", "_save_layout_region",
     "_delete_layout_region", "_use_current_layout_mask",
+    # Loading choices resets scope, region IDs and group transforms; selecting a
+    # mask changes full-mask versus selected-label model input, not just highlight.
     "_load_layout_prompt_choices", "_load_layout_binary_mask_png",
     "_select_layout_prompt_mask", "_reset_layout_prompt_selection",
+    # These previews commit numeric/canvas geometry and shared transform caches
+    # used to build mask_input. They are not render-only refreshes. Alpha shares
+    # this commit path/revision today; keep the protection until it is separated.
     "_update_layout_preview_with_groups",
     "_sync_layout_controls_from_editor_with_prompt_epoch",
     "_reset_layout_controls_with_prompt_epoch", "_create_pvs_from_layout_selection",
