@@ -76,7 +76,6 @@ class PCSBatchRuntimeRegressionTests(unittest.TestCase):
         self.assertIsNone(first["items"][0]["prediction"])
         self.assertIsNotNone(first["items"][0]["error"])
         self.assertEqual(set(first["items"][0]), {"prediction", "error"})
-        self.assertFalse(self.engine.disabled)
 
         healthy = self.engine.predict({"items": self.items(2), "concurrency": 4})
         self.assertEqual(healthy["concurrency"], 2)
@@ -99,7 +98,6 @@ class PCSBatchRuntimeRegressionTests(unittest.TestCase):
         self.assertTrue(first["fallback"])
         self.assertEqual(first["reason"], "memory_limit")
         self.assertEqual([item["prediction"] for item in first["items"]], [0, 1])
-        self.assertFalse(self.engine.disabled)
         self.assertGreaterEqual(self.runtime._torch.cuda.empty_cache_calls, 1)
 
         healthy = self.engine.predict({"items": self.items(2), "concurrency": 4})

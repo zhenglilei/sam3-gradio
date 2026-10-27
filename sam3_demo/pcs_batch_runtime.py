@@ -33,7 +33,6 @@ class PCSBatchRuntime:
     def __init__(self, runtime):
         self.runtime = runtime
         self.limit = min(4, max(1, int(os.environ.get("SAM3_PCS_BATCH_CONCURRENCY", "4"))))
-        self.disabled = False
         self.executor = None
         self.streams = []
 
@@ -46,7 +45,7 @@ class PCSBatchRuntime:
     def _lanes(self, items, requested):
         maximum = min(len(items), self.limit, max(1, int(requested)))
         torch = self.runtime._torch
-        if self.disabled or not self.runtime.device.startswith("cuda"):
+        if not self.runtime.device.startswith("cuda"):
             return 1
         free, _ = torch.cuda.mem_get_info(self.runtime.device)
         reusable = max(0, torch.cuda.memory_reserved(self.runtime.device) - torch.cuda.memory_allocated(self.runtime.device))
@@ -134,7 +133,7 @@ class PCSBatchRuntime:
             raise ValueError("PCS batch requires one to four images")
         lanes = self._lanes(items, args.get("concurrency", 4))
         fallback = lanes < min(len(items), self.limit, int(args.get("concurrency", 4)))
-        reason = "serial_after_failure" if self.disabled else "memory_limit" if fallback else ""
+        reason = "memory_limit" if fallback else ""
         results = []
         if lanes > 1:
             self._ensure_pool()

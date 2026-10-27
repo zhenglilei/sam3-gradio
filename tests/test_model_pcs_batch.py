@@ -62,13 +62,12 @@ class BatchRuntimeTests(unittest.TestCase):
         self.assertEqual([entry["prediction"] for entry in result["items"]], [0, 1, 2, 3])
         self.assertEqual(seen[-1], (1, None))
         self.assertEqual(len(seen), 5)
-        self.assertFalse(engine.disabled)
         self.assertTrue(result["fallback"])
         self.assertEqual(engine._lanes(items, 4), 4)
 
     def test_failure_preserves_other_results(self):
         engine = self.runtime()
-        engine.disabled = True
+        engine.limit = 1
         engine._predict_one = Mock(side_effect=[ValueError("bad"), prediction()])
         result = engine.predict({"items": [{"width": 3, "height": 2}] * 2})
         self.assertIsNotNone(result["items"][0]["error"])
@@ -92,7 +91,7 @@ class BatchRuntimeTests(unittest.TestCase):
 
     def test_oversized_response_does_not_break_protocol(self):
         engine = self.runtime()
-        engine.disabled = True
+        engine.limit = 1
         engine._predict_one = lambda value, lane=None: b"x" * 8000
         with patch.object(batch_runtime, "max_frame_bytes", return_value=8192):
             result = engine.predict({"items": [{"width": 3, "height": 2}] * 2})
@@ -129,7 +128,6 @@ class SupervisorBatchTests(unittest.TestCase):
         self.supervisor._wait_until_started = Mock()
         result = self.supervisor.predict_pcs_batch([item()])
         self.assertTrue(result["fallback"])
-        self.assertFalse(self.supervisor._pcs_parallel_disabled)
         self.assertEqual(self.supervisor._rpc.call_args_list[1].args[1]["concurrency"], 1)
         self.assertEqual(self.supervisor._rpc.call_count, 2)
 
@@ -152,14 +150,15 @@ class SupervisorBatchTests(unittest.TestCase):
         self.assertEqual(len(result["items"]), 4)
         self.assertEqual(self.supervisor._rpc.call_count, 4)
 
-    def test_already_serial_failure_does_not_retry_again(self):
-        self.supervisor._pcs_parallel_disabled = True
-        self.supervisor._rpc = Mock(side_effect=EOFError())
+    def test_later_group_failure_does_not_retry_after_serial_fallback(self):
+        response = {"items": [{"prediction": prediction(), "error": None}], "concurrency": 1}
+        self.supervisor._rpc = Mock(side_effect=[EOFError(), response, EOFError()])
         self.supervisor._wait_until_started = Mock()
-        with self.assertRaises(EOFError):
-            self.supervisor.predict_pcs_batch([item()])
-        self.assertEqual(self.supervisor._rpc.call_count, 1)
-        self.supervisor._wait_until_started.assert_not_called()
+        with patch("sam3_demo.model_supervisor._MAX_FRAME_BYTES", 16 * 1024 * 1024 + 3000):
+            with self.assertRaises(EOFError):
+                self.supervisor.predict_pcs_batch([item()] * 2)
+        self.assertEqual(self.supervisor._rpc.call_count, 3)
+        self.supervisor._wait_until_started.assert_called_once_with()
 
     def test_no_prompt_or_nonfinite_inputs_never_call_worker(self):
         self.supervisor._rpc = Mock()

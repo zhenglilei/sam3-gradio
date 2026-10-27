@@ -412,7 +412,6 @@ class ModelSupervisorTests(unittest.TestCase):
             self.assertEqual([call.args[1]["concurrency"] for call in calls], [4, 1, 4])
             self.assertTrue(first["fallback"])
             self.assertFalse(second["fallback"])
-            self.assertFalse(supervisor._pcs_parallel_disabled)
             supervisor._wait_until_started.assert_called_once_with()
         finally:
             supervisor.shutdown(graceful_timeout=0)
