@@ -12,6 +12,7 @@ import json
 import uuid
 import copy
 import functools
+from contextlib import ExitStack
 import hashlib
 import atexit
 import os
@@ -90,6 +91,7 @@ from sam3_demo import template_stitch_callbacks as _template_stitch_cb
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, gradio_state_recovery, request_identity
+from sam3_demo.session_guard import inference_wait
 from sam3_demo.session_runtime import SessionError, SessionRecord, SessionRegistry
 from sam3_demo.stitch_draft_store import StitchDraftStore
 from sam3_demo.observability import Observability, resolve_git_sha
@@ -104,7 +106,9 @@ def _model_lease_wrapper(reason):
         @functools.wraps(function)
         def wrapped(*args, **kwargs):
             wait_started = time.monotonic()
-            with SUPERVISOR.lease(reason=reason):
+            with ExitStack() as stack:
+                with inference_wait():
+                    stack.enter_context(SUPERVISOR.lease(reason=reason))
                 if _OBSERVABILITY is not None:
                     _OBSERVABILITY.record_model_wait(
                         reason,
@@ -4339,6 +4343,7 @@ def _session_callback_registry(recovery_store=None):
             observability=_OBSERVABILITY,
             recovery_factory=_session_recovery_states,
             recovery_store=recovery_store,
+            read_only=name == "_workspace_gesture_payload",
         )
     return callbacks
 
@@ -4527,7 +4532,9 @@ def create_application(
     )
     application = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-    @application.get("/healthz", include_in_schema=False)
+    @application.api_route("/heart", methods=["GET", "HEAD"], include_in_schema=False)
+    @application.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
+    @application.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     async def healthz():
         return {
             "status": "ok",

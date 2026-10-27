@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from sam3_demo.model_supervisor import SUPERVISOR
+from sam3_demo.session_guard import inference_wait
 from sam3_demo.segmentation_evaluation import polygon_to_mask
 
 
@@ -27,7 +28,8 @@ def initialize_models():
 
 
 def _prompt_mask_size():
-    return tuple(int(v) for v in SUPERVISOR.mask_input_size())
+    with inference_wait():
+        return tuple(int(v) for v in SUPERVISOR.mask_input_size())
 
 
 def _polygon_lowres_logits(polygon, width, height):
@@ -88,7 +90,8 @@ def _predict_inst(
                 f"mask_input_lowres_logits must be finite with shape 1x{expected[0]}x{expected[1]}"
             )
         kwargs["mask_input_lowres_logits"] = mask_input
-    return SUPERVISOR.predict_inst(handle, _image_supplier(handle), **kwargs)
+    with inference_wait():
+        return SUPERVISOR.predict_inst(handle, _image_supplier(handle), **kwargs)
 
 
 def _predict_pcs(
@@ -107,11 +110,12 @@ def _predict_pcs(
         raise ValueError("PCS boxes must contain finite values")
     if not np.isfinite(confidence):
         raise ValueError("PCS threshold must be finite")
-    return SUPERVISOR.predict_pcs(
-        handle,
-        _image_supplier(handle),
-        text=str(text or ""),
-        positive_boxes_cxcywh=positive,
-        negative_boxes_cxcywh=negative,
-        threshold=confidence,
-    )
+    with inference_wait():
+        return SUPERVISOR.predict_pcs(
+            handle,
+            _image_supplier(handle),
+            text=str(text or ""),
+            positive_boxes_cxcywh=positive,
+            negative_boxes_cxcywh=negative,
+            threshold=confidence,
+        )

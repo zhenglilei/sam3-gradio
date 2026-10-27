@@ -12,7 +12,8 @@ import hmac
 import inspect
 from copy import deepcopy
 from collections.abc import Mapping
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, get_args, get_origin, get_type_hints
 
 import gradio as gr
@@ -35,7 +36,7 @@ class SessionGuardError(SessionError):
     """Raised before a callback is called when request ownership is invalid."""
 
 
-class _SupersededCallback(Exception):
+class _SupersededCallback(BaseException):
     """A queued operation targets a session already replaced in this page."""
 
 
@@ -51,6 +52,32 @@ _IDENTITY_FIELDS = (
     "resume_id",
 )
 _MISSING = object()
+_ACTIVE_OPERATION = ContextVar("sam3_active_operation", default=None)
+_FAILURE_REPORTER = ContextVar("sam3_callback_failure_reporter", default=None)
+
+
+@contextmanager
+def inference_wait():
+    """Release the UI operation lock only while waiting for model loading/RPC."""
+    operation = _ACTIVE_OPERATION.get()
+    if operation is None:
+        yield
+        return
+    registry, record, revision = operation
+    try:
+        with registry.suspend_operation(record):
+            yield
+    finally:
+        if (record.operation_revision != revision
+                or record.close_requested or record.closed):
+            # Skip stale writeback even when business callbacks catch Exception.
+            raise _SupersededCallback()
+
+
+def record_handled_callback_failure(exc):
+    """Report a handled PCS error without changing its output contract."""
+    reporter = _FAILURE_REPORTER.get()
+    return reporter(exc) if reporter is not None else None
 
 
 def _request_type(annotation: Any) -> bool:
@@ -299,6 +326,7 @@ def guard_callback(
         Callable[[Mapping[str, Any]], Mapping[str, Mapping[str, Any]]]
     ] = None,
     recovery_store: Optional[Callable[..., Mapping[str, Mapping[str, Any]]]] = None,
+    read_only: bool = False,
 ) -> Callable[..., Any]:
     """Wrap a callback with strict request/session ownership validation.
 
@@ -443,6 +471,11 @@ def guard_callback(
         )
         _validate_state_owner_tokens(required_states, record)
         with _lease_for(registry, full_state, session_id, identity):
+            if not read_only:
+                record.operation_revision += 1
+            operation_token = _ACTIVE_OPERATION.set(
+                (registry, record, record.operation_revision)
+            )
             identity_snapshots = [
                 (
                     state,
@@ -463,6 +496,8 @@ def guard_callback(
                         else:
                             state[field] = value
                 raise
+            finally:
+                _ACTIVE_OPERATION.reset(operation_token)
             if full_state is not None:
                 record = registry.validate(full_state, identity)
             else:
@@ -480,6 +515,18 @@ def guard_callback(
         owner_id = getattr(request, "username", None)
         session_hash = getattr(request, "session_hash", None)
         action = fn.__name__.lstrip("_") or fn.__name__
+        handled_error_id = None
+
+        def report_handled_failure(exc):
+            nonlocal handled_error_id
+            if handled_error_id is None:
+                handled_error_id = observability.record_callback_failure(
+                    action, observability.monotonic() - started_at, exc,
+                    owner_id=owner_id, session_hash=session_hash,
+                )
+            return handled_error_id
+
+        reporter_token = _FAILURE_REPORTER.set(report_handled_failure)
         try:
             result = _guarded_impl(*args, **kwargs)
         except BaseException as exc:
@@ -498,12 +545,15 @@ def guard_callback(
                 message = getattr(exc, "message", None) or "操作失败"
                 raise gr.Error(f"{message}（错误编号：{error_id}）") from exc
             raise gr.Error(f"操作失败，请联系开发人员。错误编号：{error_id}") from exc
-        observability.record_callback_success(
-            action,
-            observability.monotonic() - started_at,
-            owner_id=owner_id,
-            session_hash=session_hash,
-        )
+        finally:
+            _FAILURE_REPORTER.reset(reporter_token)
+        if handled_error_id is None:
+            observability.record_callback_success(
+                action,
+                observability.monotonic() - started_at,
+                owner_id=owner_id,
+                session_hash=session_hash,
+            )
         return result
 
     guarded.__signature__ = guarded_signature

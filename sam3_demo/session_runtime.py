@@ -49,6 +49,7 @@ class SessionRecord:
     close_requested: bool = False
     resume_id: str = ""
     closed: bool = False
+    operation_revision: int = 0
     operation_lock: threading.RLock = field(
         default_factory=threading.RLock,
         repr=False,
@@ -612,6 +613,20 @@ class SessionRegistry:
                 self._callbacks(cleanups)
         finally:
             record.operation_lock.release()
+    @contextmanager
+    def suspend_operation(self, record: SessionRecord) -> Iterator[None]:
+        """Release only the operation lock while keeping the session in flight."""
+        depth = self._depths().get(record.session_id, 0)
+        if not depth:
+            raise RuntimeError("suspending an operation requires a session lease")
+        for _ in range(depth):
+            record.operation_lock.release()
+        try:
+            yield
+        finally:
+            for _ in range(depth):
+                record.operation_lock.acquire()
+
     @contextmanager
     def lease(
         self,

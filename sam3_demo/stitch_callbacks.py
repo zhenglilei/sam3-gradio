@@ -39,6 +39,12 @@ def _as_revision(value: Any) -> int:
         return 0
 
 
+def _strict_revision(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("拼接结果版本无效，请重新生成后再写入工作区")
+    return value
+
+
 def new_stitch_state(session_id: str = "", owner_token: str = "") -> dict[str, Any]:
     return {
         "schema_version": 2,
@@ -598,6 +604,8 @@ def apply_numeric_transform(dx, dy, rotation_deg, stitch_state):
             *_cleared_result_updates(),
             0.0,
         )
+    if len(shifts) != len(images):
+        raise ValueError("图像与位置数量不一致，请重新加载分块图")
     selected = max(0, min(int(state.get("selected") or 0), len(shifts) - 1))
     try:
         nx = int(round(float(dx)))
@@ -775,8 +783,10 @@ def mosaic_for_handoff(stitch_state) -> Image.Image:
     if not isinstance(stitch_state, dict):
         raise ValueError("请先生成当前拼接结果")
     generated = stitch_state.get("generated_revision")
-    current = _as_revision(stitch_state.get("revision"))
-    if generated is None or _as_revision(generated) != current:
+    if generated is None:
+        raise ValueError("拼接结果已过期，请重新生成后再写入工作区")
+    current = _strict_revision(stitch_state.get("revision"))
+    if _strict_revision(generated) != current:
         raise ValueError("拼接结果已过期，请重新生成后再写入工作区")
     mosaic = pil_rgb(stitch_state.get("mosaic"))
     if mosaic is None:
