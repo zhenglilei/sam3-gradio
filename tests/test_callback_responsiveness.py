@@ -236,3 +236,26 @@ class InferenceQueueTest(TestCase):
         self.assertEqual(supervisor._encoded_generation, {})
         supervisor._worker = None
         supervisor.shutdown()
+
+    def test_pvs_completion_never_clears_a_new_template_result(self):
+        from sam3_demo import app
+
+        demo = app.create_demo()
+        dependencies = {dep["id"]: dep for dep in demo.config["dependencies"]}
+        for fn_id, fn in demo.fns.items():
+            if fn.name not in {
+                "_create_pvs_from_pending_boxes", "_pvs_point_prompt",
+                "_layout_point_refine", "_create_pvs_from_layout_selection",
+                "_finish_native_polygon",
+            }:
+                continue
+            with self.subTest(callback=fn.name):
+                parent = dependencies[fn_id]["trigger_after"]
+                self.assertEqual(demo.fns[parent].name, "_clear_template_match_outputs")
+                pending = [fn_id]
+                while pending:
+                    predecessor = pending.pop()
+                    for dep_id, dep in dependencies.items():
+                        if dep.get("trigger_after") == predecessor:
+                            self.assertNotEqual(demo.fns[dep_id].name, "_clear_template_match_outputs")
+                            pending.append(dep_id)

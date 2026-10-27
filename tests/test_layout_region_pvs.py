@@ -814,6 +814,11 @@ class LayoutRegionPvsTest(unittest.TestCase):
                 ),
             ),
         ):
+            preview = demo_module._commit_layout_group_transforms(
+                self.image_state, state, editor, commit=False,
+            )
+            self.assertNotIn("prompt_group_snapshot", cache)
+            self.assertNotIn("prompt_group_transformed_masks", cache)
             updated, _, snapshot, _, active = (
                 demo_module._commit_layout_group_transforms(
                     self.image_state,
@@ -821,6 +826,7 @@ class LayoutRegionPvsTest(unittest.TestCase):
                     editor,
                 )
             )
+            self.assertEqual(preview[2], snapshot)
 
         authoritative = updated["prompt_group_transforms"]
         self.assertEqual(active["group_id"], "region_2")

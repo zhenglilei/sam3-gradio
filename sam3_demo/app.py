@@ -2809,6 +2809,7 @@ def _commit_layout_group_transforms(
     *,
     numeric_override=None,
     reset_active=False,
+    commit=True,
 ):
     return _commit_layout_group_transforms_impl(
         {
@@ -2831,6 +2832,7 @@ def _commit_layout_group_transforms(
         editor_payload,
         numeric_override,
         reset_active,
+        commit,
     )
 
 
@@ -3534,7 +3536,7 @@ def _layout_numeric_controls_changed(layout_state, tx, ty, scale, rotation_deg, 
     )
 
 
-def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None, prefer_numeric=None):
+def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None, prefer_numeric=None, *, commit=True):
     return _commit_layout_transform_impl(
         {
             '_LAYOUT_CACHE_LOCK': _LAYOUT_CACHE_LOCK,
@@ -3558,6 +3560,7 @@ def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, 
         preview_alpha,
         transform_payload,
         prefer_numeric,
+        commit,
     )
 
 
@@ -4343,7 +4346,10 @@ def _session_callback_registry(recovery_store=None):
             observability=_OBSERVABILITY,
             recovery_factory=_session_recovery_states,
             recovery_store=recovery_store,
-            read_only=name == "_workspace_gesture_payload",
+            read_only=name in {
+                "_workspace_gesture_payload", "_template_instance_choices",
+                "_template_match_selection_choices",
+            },
         )
     return callbacks
 
