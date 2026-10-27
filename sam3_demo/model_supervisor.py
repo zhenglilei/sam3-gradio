@@ -880,7 +880,10 @@ class ModelRuntimeSupervisor:
             for key in list(self._encoded_generation):
                 if key[0] in ids:
                     self._encoded_generation.pop(key, None)
-            ready = self._worker is not None and self._state in (READY, RUNNING, REHYDRATING)
+            # Worker LRU bounds retained embeddings. Never queue UI eviction
+            # behind an active inference RPC just to free this optional cache.
+            ready = (self._worker is not None and self._state == READY
+                     and self._active_requests == 0)
         if not ready:
             return
         try:

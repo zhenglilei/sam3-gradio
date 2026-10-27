@@ -149,6 +149,14 @@ class StitchCallbacksTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "过期|先生成"):
             callbacks.mosaic_for_handoff(state)
 
+    def test_handoff_rejects_corrupt_revision(self):
+        state = self._loaded_state()
+        state["mosaic"] = Image.new("RGB", (4, 4), (20, 30, 40))
+        state["revision"] = "corrupt"
+        state["generated_revision"] = 0
+        with self.assertRaisesRegex(ValueError, "版本无效|重新生成"):
+            callbacks.mosaic_for_handoff(state)
+
     def test_selection_only_canvas_change_keeps_result(self):
         state = self._loaded_state()
         state = callbacks.generate_mosaic(state, False, False)[0]
@@ -202,6 +210,12 @@ class StitchCallbacksTest(unittest.TestCase):
         self.assertEqual(result[-1], 179.0)
         self.assertEqual(result[1]["tiles"][0]["rotation_deg"], 179.0)
         self.assertEqual(len(result), 10)
+
+    def test_numeric_transform_rejects_mismatched_image_and_shift_counts(self):
+        state = self._loaded_state()
+        state["shifts"] = [(99, 99)]
+        with self.assertRaisesRegex(ValueError, "数量不一致"):
+            callbacks.apply_numeric_transform(5, 6, 0, state)
 
     def test_auto_align_resets_manual_rotations(self):
         state = self._loaded_state()

@@ -504,20 +504,22 @@ def bind_demo_events(
         concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
         concurrency_id="image-prepost-state",
     )
-    create_from_layout_event = create_from_layout_btn.click(
+    def clear_template_before_inference(button):
+        return button.click(
+            fn=_clear_template_match_outputs,
+            inputs=[template_match_state],
+            outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
+            concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
+            concurrency_id="image-prepost-state",
+        )
+
+    clear_template_before_inference(create_from_layout_btn).then(
         fn=_create_pvs_from_layout_selection,
         inputs=[image_state, pcs_state, pvs_state, mode, layout_state, layout_enabled, layout_tx, layout_ty, layout_scale, layout_rotation, layout_alpha, layout_editor, layout_prompt_mask_selector],
         outputs=[pvs_state, layout_state, layout_editor, layout_pvs_info, *common],
         show_progress_on=[result_image],
-        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
-        concurrency_id="image-prepost-state",
-    )
-    create_from_layout_event.then(
-        fn=_clear_template_match_outputs,
-        inputs=[template_match_state],
-        outputs=[template_match_state, template_match_preview, template_match_file, template_match_status],
-        concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
-        concurrency_id="image-prepost-state",
+        concurrency_limit=1,
+        concurrency_id="sam3-inference",
     )
 
     workspace_init_outputs = [
@@ -661,7 +663,7 @@ def bind_demo_events(
             concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
-    finish_polygon_event = finish_polygon_btn.click(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    finish_polygon_event = clear_template_before_inference(finish_polygon_btn).then(fn=_finish_native_polygon, inputs=[image_state, prompt_state, pcs_state, pvs_state, mode, polygon_action, polygon_combine_mode], outputs=[prompt_state, polygon_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="sam3-inference")
     clear_prompt_btn.click(fn=_clear_prompt_selection, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, pcs_state, pvs_state, pcs_bbox_selector, pvs_pending_bbox_selector, text_prompt, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     mode_event = mode.input(fn=_switch_mode_with_layout_editor, inputs=[mode, image_state, pcs_state, pvs_state, layout_state], outputs=[prompt_state, bbox_payload, point_payload, polygon_payload, click_tool, finish_polygon_btn, pcs_bbox_tools, pcs_panel, pvs_panel, pvs_action_panel, analysis_report_panel, pvs_layout_panel, layout_transform_panel, pvs_bbox_prompt_panel, pvs_point_prompt_panel, pvs_polygon_prompt_panel, pcs_bbox_selector, pvs_pending_bbox_selector, layout_point_refine_panel, *common, layout_editor], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     mode_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
@@ -669,21 +671,18 @@ def bind_demo_events(
     click_tool_event.then(fn=_workspace_gesture_payload, inputs=[image_state, mode, click_tool], outputs=[workspace_gesture_overlay], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     delete_selected_pcs_bbox_btn.click(fn=_delete_selected_pcs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pcs_bbox_selector], outputs=[pcs_state, pcs_bbox_selector, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     clear_pcs_instances_btn.click(fn=_clear_pcs_instances, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pcs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    create_pvs_batch_event = create_pvs_batch_btn.click(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    run_pcs_btn.click(fn=_run_pcs, inputs=[image_state, pcs_state, pvs_state, mode, text_prompt, confidence_threshold], outputs=[pcs_state, *common], concurrency_limit=1, concurrency_id="sam3-inference")
+    create_pvs_batch_event = clear_template_before_inference(create_pvs_batch_btn).then(fn=_create_pvs_from_pending_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="sam3-inference")
     delete_selected_pending_bbox_btn.click(fn=_delete_selected_pending_pvs_bbox, inputs=[image_state, pcs_state, pvs_state, mode, pvs_pending_bbox_selector], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     clear_pending_bbox_btn.click(fn=_clear_pending_pvs_boxes, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, pvs_pending_bbox_selector, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    pvs_point_event = pvs_point_btn.click(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
-    layout_point_event = layout_point_btn.click(fn=_layout_point_refine, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, layout_point_kind, prompt_state], outputs=[prompt_state, point_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    pvs_point_event = clear_template_before_inference(pvs_point_btn).then(fn=_pvs_point_prompt, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, pvs_point_kind], outputs=[pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="sam3-inference")
+    layout_point_event = clear_template_before_inference(layout_point_btn).then(fn=_layout_point_refine, inputs=[image_state, pcs_state, pvs_state, mode, point_payload, layout_point_kind, prompt_state], outputs=[prompt_state, point_payload, pvs_state, *common], show_progress_on=[result_image, analysis_report], concurrency_limit=1, concurrency_id="sam3-inference")
     active_pvs_event = active_pvs.input(fn=_set_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode, active_pvs], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     delete_active_pvs_event = delete_active_pvs_btn.click(fn=_delete_active_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
     clear_pvs_event = clear_pvs_btn.click(fn=_clear_pvs, inputs=[image_state, pcs_state, pvs_state, mode], outputs=[pvs_state, *common], concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT, concurrency_id="image-prepost-state")
+    template_sync_events = [finish_polygon_event, create_pvs_batch_event, pvs_point_event, layout_point_event]
     for invalidating_event in (
         mode_event,
-        finish_polygon_event,
-        create_pvs_batch_event,
-        pvs_point_event,
-        layout_point_event,
         active_pvs_event,
         delete_active_pvs_event,
         clear_pvs_event,
@@ -695,7 +694,9 @@ def bind_demo_events(
             concurrency_limit=_MULTI_USER_CONCURRENCY_LIMIT,
             concurrency_id="image-prepost-state",
         )
-        sync_event = clear_event.then(
+        template_sync_events.append(clear_event)
+    for event in template_sync_events:
+        sync_event = event.then(
             fn=_template_instance_choices,
             inputs=[pvs_state],
             outputs=[template_instance_selector],

@@ -155,7 +155,6 @@ def process_pcs_chunk(app, batch, session):
     if batch.get("session_id") != session_id or not batch.get("running"):
         return {"last_id": None, "last_values": None, "last_error": ""}
     chunk_ids = list(batch.get("pending") or [])[:4]
-    batch["pending"] = list(batch.get("pending") or [])[len(chunk_ids):]
     if not chunk_ids:
         return {"last_id": None, "last_values": None, "last_error": ""}
 
@@ -219,6 +218,9 @@ def process_pcs_chunk(app, batch, session):
             response = {"items": [], "concurrency": 1, "fallback": False,
                         "reason": str(exc)}
 
+    # Only consume work after prediction returns; an intervening cancel/edit
+    # may discard this callback before it reaches the result commit.
+    batch["pending"] = list(batch.get("pending") or [])[len(chunk_ids):]
     rows_by_id = {
         item_id: row for item_id, row in zip(request_ids, response.get("items", []))
         if isinstance(row, dict)
@@ -554,7 +556,7 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                               trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
                               recovery_factory=app._session_recovery_states)
 
-    options = dict(inputs=shared, outputs=outputs, concurrency_limit=1,
+    options = dict(inputs=shared, outputs=outputs, concurrency_limit=8,
                    concurrency_id="image-prepost-state", show_progress="hidden", api_visibility="private")
     upload_callback = wrap("upload")
     r.batch_upload.upload(upload_callback, **options)
@@ -567,7 +569,7 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
     s.image_state.change(
         guard_callback(image_action_state, registry=app._SESSION_REGISTRY,
                        trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
-                       recovery_factory=app._session_recovery_states),
+                       recovery_factory=app._session_recovery_states, read_only=True),
         inputs=[s.session_state, s.image_state, r.batch_state],
         outputs=[r.run_pcs_btn], queue=False, show_progress="hidden",
         api_visibility="private",
@@ -580,13 +582,14 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                               (r.batch_retry_btn,"retry"),(r.batch_cancel_btn,"cancel"),
                               (r.batch_select_all_btn,"select_all"),
                               (r.batch_select_none_btn,"select_none")):
-        component.click(wrap(action), **options)
+        component.click(wrap(action), **{**options, "queue": action != "cancel"})
     # Handoff must not rebuild the source image and gesture components while hiding them.
     handoff_outputs = [r.batch_state, r.batch_status, t.stitch_state,
                        queue_gallery, queue_selection, s.main_tabs]
     r.batch_stitch_btn.click(wrap("stitch", handoff_outputs),
                             **{**options, "outputs": handoff_outputs})
-    timer.tick(wrap("step"), **options)
+    timer.tick(wrap("step"), **{**options, "concurrency_limit": 1,
+                              "concurrency_id": "sam3-inference"})
 
     def batch_select(batch, session_state, source_image_state, image_state, pcs_state,
                pvs_state, prompt_state, layout_state, mode, click_tool, text,
@@ -615,7 +618,7 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
             fn=external_upload_callback,
             inputs=external_inputs,
             outputs=external_outputs,
-            concurrency_limit=1,
+            concurrency_limit=8,
             concurrency_id="image-prepost-state",
             show_progress="hidden",
             api_visibility="private",
@@ -636,10 +639,11 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 registry=app._SESSION_REGISTRY,
                 trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
                 recovery_factory=app._session_recovery_states,
+                read_only=True,
             ),
             inputs=[s.session_state, s.image_state, r.mode, r.click_tool],
             outputs=[r.workspace_gesture_overlay],
-            concurrency_limit=1,
+            concurrency_limit=8,
             concurrency_id="image-prepost-state",
             show_progress="hidden",
             api_visibility="private",
@@ -655,10 +659,11 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 registry=app._SESSION_REGISTRY,
                 trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
                 recovery_factory=app._session_recovery_states,
+                read_only=True,
             ),
             inputs=[s.session_state, s.source_image_state],
             outputs=[r.source_crop_overlay],
-            concurrency_limit=1,
+            concurrency_limit=8,
             concurrency_id="image-prepost-state",
             show_progress="hidden",
             api_visibility="private",
@@ -676,10 +681,11 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 registry=app._SESSION_REGISTRY,
                 trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
                 recovery_factory=app._session_recovery_states,
+                read_only=True,
             ),
             inputs=[s.session_state, s.image_state, r.mode],
             outputs=[r.layout_editor],
-            concurrency_limit=1,
+            concurrency_limit=8,
             concurrency_id="image-prepost-state",
             show_progress="hidden",
             api_visibility="private",

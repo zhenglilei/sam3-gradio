@@ -790,13 +790,14 @@ def _create_pvs_from_layout_mask_impl(_deps, image_state, pcs_state, pvs_state, 
         if not _is_layout_mask_mode(mode):
             raise ValueError("版图 mask prompt 只支持在版图 mask 提示分割模式使用")
         _pvs_progress(progress, 0.05, "Commit and validate layout transform")
-        state, transformed, _ = _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=editor_payload)
+        state, transformed, _ = _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=editor_payload, commit=False)
         transformed = _validate_layout_prompt_mask(transformed)
         lowres_logits = _mask_to_lowres_logits(transformed)
         _pvs_progress(progress, 0.35, "SAM3 is creating PVS instance from layout mask_input", delay=0.08)
         pred = _predict_inst(_fresh_state(image_state), mask_input_lowres_logits=lowres_logits)
         idx = _best(pred)
         mask = pred["masks"][idx]
+        state, _, _ = _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=editor_payload)
         inst_id = int(pvs_state.get("next_instance_id", 1))
         prompt = _layout_prompt_metadata(image_state, state)
         pvs_state.setdefault("instances", {})[inst_id] = _make_inst(
@@ -1356,6 +1357,7 @@ def _create_pvs_from_layout_selection_impl(_deps, image_state, pcs_state, pvs_st
             raise ValueError("Region 批次计划的 PVS instance ID 已存在")
 
         _pvs_progress(progress, 0.04, "提交并冻结各 Label transform")
+        transform_input = state
         (
             state,
             committed_decoded,
@@ -1373,6 +1375,7 @@ def _create_pvs_from_layout_selection_impl(_deps, image_state, pcs_state, pvs_st
                 rotation_deg,
                 preview_alpha,
             ),
+            commit=False,
         )
         if (
             [int(record["region_id"]) for record, _ in committed_decoded]
@@ -1499,15 +1502,6 @@ def _create_pvs_from_layout_selection_impl(_deps, image_state, pcs_state, pvs_st
             for region_id, instance_id in zip(region_ids, created_ids)
         )
         info = f"已按选中 Label 原子创建 {batch_size} 个 PVS 实例：{mapping}"
-        editor = _layout_editor_payload(image_state, state, info)
-        view = _view(
-            image_state,
-            pcs_state,
-            candidate_state,
-            mode,
-            info,
-            layout_state=state,
-        )
 
         _pvs_progress(
             progress,
@@ -1551,10 +1545,6 @@ def _create_pvs_from_layout_selection_impl(_deps, image_state, pcs_state, pvs_st
                 raise ValueError(
                     "版图 identity、Label 选择或模式在批量预测期间发生变化"
                 )
-            _validate_layout_group_transform_snapshot(
-                state,
-                frozen_group_snapshot,
-            )
             workspace_image = _workspace(image_state)["image"]
             workspace_hash = _layout_tx.image_pixel_sha256(
                 workspace_image
@@ -1567,9 +1557,17 @@ def _create_pvs_from_layout_selection_impl(_deps, image_state, pcs_state, pvs_st
                 raise ValueError(
                     "PVS state 在批量预测期间发生变化，整批结果未提交"
                 )
+            # No model wait occurs between this commit and the state writeback.
+            state, _, _, _, _ = _commit_layout_group_transforms(
+                image_state, transform_input, editor_payload,
+                numeric_override=(tx, ty, scale, rotation_deg, preview_alpha),
+            )
+            _validate_layout_group_transform_snapshot(state, frozen_group_snapshot)
         except Exception as conflict:
             raise _LayoutPromptConflictError(str(conflict)) from conflict
 
+        editor = _layout_editor_payload(image_state, state, info)
+        view = _view(image_state, pcs_state, candidate_state, mode, info, layout_state=state)
         return candidate_state, state, editor, info, *view
     except Exception as exc:
         info = f"按 Label 创建 PVS 失败，整批未提交：{exc}"

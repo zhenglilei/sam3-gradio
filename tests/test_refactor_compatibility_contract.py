@@ -369,9 +369,8 @@ class RefactorCompatibilityContractTest(unittest.TestCase):
         ]
         self.assertTrue(stateful)
         for block_fn in stateful:
-            # Batch switching shares the image queue to avoid expired cache reads.
-            expected = (1, "1") if block_fn.fn.__name__.startswith(("batch_", "send_to_segmentation")) else (8, "8")
-            self.assertIn(block_fn.concurrency_limit, expected)
+            # A single limit=1 registration would serialize this entire group.
+            self.assertIn(block_fn.concurrency_limit, (8, "8"))
 
 
 if __name__ == "__main__":

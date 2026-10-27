@@ -13,6 +13,7 @@ import json
 import uuid
 import copy
 import functools
+from contextlib import ExitStack
 import hashlib
 import atexit
 import os
@@ -94,6 +95,7 @@ from sam3_demo.ui_repair_core import empty_editor_payload, new_repair_state
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, gradio_state_recovery, request_identity
+from sam3_demo.session_guard import inference_wait
 from sam3_demo.session_runtime import SessionError, SessionRecord, SessionRegistry
 from sam3_demo.stitch_draft_store import StitchDraftStore
 from sam3_demo.observability import Observability, resolve_git_sha
@@ -108,7 +110,9 @@ def _model_lease_wrapper(reason):
         @functools.wraps(function)
         def wrapped(*args, **kwargs):
             wait_started = time.monotonic()
-            with SUPERVISOR.lease(reason=reason):
+            with ExitStack() as stack:
+                with inference_wait():
+                    stack.enter_context(SUPERVISOR.lease(reason=reason))
                 if _OBSERVABILITY is not None:
                     _OBSERVABILITY.record_model_wait(
                         reason,
@@ -2830,6 +2834,7 @@ def _commit_layout_group_transforms(
     *,
     numeric_override=None,
     reset_active=False,
+    commit=True,
 ):
     return _commit_layout_group_transforms_impl(
         {
@@ -2852,6 +2857,7 @@ def _commit_layout_group_transforms(
         editor_payload,
         numeric_override,
         reset_active,
+        commit,
     )
 
 
@@ -3555,7 +3561,7 @@ def _layout_numeric_controls_changed(layout_state, tx, ty, scale, rotation_deg, 
     )
 
 
-def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None, prefer_numeric=None):
+def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None, prefer_numeric=None, *, commit=True):
     return _commit_layout_transform_impl(
         {
             '_LAYOUT_CACHE_LOCK': _LAYOUT_CACHE_LOCK,
@@ -3579,6 +3585,7 @@ def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, 
         preview_alpha,
         transform_payload,
         prefer_numeric,
+        commit,
     )
 
 
@@ -4528,6 +4535,10 @@ def _session_callback_registry(recovery_store=None):
             observability=_OBSERVABILITY,
             recovery_factory=_session_recovery_states,
             recovery_store=recovery_store,
+            read_only=name in {
+                "_workspace_gesture_payload", "_template_instance_choices",
+                "_template_match_selection_choices",
+            },
         )
     return callbacks
 
