@@ -191,10 +191,14 @@ class XingzhouStartupTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())["status"], "warning")
 
     def test_directory_write_failure_is_actionable(self):
+        import sam3_demo
+
         directories = SimpleNamespace(runtime_dir=self.root / ".runtime", runtime_tmp_dir=self.root / ".runtime/tmp",
                                       public_download_dir=self.root / "downloads", qiyuan_cache_dir=self.root / "cache",
                                       runtime_feedback_dir=self.root / ".runtime/feedback")
+        # A prior config import also caches it on the parent package.
         with patch.dict(sys.modules, {"sam3_demo.config": directories}), \
+             patch.object(sam3_demo, "config", directories, create=True), \
              patch.object(startup.tempfile, "TemporaryFile", side_effect=PermissionError()):
             with self.assertRaisesRegex(startup.StartupError, "not writable") as result:
                 startup.check_directories(self.root)
