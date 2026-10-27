@@ -326,13 +326,15 @@ def guard_callback(
         Callable[[Mapping[str, Any]], Mapping[str, Mapping[str, Any]]]
     ] = None,
     recovery_store: Optional[Callable[..., Mapping[str, Mapping[str, Any]]]] = None,
-    read_only: bool = False,
+    invalidates_inference: bool = False,
 ) -> Callable[..., Any]:
     """Wrap a callback with strict request/session ownership validation.
 
     The generated signature contains one trailing optional ``gr.Request``
     parameter.  Gradio recognizes that annotation as a special argument and
     injects the request without adding a component input to the event config.
+    Only callbacks that replace inference inputs/results or explicitly cancel
+    work opt into invalidation; saving/exporting unrelated state does not.
     """
 
     if not callable(fn):
@@ -471,7 +473,7 @@ def guard_callback(
         )
         _validate_state_owner_tokens(required_states, record)
         with _lease_for(registry, full_state, session_id, identity):
-            if not read_only:
+            if invalidates_inference:
                 record.operation_revision += 1
             operation_token = _ACTIVE_OPERATION.set(
                 (registry, record, record.operation_revision)
