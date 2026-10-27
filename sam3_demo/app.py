@@ -4522,6 +4522,27 @@ def _template_stitch_handoff_status(source_status):
     return _template_stitch_cb.handoff_status(source_status)
 
 
+# These actions replace segmentation inputs/results. Exports, template previews,
+# crop selection (before Apply), and independent stitch edits do not cancel SAM3.
+_INFERENCE_INVALIDATING_CALLBACKS = frozenset({
+    "_source_upload_workspace", "_apply_source_crop", "_use_full_source_image",
+    "_workspace_gesture_input", "_clear_prompt_selection",
+    "_switch_mode_with_layout_editor", "_delete_selected_pcs_bbox",
+    "_clear_pcs_instances", "_run_pcs", "_create_pvs_from_pending_boxes",
+    "_delete_selected_pending_pvs_bbox", "_clear_pending_pvs_boxes",
+    "_finish_native_polygon", "_pvs_point_prompt", "_layout_point_refine",
+    "_set_active_pvs", "_delete_active_pvs", "_clear_pvs",
+    "_run_layout_mask_page_with_downloads", "_save_current_layout_mask",
+    "_clear_current_layout_mask_with_prompt_epoch", "_save_layout_region",
+    "_delete_layout_region", "_use_current_layout_mask",
+    "_load_layout_prompt_choices", "_load_layout_binary_mask_png",
+    "_select_layout_prompt_mask", "_reset_layout_prompt_selection",
+    "_update_layout_preview_with_groups",
+    "_sync_layout_controls_from_editor_with_prompt_epoch",
+    "_reset_layout_controls_with_prompt_epoch", "_create_pvs_from_layout_selection",
+})
+
+
 def _session_callback_registry(recovery_store=None):
     callbacks = dict(globals())
     missing = sorted(_SESSION_GUARDED_CALLBACKS.difference(callbacks))
@@ -4535,10 +4556,7 @@ def _session_callback_registry(recovery_store=None):
             observability=_OBSERVABILITY,
             recovery_factory=_session_recovery_states,
             recovery_store=recovery_store,
-            read_only=name in {
-                "_workspace_gesture_payload", "_template_instance_choices",
-                "_template_match_selection_choices",
-            },
+            invalidates_inference=name in _INFERENCE_INVALIDATING_CALLBACKS,
         )
     return callbacks
 
