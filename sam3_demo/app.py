@@ -13,6 +13,7 @@ import json
 import uuid
 import copy
 import functools
+from contextlib import ExitStack
 import hashlib
 import atexit
 import os
@@ -94,6 +95,7 @@ from sam3_demo.ui_repair_core import empty_editor_payload, new_repair_state
 
 from sam3_demo.session_cleanup import cleanup_session_resources, validate_server_session_id
 from sam3_demo.session_guard import guard_callback, gradio_state_recovery, request_identity
+from sam3_demo.session_guard import inference_wait
 from sam3_demo.session_runtime import SessionError, SessionRecord, SessionRegistry
 from sam3_demo.stitch_draft_store import StitchDraftStore
 from sam3_demo.observability import Observability, resolve_git_sha
@@ -108,7 +110,9 @@ def _model_lease_wrapper(reason):
         @functools.wraps(function)
         def wrapped(*args, **kwargs):
             wait_started = time.monotonic()
-            with SUPERVISOR.lease(reason=reason):
+            with ExitStack() as stack:
+                with inference_wait():
+                    stack.enter_context(SUPERVISOR.lease(reason=reason))
                 if _OBSERVABILITY is not None:
                     _OBSERVABILITY.record_model_wait(
                         reason,
@@ -2830,6 +2834,7 @@ def _commit_layout_group_transforms(
     *,
     numeric_override=None,
     reset_active=False,
+    commit=True,
 ):
     return _commit_layout_group_transforms_impl(
         {
@@ -2852,6 +2857,7 @@ def _commit_layout_group_transforms(
         editor_payload,
         numeric_override,
         reset_active,
+        commit,
     )
 
 
@@ -3555,7 +3561,7 @@ def _layout_numeric_controls_changed(layout_state, tx, ty, scale, rotation_deg, 
     )
 
 
-def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None, prefer_numeric=None):
+def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload=None, prefer_numeric=None, *, commit=True):
     return _commit_layout_transform_impl(
         {
             '_LAYOUT_CACHE_LOCK': _LAYOUT_CACHE_LOCK,
@@ -3579,6 +3585,7 @@ def _commit_layout_transform(image_state, layout_state, enabled, tx, ty, scale, 
         preview_alpha,
         transform_payload,
         prefer_numeric,
+        commit,
     )
 
 
@@ -4515,6 +4522,38 @@ def _template_stitch_handoff_status(source_status):
     return _template_stitch_cb.handoff_status(source_status)
 
 
+# These actions replace segmentation inputs/results. Exports, template previews,
+# crop selection (before Apply), and independent stitch edits do not cancel SAM3.
+# Selecting an existing PVS instance only changes the highlighted/active ID.
+# Point refinement already checks its captured target before writing back, so
+# _set_active_pvs must not invalidate unrelated PCS/PVS creation requests.
+_INFERENCE_INVALIDATING_CALLBACKS = frozenset({
+    "_source_upload_workspace", "_apply_source_crop", "_use_full_source_image",
+    "_handoff_stitch_mosaic", "_handoff_template_stitch",
+    # Drawing adds positive/negative PCS boxes or pending PVS prompts. A result
+    # computed from the previous prompt set must not replace the edited workspace.
+    "_workspace_gesture_input", "_clear_prompt_selection",
+    "_switch_mode_with_layout_editor", "_delete_selected_pcs_bbox",
+    "_clear_pcs_instances", "_run_pcs", "_create_pvs_from_pending_boxes",
+    "_delete_selected_pending_pvs_bbox", "_clear_pending_pvs_boxes",
+    "_finish_native_polygon", "_pvs_point_prompt", "_layout_point_refine",
+    "_delete_active_pvs", "_clear_pvs",
+    "_run_layout_mask_page_with_downloads", "_save_current_layout_mask",
+    "_clear_current_layout_mask_with_prompt_epoch", "_save_layout_region",
+    "_delete_layout_region", "_use_current_layout_mask",
+    # Loading choices resets scope, region IDs and group transforms; selecting a
+    # mask changes full-mask versus selected-label model input, not just highlight.
+    "_load_layout_prompt_choices", "_load_layout_binary_mask_png",
+    "_select_layout_prompt_mask", "_reset_layout_prompt_selection",
+    # These previews commit numeric/canvas geometry and shared transform caches
+    # used to build mask_input. They are not render-only refreshes. Alpha shares
+    # this commit path/revision today; keep the protection until it is separated.
+    "_update_layout_preview_with_groups",
+    "_sync_layout_controls_from_editor_with_prompt_epoch",
+    "_reset_layout_controls_with_prompt_epoch", "_create_pvs_from_layout_selection",
+})
+
+
 def _session_callback_registry(recovery_store=None):
     callbacks = dict(globals())
     missing = sorted(_SESSION_GUARDED_CALLBACKS.difference(callbacks))
@@ -4528,6 +4567,7 @@ def _session_callback_registry(recovery_store=None):
             observability=_OBSERVABILITY,
             recovery_factory=_session_recovery_states,
             recovery_store=recovery_store,
+            invalidates_inference=name in _INFERENCE_INVALIDATING_CALLBACKS,
         )
     return callbacks
 

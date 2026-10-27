@@ -33,7 +33,6 @@ class PCSBatchRuntime:
     def __init__(self, runtime):
         self.runtime = runtime
         self.limit = min(4, max(1, int(os.environ.get("SAM3_PCS_BATCH_CONCURRENCY", "4"))))
-        self.disabled = False
         self.executor = None
         self.streams = []
 
@@ -46,7 +45,7 @@ class PCSBatchRuntime:
     def _lanes(self, items, requested):
         maximum = min(len(items), self.limit, max(1, int(requested)))
         torch = self.runtime._torch
-        if self.disabled or not self.runtime.device.startswith("cuda"):
+        if not self.runtime.device.startswith("cuda"):
             return 1
         free, _ = torch.cuda.mem_get_info(self.runtime.device)
         reusable = max(0, torch.cuda.memory_reserved(self.runtime.device) - torch.cuda.memory_allocated(self.runtime.device))
@@ -64,6 +63,26 @@ class PCSBatchRuntime:
             self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pcs-lane")
         # The builder and previous RPCs may have produced tensors on other streams.
         torch.cuda.synchronize(self.runtime.device)
+
+    def _is_capacity_error(self, exc):
+        checker = getattr(self.runtime, "_is_oom", None)
+        if callable(checker) and checker(exc):
+            return True
+        text = str(exc).lower()
+        return "out of memory" in text or ("cuda error" in text and "memory" in text)
+
+    @staticmethod
+    def _is_cuda_context_failure(exc):
+        text = str(exc).lower()
+        if "cuda" not in text:
+            return False
+        return any(marker in text for marker in (
+            "illegal memory access",
+            "device-side assert",
+            "launch failure",
+            "misaligned address",
+            "unspecified launch failure",
+        ))
 
     def _predict_one(self, item, lane=None):
         from contextlib import nullcontext
@@ -92,8 +111,21 @@ class PCSBatchRuntime:
         try:
             return {"prediction": self._predict_one(item, lane), "error": None}
         except Exception as exc:
+            # Leave a broken CUDA context so normal restart handling is not hidden.
+            if self._is_cuda_context_failure(exc):
+                raise
             _LOG.warning("PCS batch item failed: %s", type(exc).__name__)
-            return {"prediction": None, "error": f"PCS inference failed ({type(exc).__name__})"}
+            if self._is_capacity_error(exc):
+                failure_kind = "capacity"
+            elif isinstance(exc, FloatingPointError):
+                failure_kind = "parallel"
+            else:
+                failure_kind = ""
+            return {
+                "prediction": None,
+                "error": f"PCS inference failed ({type(exc).__name__})",
+                "_failure_kind": failure_kind,
+            }
 
     def predict(self, args):
         items = list(args.get("items") or [])
@@ -101,7 +133,7 @@ class PCSBatchRuntime:
             raise ValueError("PCS batch requires one to four images")
         lanes = self._lanes(items, args.get("concurrency", 4))
         fallback = lanes < min(len(items), self.limit, int(args.get("concurrency", 4)))
-        reason = "serial_after_failure" if self.disabled else "memory_limit" if fallback else ""
+        reason = "memory_limit" if fallback else ""
         results = []
         if lanes > 1:
             self._ensure_pool()
@@ -109,18 +141,24 @@ class PCSBatchRuntime:
                 wave = items[offset:offset + lanes]
                 futures = [self.executor.submit(self._attempt, item, lane) for lane, item in enumerate(wave)]
                 results.extend(future.result() for future in futures)
-            failed = [i for i, result in enumerate(results) if result["error"]]
-            if failed:
-                # Join every lane before retrying. A bad CUDA context is handled
-                # by the supervisor's one-time worker restart, not hidden here.
-                self.disabled = True
-                fallback, reason = True, "parallel_failure"
+            recoverable = [
+                i for i, result in enumerate(results)
+                if result.get("_failure_kind") in {"capacity", "parallel"}
+            ]
+            if recoverable:
+                # Retry only failures explained by capacity or parallel
+                # numerical state. Ordinary item errors remain item errors.
+                kinds = {results[index].get("_failure_kind") for index in recoverable}
+                fallback = True
+                reason = "memory_limit" if "capacity" in kinds else "parallel_failure"
                 self.runtime._torch.cuda.synchronize(self.runtime.device)
                 self.runtime._torch.cuda.empty_cache()
-                for index in failed:
+                for index in recoverable:
                     results[index] = self._attempt(items[index])
         else:
             results = [self._attempt(item) for item in items]
+        for result in results:
+            result.pop("_failure_kind", None)
         response = {"items": results, "concurrency": lanes, "fallback": fallback, "reason": reason}
         if len(pickle.dumps(response, protocol=5)) > max_frame_bytes() - 4096:
             if len(items) > 1:

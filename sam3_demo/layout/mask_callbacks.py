@@ -602,7 +602,7 @@ def _layout_group_control_values_impl(_deps, transform, target_size):
     )
 
 
-def _commit_layout_group_transforms_impl(_deps, image_state, layout_state, editor_payload, numeric_override, reset_active):
+def _commit_layout_group_transforms_impl(_deps, image_state, layout_state, editor_payload, numeric_override, reset_active, commit=True):
     _LAYOUT_CACHE_LOCK = _deps['_LAYOUT_CACHE_LOCK']
     _LAYOUT_PROMPT_SCOPE_FULL = _deps['_LAYOUT_PROMPT_SCOPE_FULL']
     _LAYOUT_PROMPT_SCOPE_REGION_LABELS = _deps['_LAYOUT_PROMPT_SCOPE_REGION_LABELS']
@@ -814,14 +814,15 @@ def _commit_layout_group_transforms_impl(_deps, image_state, layout_state, edito
         "transforms": copy.deepcopy(authoritative),
     }
     with _LAYOUT_CACHE_LOCK:
-        cached["prompt_group_snapshot"] = copy.deepcopy(snapshot)
-        cached["prompt_group_transformed_masks"] = {
-            group_id: mask.copy()
-            for group_id, mask in transformed_groups.items()
-        }
-        cached["prompt_group_transformed_union"] = (
-            transformed_union.copy()
-        )
+        if commit:
+            cached["prompt_group_snapshot"] = copy.deepcopy(snapshot)
+            cached["prompt_group_transformed_masks"] = {
+                group_id: mask.copy()
+                for group_id, mask in transformed_groups.items()
+            }
+            cached["prompt_group_transformed_union"] = (
+                transformed_union.copy()
+            )
     state.update(
         {
             "prompt_labels": labels,
@@ -1113,7 +1114,7 @@ def _layout_numeric_controls_changed_impl(_deps, layout_state, tx, ty, scale, ro
     )
 
 
-def _commit_layout_transform_impl(_deps, image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload, prefer_numeric):
+def _commit_layout_transform_impl(_deps, image_state, layout_state, enabled, tx, ty, scale, rotation_deg, preview_alpha, transform_payload, prefer_numeric, commit=True):
     _LAYOUT_CACHE_LOCK = _deps['_LAYOUT_CACHE_LOCK']
     _layout_cache_get = _deps['_layout_cache_get']
     _layout_editor_transform = _deps['_layout_editor_transform']
@@ -1209,12 +1210,13 @@ def _commit_layout_transform_impl(_deps, image_state, layout_state, enabled, tx,
         )
         transform = _layout_tx.transform_with_derived_fields(transform, target_size)
         transformed = _layout_tx.warp_layout_mask(source_mask, transform["matrix_2x3"], target_size)
-        cached["target_image_sha256"] = target_hash
-        cached["committed_revision"] = revision
-        cached["backend_transform"] = copy.deepcopy(transform)
-        cached["matrix_2x3"] = copy.deepcopy(transform["matrix_2x3"])
-        cached["transformed_mask"] = transformed
-        _write_layout_meta(cached)
+        if commit:
+            cached["target_image_sha256"] = target_hash
+            cached["committed_revision"] = revision
+            cached["backend_transform"] = copy.deepcopy(transform)
+            cached["matrix_2x3"] = copy.deepcopy(transform["matrix_2x3"])
+            cached["transformed_mask"] = transformed
+            _write_layout_meta(cached)
     state.update(copy.deepcopy(transform))
     state.update({
         "enabled": bool(enabled),

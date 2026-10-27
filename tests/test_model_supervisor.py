@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import concurrent.futures
+from contextlib import nullcontext
+from unittest import mock
 import threading
 import time
 import unittest
@@ -36,6 +38,19 @@ class _FakeProcess:
             self.returncode = 0
         return self.returncode
 
+
+
+
+
+class _FakeImage:
+    width = 4
+    height = 4
+
+    def convert(self, _mode):
+        return self
+
+    def tobytes(self):
+        return bytes(self.width * self.height * 3)
 
 
 class _Clock:
@@ -360,6 +375,46 @@ class ModelSupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.snapshot()["state"], UNLOADED)
 
 
+
+    def test_batch_rpc_fault_is_serial_only_for_current_call(self):
+        supervisor = self.make_supervisor()
+        try:
+            supervisor.lease = lambda *, reason: nullcontext()
+            prediction = {
+                "masks_packed": b"",
+                "masks_shape": (0, 4, 4),
+                "probs_f16": None,
+                "boxes": np.zeros((0, 4), dtype=np.float32),
+                "scores": np.zeros((0,), dtype=np.float32),
+            }
+            rpc_response = {
+                "items": [{"prediction": prediction, "error": None}],
+                "concurrency": 1,
+                "fallback": False,
+                "reason": "",
+            }
+            supervisor._rpc = mock.Mock(
+                side_effect=[RuntimeError("transport failed"), rpc_response, rpc_response]
+            )
+            supervisor._wait_until_started = mock.Mock()
+            item = {
+                "image": _FakeImage(),
+                "text": "target",
+                "threshold": 0.5,
+                "positive_boxes_cxcywh": [],
+                "negative_boxes_cxcywh": [],
+            }
+
+            first = supervisor.predict_pcs_batch([item])
+            second = supervisor.predict_pcs_batch([item])
+
+            calls = supervisor._rpc.call_args_list
+            self.assertEqual([call.args[1]["concurrency"] for call in calls], [4, 1, 4])
+            self.assertTrue(first["fallback"])
+            self.assertFalse(second["fallback"])
+            supervisor._wait_until_started.assert_called_once_with()
+        finally:
+            supervisor.shutdown(graceful_timeout=0)
 
 if __name__ == "__main__":
     unittest.main()

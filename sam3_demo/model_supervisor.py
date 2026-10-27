@@ -175,7 +175,6 @@ class ModelRuntimeSupervisor:
         self._last_error = ""
         self._last_start_failure_at = None
         self._request_id = 0
-        self._pcs_parallel_disabled = False
         self._pcs_max_candidates = 200
         self._mask_input_size = None
         self._encoded_generation = {}
@@ -849,15 +848,16 @@ class ModelRuntimeSupervisor:
                 used += estimate
             groups.append(group)
             results, lanes, fallback, reason = [], 1, False, ""
+            serial_after_failure = False
             for group in groups:
                 try:
-                    response = self._pcs_batch_rpc(group, 1 if self._pcs_parallel_disabled else 4)
+                    response = self._pcs_batch_rpc(group, 1 if serial_after_failure else 4)
                 except Exception:
-                    if self._pcs_parallel_disabled:
+                    if serial_after_failure:
                         raise
                     # A native crash cannot be caught in the worker. Restart once,
-                    # respecting backoff, then keep this deployment serial.
-                    self._pcs_parallel_disabled = True
+                    # respecting backoff, then retry this call serially only.
+                    serial_after_failure = True
                     with self._condition:
                         failed_at = self._last_start_failure_at
                     if failed_at is not None:
@@ -880,7 +880,10 @@ class ModelRuntimeSupervisor:
             for key in list(self._encoded_generation):
                 if key[0] in ids:
                     self._encoded_generation.pop(key, None)
-            ready = self._worker is not None and self._state in (READY, RUNNING, REHYDRATING)
+            # Worker LRU bounds retained embeddings. Never queue UI eviction
+            # behind an active inference RPC just to free this optional cache.
+            ready = (self._worker is not None and self._state == READY
+                     and self._active_requests == 0)
         if not ready:
             return
         try:

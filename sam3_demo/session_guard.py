@@ -12,7 +12,8 @@ import hmac
 import inspect
 from copy import deepcopy
 from collections.abc import Mapping
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, get_args, get_origin, get_type_hints
 
 import gradio as gr
@@ -35,7 +36,7 @@ class SessionGuardError(SessionError):
     """Raised before a callback is called when request ownership is invalid."""
 
 
-class _SupersededCallback(Exception):
+class _SupersededCallback(BaseException):
     """A queued operation targets a session already replaced in this page."""
 
 
@@ -51,6 +52,34 @@ _IDENTITY_FIELDS = (
     "resume_id",
 )
 _MISSING = object()
+_ACTIVE_OPERATION = ContextVar("sam3_active_operation", default=None)
+_FAILURE_REPORTER = ContextVar("sam3_callback_failure_reporter", default=None)
+
+
+@contextmanager
+def inference_wait():
+    """Release the UI operation lock only while waiting for model loading/RPC."""
+    operation = _ACTIVE_OPERATION.get()
+    if operation is None:
+        yield
+        return
+    registry, record, revision = operation
+    try:
+        with registry.suspend_operation(record):
+            yield
+    finally:
+        if (record.operation_revision != revision
+                or record.close_requested or record.closed):
+            # Skip stale writeback even when business callbacks catch Exception.
+            raise _SupersededCallback(
+                "推理结果已作废：图片、提示或工作区已变化，或操作已取消，请重新运行。"
+            )
+
+
+def record_handled_callback_failure(exc):
+    """Report a handled PCS error without changing its output contract."""
+    reporter = _FAILURE_REPORTER.get()
+    return reporter(exc) if reporter is not None else None
 
 
 def _request_type(annotation: Any) -> bool:
@@ -299,12 +328,15 @@ def guard_callback(
         Callable[[Mapping[str, Any]], Mapping[str, Mapping[str, Any]]]
     ] = None,
     recovery_store: Optional[Callable[..., Mapping[str, Mapping[str, Any]]]] = None,
+    invalidates_inference: bool = False,
 ) -> Callable[..., Any]:
     """Wrap a callback with strict request/session ownership validation.
 
     The generated signature contains one trailing optional ``gr.Request``
     parameter.  Gradio recognizes that annotation as a special argument and
     injects the request without adding a component input to the event config.
+    Only callbacks that replace inference inputs/results or explicitly cancel
+    work opt into invalidation; saving/exporting unrelated state does not.
     """
 
     if not callable(fn):
@@ -424,9 +456,10 @@ def guard_callback(
                                 raise SessionGuardError(f"recovery factory did not provide {name}")
                             component_args[index] = replacement
                 return invoke(component_args, identity)
-        except _SupersededCallback:
+        except _SupersededCallback as exc:
             # Gradio broadcasts a single skip to all outputs. Never replay an
             # expired delete/crop action against a newly recovered workspace.
+            gr.Info(str(exc) or "操作已作废：当前工作区已变化，请重新操作。")
             return gr.skip()
         except SessionGuardError:
             raise
@@ -443,6 +476,11 @@ def guard_callback(
         )
         _validate_state_owner_tokens(required_states, record)
         with _lease_for(registry, full_state, session_id, identity):
+            if invalidates_inference:
+                record.operation_revision += 1
+            operation_token = _ACTIVE_OPERATION.set(
+                (registry, record, record.operation_revision)
+            )
             identity_snapshots = [
                 (
                     state,
@@ -463,6 +501,8 @@ def guard_callback(
                         else:
                             state[field] = value
                 raise
+            finally:
+                _ACTIVE_OPERATION.reset(operation_token)
             if full_state is not None:
                 record = registry.validate(full_state, identity)
             else:
@@ -480,6 +520,18 @@ def guard_callback(
         owner_id = getattr(request, "username", None)
         session_hash = getattr(request, "session_hash", None)
         action = fn.__name__.lstrip("_") or fn.__name__
+        handled_error_id = None
+
+        def report_handled_failure(exc):
+            nonlocal handled_error_id
+            if handled_error_id is None:
+                handled_error_id = observability.record_callback_failure(
+                    action, observability.monotonic() - started_at, exc,
+                    owner_id=owner_id, session_hash=session_hash,
+                )
+            return handled_error_id
+
+        reporter_token = _FAILURE_REPORTER.set(report_handled_failure)
         try:
             result = _guarded_impl(*args, **kwargs)
         except BaseException as exc:
@@ -498,12 +550,15 @@ def guard_callback(
                 message = getattr(exc, "message", None) or "操作失败"
                 raise gr.Error(f"{message}（错误编号：{error_id}）") from exc
             raise gr.Error(f"操作失败，请联系开发人员。错误编号：{error_id}") from exc
-        observability.record_callback_success(
-            action,
-            observability.monotonic() - started_at,
-            owner_id=owner_id,
-            session_hash=session_hash,
-        )
+        finally:
+            _FAILURE_REPORTER.reset(reporter_token)
+        if handled_error_id is None:
+            observability.record_callback_success(
+                action,
+                observability.monotonic() - started_at,
+                owner_id=owner_id,
+                session_hash=session_hash,
+            )
         return result
 
     guarded.__signature__ = guarded_signature
