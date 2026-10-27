@@ -4360,6 +4360,7 @@ def _template_stitch_handoff_status(source_status):
 # crop selection (before Apply), and independent stitch edits do not cancel SAM3.
 _INFERENCE_INVALIDATING_CALLBACKS = frozenset({
     "_source_upload_workspace", "_apply_source_crop", "_use_full_source_image",
+    "_handoff_stitch_mosaic", "_handoff_template_stitch",
     "_workspace_gesture_input", "_clear_prompt_selection",
     "_switch_mode_with_layout_editor", "_delete_selected_pcs_bbox",
     "_clear_pcs_instances", "_run_pcs", "_create_pvs_from_pending_boxes",

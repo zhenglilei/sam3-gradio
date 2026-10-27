@@ -220,6 +220,7 @@ class CallbackResponsivenessTest(TestCase):
     def test_registered_input_and_result_edits_still_invalidate_prediction(self):
         for name in (
             "_source_upload_workspace", "_apply_source_crop",
+            "_handoff_stitch_mosaic", "_handoff_template_stitch",
             "_workspace_gesture_input", "_clear_prompt_selection",
             "_clear_pcs_instances", "_delete_active_pvs",
             "_switch_mode_with_layout_editor", "_select_layout_prompt_mask",
