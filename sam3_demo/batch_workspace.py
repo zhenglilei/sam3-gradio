@@ -554,7 +554,11 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
         callback.__name__ = "batch_" + action
         return guard_callback(callback, registry=app._SESSION_REGISTRY,
                               trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
-                              recovery_factory=app._session_recovery_states)
+                              recovery_factory=app._session_recovery_states,
+                              invalidates_inference=action in {
+                                  "upload", "prev", "next", "delete_current",
+                                  "delete_selected", "run", "retry", "cancel",
+                              })
 
     options = dict(inputs=shared, outputs=outputs, concurrency_limit=8,
                    concurrency_id="image-prepost-state", show_progress="hidden", api_visibility="private")
@@ -569,7 +573,7 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
     s.image_state.change(
         guard_callback(image_action_state, registry=app._SESSION_REGISTRY,
                        trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
-                       recovery_factory=app._session_recovery_states, read_only=True),
+                       recovery_factory=app._session_recovery_states),
         inputs=[s.session_state, s.image_state, r.batch_state],
         outputs=[r.run_pcs_btn], queue=False, show_progress="hidden",
         api_visibility="private",
@@ -600,7 +604,8 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                        text, threshold, selected, files, stitch_state, index))
     r.batch_gallery.select(guard_callback(batch_select, registry=app._SESSION_REGISTRY,
                             trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
-                            recovery_factory=app._session_recovery_states), **options)
+                            recovery_factory=app._session_recovery_states,
+                            invalidates_inference=True), **options)
 
     def bind_external_upload(event, files_component):
         external_inputs = [
@@ -639,7 +644,6 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 registry=app._SESSION_REGISTRY,
                 trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
                 recovery_factory=app._session_recovery_states,
-                read_only=True,
             ),
             inputs=[s.session_state, s.image_state, r.mode, r.click_tool],
             outputs=[r.workspace_gesture_overlay],
@@ -659,7 +663,6 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 registry=app._SESSION_REGISTRY,
                 trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
                 recovery_factory=app._session_recovery_states,
-                read_only=True,
             ),
             inputs=[s.session_state, s.source_image_state],
             outputs=[r.source_crop_overlay],
@@ -681,7 +684,6 @@ def bind_batch_workspace(state_refs, image_refs, stitch_refs, callbacks, app):
                 registry=app._SESSION_REGISTRY,
                 trusted_proxy_cidrs=app._SESSION_TRUSTED_PROXY_CIDRS,
                 recovery_factory=app._session_recovery_states,
-                read_only=True,
             ),
             inputs=[s.session_state, s.image_state, r.mode],
             outputs=[r.layout_editor],

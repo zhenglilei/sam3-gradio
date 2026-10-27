@@ -9,7 +9,7 @@ import gradio as gr
 from PIL import Image
 
 from sam3_demo import app, batch_workspace as batch, model_runtime
-from sam3_demo.session_guard import guard_callback
+from sam3_demo.session_guard import guard_callback, inference_wait
 from sam3_demo.session_runtime import RequestIdentity, SessionRegistry
 
 
@@ -85,7 +85,7 @@ class BatchResponsivenessTests(TestCase):
                 )
                 self.assertTrue(started.wait(3))
                 cancel_future = pool.submit(
-                    guard_callback(cancel, registry=registry),
+                    guard_callback(cancel, registry=registry, invalidates_inference=True),
                     state,
                     request,
                 )
@@ -100,6 +100,53 @@ class BatchResponsivenessTests(TestCase):
                 )
                 self.assertEqual(batch_result, gr.skip())
             self.assertFalse(state["running"])
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+            registry.shutdown()
+
+    def test_registered_batch_save_and_selection_do_not_cancel_but_cancel_does(self):
+        registry = SessionRegistry(secret=b"test", start_sweeper=False)
+        session = registry.bind(RequestIdentity("owner", "batch-ui", "127.0.0.1"))
+        request = gr.Request(username="owner", session_hash="batch-ui",
+                             client=SimpleNamespace(host="127.0.0.1"), headers={})
+        started, release = Event(), Event()
+        pool = ThreadPoolExecutor(max_workers=2)
+
+        def predict(state):
+            with inference_wait():
+                started.set()
+                if not release.wait(5):
+                    raise AssertionError("test model was not released")
+            return "completed"
+
+        try:
+            with mock.patch.object(app, "_SESSION_REGISTRY", registry):
+                demo = app.create_demo()
+            functions = {fn.name: fn.fn for fn in demo.fns.values()}
+            for action in ("save", "selection", "select_all", "select_none", "cancel"):
+                with self.subTest(action=action):
+                    started.clear()
+                    release.clear()
+                    states = app._session_recovery_states(session)
+                    batch_state = batch.owned_batch(None, session)
+                    batch_state["owner_token"] = session["owner_token"]
+                    batch_state["running"] = action == "cancel"
+                    args = (
+                        batch_state, session, states["source_image_state"],
+                        states["image_state"], states["pcs_state"],
+                        states["pvs_state"], states["prompt_state"], states["layout_state"],
+                        "PCS Auto", "bbox", "truck", 0.4, [], None, states["stitch_state"],
+                    )
+                    prediction = pool.submit(
+                        guard_callback(predict, registry=registry), session, request)
+                    self.assertTrue(started.wait(3))
+                    with mock.patch.object(batch, "save_snapshot", return_value=True):
+                        pool.submit(functions["batch_" + action], *args, request).result(2)
+                    self.assertFalse(prediction.done())
+                    release.set()
+                    self.assertEqual(prediction.result(2),
+                                     gr.skip() if action == "cancel" else "completed")
         finally:
             release.set()
             pool.shutdown(wait=True)
@@ -199,7 +246,7 @@ class BatchResponsivenessTests(TestCase):
                     return session_state
 
                 step_callback = guard_callback(step, registry=registry)
-                cancel_callback = guard_callback(cancel, registry=registry)
+                cancel_callback = guard_callback(cancel, registry=registry, invalidates_inference=True)
                 batch_future = pool.submit(step_callback, session_state, request)
                 self.assertTrue(started.wait(3))
                 pending_during_wait = list(state["pending"])
