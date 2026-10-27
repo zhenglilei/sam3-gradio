@@ -61,7 +61,7 @@ class CallbackResponsivenessTest(TestCase):
 
     def test_read_only_overlay_finishes_before_prediction_and_does_not_cancel_it(self):
         prediction = self.start_prediction()
-        read = self.guarded(lambda state: state["session_id"], read_only=True)
+        read = self.guarded(lambda state: state["session_id"])
         self.assertEqual(self.pool.submit(read, self.state, self.request).result(2),
                          self.state["session_id"])
         self.assertFalse(prediction.done())
@@ -75,7 +75,8 @@ class CallbackResponsivenessTest(TestCase):
             state["value"] = "cleared"
             return state
 
-        self.pool.submit(self.guarded(edit), self.state, self.request).result(2)
+        self.pool.submit(self.guarded(edit, invalidates_inference=True),
+                         self.state, self.request).result(2)
         self.assertFalse(prediction.done())
         self.release.set()
         self.assertEqual(prediction.result(2), gr.skip())
@@ -83,7 +84,8 @@ class CallbackResponsivenessTest(TestCase):
 
     def test_stale_worker_error_cannot_overwrite_new_state_via_business_catch(self):
         prediction = self.start_prediction(fail=True)
-        self.pool.submit(self.guarded(lambda state: state), self.state, self.request).result(2)
+        self.pool.submit(self.guarded(lambda state: state, invalidates_inference=True),
+                         self.state, self.request).result(2)
         self.release.set()
         self.assertEqual(prediction.result(2), gr.skip())
         self.assertNotIn("value", self.state)
@@ -94,7 +96,8 @@ class CallbackResponsivenessTest(TestCase):
         state = self.registry.bind(identity)
         request = gr.Request(username="other", session_hash="other-page",
                              client=SimpleNamespace(host="127.0.0.1"), headers={})
-        self.pool.submit(self.guarded(lambda state: state), state, request).result(2)
+        self.pool.submit(self.guarded(lambda state: state, invalidates_inference=True),
+                         state, request).result(2)
         self.release.set()
         self.assertEqual(prediction.result(2)["value"], "prediction")
 
@@ -121,7 +124,7 @@ class CallbackResponsivenessTest(TestCase):
         callback = self.guarded(predict, recovery_factory=lambda state: {"state": state})
         prediction = self.pool.submit(callback, None, self.request)
         self.assertTrue(self.started.wait(3))
-        read = self.guarded(lambda state: state["session_id"], read_only=True)
+        read = self.guarded(lambda state: state["session_id"])
         self.pool.submit(read, captured["state"], self.request).result(2)
         self.release.set()
         self.assertEqual(prediction.result(2)["session_id"], self.state["session_id"])
@@ -143,7 +146,7 @@ class CallbackResponsivenessTest(TestCase):
         with mock.patch.object(app.SUPERVISOR, "lease", loading):
             prediction = self.pool.submit(self.guarded(predict), self.state, self.request)
             self.assertTrue(self.started.wait(3))
-            read = self.guarded(lambda state: True, read_only=True)
+            read = self.guarded(lambda state: True)
             self.assertTrue(self.pool.submit(read, self.state, self.request).result(2))
             self.release.set()
             prediction.result(2)
@@ -158,6 +161,72 @@ class CallbackResponsivenessTest(TestCase):
     def test_non_callback_prediction_can_use_wait_context(self):
         with inference_wait():
             self.assertTrue(True)
+
+    def test_unrelated_state_write_does_not_cancel_prediction_by_default(self):
+        prediction = self.start_prediction()
+
+        def save_export(state):
+            state["export_path"] = "result.zip"
+            return state
+
+        self.pool.submit(self.guarded(save_export), self.state, self.request).result(2)
+        self.assertFalse(prediction.done())
+        self.release.set()
+        result = prediction.result(2)
+        self.assertNotEqual(result, gr.skip())
+        self.assertEqual(result["value"], "prediction")
+        self.assertEqual(self.state["export_path"], "result.zip")
+
+    def _registered_action_during_prediction(self, name, *, invalidates):
+        from sam3_demo import app
+
+        self.started.clear()
+        self.release.clear()
+        prediction = self.start_prediction()
+
+        def action(state):
+            state["last_ui_action"] = name
+            return state
+
+        action.__name__ = name
+        with (
+            mock.patch.object(app, "_SESSION_REGISTRY", self.registry),
+            mock.patch.object(app, "_OBSERVABILITY", None),
+            mock.patch.object(app, name, action),
+        ):
+            callback = app._session_callback_registry()[name]
+            self.pool.submit(callback, self.state, self.request).result(2)
+        self.assertFalse(prediction.done())
+        self.release.set()
+        result = prediction.result(2)
+        if invalidates:
+            self.assertEqual(result, gr.skip())
+        else:
+            self.assertNotEqual(result, gr.skip())
+            self.assertEqual(result["value"], "prediction")
+
+    def test_registered_exports_previews_and_stitch_edits_keep_prediction(self):
+        for name in (
+            "_export_pcs", "_export_pvs", "_export_template_match_selection",
+            "_export_layout_regions", "_submit_feedback",
+            "_preview_template_instance", "_preview_layout_region",
+            "_run_template_matching", "_clear_template_match_outputs",
+            "_record_source_crop_gesture", "_apply_stitch_xy",
+            "_apply_stitch_options", "_apply_stitch_export_options",
+        ):
+            with self.subTest(callback=name):
+                self._registered_action_during_prediction(name, invalidates=False)
+
+    def test_registered_input_and_result_edits_still_invalidate_prediction(self):
+        for name in (
+            "_source_upload_workspace", "_apply_source_crop",
+            "_workspace_gesture_input", "_clear_prompt_selection",
+            "_clear_pcs_instances", "_delete_active_pvs",
+            "_switch_mode_with_layout_editor", "_select_layout_prompt_mask",
+            "_sync_layout_controls_from_editor_with_prompt_epoch",
+        ):
+            with self.subTest(callback=name):
+                self._registered_action_during_prediction(name, invalidates=True)
 
     def test_handled_failure_is_not_logged_as_success(self):
         observability = mock.Mock()
