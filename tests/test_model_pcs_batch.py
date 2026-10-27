@@ -62,9 +62,9 @@ class BatchRuntimeTests(unittest.TestCase):
         self.assertEqual([entry["prediction"] for entry in result["items"]], [0, 1, 2, 3])
         self.assertEqual(seen[-1], (1, None))
         self.assertEqual(len(seen), 5)
-        self.assertTrue(engine.disabled)
+        self.assertFalse(engine.disabled)
         self.assertTrue(result["fallback"])
-        self.assertEqual(engine._lanes(items, 4), 1)
+        self.assertEqual(engine._lanes(items, 4), 4)
 
     def test_failure_preserves_other_results(self):
         engine = self.runtime()
@@ -123,15 +123,18 @@ class SupervisorBatchTests(unittest.TestCase):
         self.assertEqual(result["items"][1]["error"], "failed")
         self.assertEqual(self.supervisor._rpc.call_args.args[1]["items"][0]["text"], "")
 
-    def test_native_failure_retries_once_serial(self):
+    def test_native_failure_retries_once_serial_without_sticky_disable(self):
         response = {"items": [{"prediction": prediction(), "error": None}], "concurrency": 1}
-        self.supervisor._rpc = Mock(side_effect=[EOFError(), response])
+        self.supervisor._rpc = Mock(side_effect=[EOFError(), response, response])
         self.supervisor._wait_until_started = Mock()
         result = self.supervisor.predict_pcs_batch([item()])
         self.assertTrue(result["fallback"])
-        self.assertTrue(self.supervisor._pcs_parallel_disabled)
-        self.assertEqual(self.supervisor._rpc.call_args.args[1]["concurrency"], 1)
+        self.assertFalse(self.supervisor._pcs_parallel_disabled)
+        self.assertEqual(self.supervisor._rpc.call_args_list[1].args[1]["concurrency"], 1)
         self.assertEqual(self.supervisor._rpc.call_count, 2)
+
+        self.supervisor.predict_pcs_batch([item()])
+        self.assertEqual(self.supervisor._rpc.call_args_list[2].args[1]["concurrency"], 4)
 
     def test_serial_retry_failure_is_not_an_infinite_restart_loop(self):
         self.supervisor._rpc = Mock(side_effect=EOFError())

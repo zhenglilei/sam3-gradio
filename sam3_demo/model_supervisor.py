@@ -453,6 +453,7 @@ class ModelRuntimeSupervisor:
                             if self._worker is not process:
                                 raise ModelWorkerError("Worker ownership changed during startup", code="INTERNAL")
                             self._generation = next_generation
+                            self._pcs_parallel_disabled = False
                             self._mask_input_size = mask_size
                             self._pcs_max_candidates = int(capabilities.get("pcs_max_candidates", 200))
                             self._state = READY
@@ -849,15 +850,16 @@ class ModelRuntimeSupervisor:
                 used += estimate
             groups.append(group)
             results, lanes, fallback, reason = [], 1, False, ""
+            serial_after_failure = bool(self._pcs_parallel_disabled)
             for group in groups:
                 try:
-                    response = self._pcs_batch_rpc(group, 1 if self._pcs_parallel_disabled else 4)
+                    response = self._pcs_batch_rpc(group, 1 if serial_after_failure else 4)
                 except Exception:
-                    if self._pcs_parallel_disabled:
+                    if serial_after_failure:
                         raise
                     # A native crash cannot be caught in the worker. Restart once,
-                    # respecting backoff, then keep this deployment serial.
-                    self._pcs_parallel_disabled = True
+                    # respecting backoff, then retry this call serially only.
+                    serial_after_failure = True
                     with self._condition:
                         failed_at = self._last_start_failure_at
                     if failed_at is not None:
