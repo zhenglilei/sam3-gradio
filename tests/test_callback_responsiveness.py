@@ -90,6 +90,25 @@ class CallbackResponsivenessTest(TestCase):
         self.assertEqual(prediction.result(2), gr.skip())
         self.assertNotIn("value", self.state)
 
+    def test_superseded_prediction_shows_one_actionable_notice(self):
+        with mock.patch("sam3_demo.session_guard.gr.Info") as info:
+            prediction = self.start_prediction()
+            self.guarded(lambda state: state, invalidates_inference=True)(
+                self.state, self.request)
+            self.release.set()
+            self.assertEqual(prediction.result(2), gr.skip())
+        info.assert_called_once_with(
+            "推理结果已作废：图片、提示或工作区已变化，或操作已取消，请重新运行。"
+        )
+
+    def test_unmodified_prediction_does_not_show_superseded_notice(self):
+        with mock.patch("sam3_demo.session_guard.gr.Info") as info:
+            prediction = self.start_prediction()
+            self.guarded(lambda state: state)(self.state, self.request)
+            self.release.set()
+            self.assertEqual(prediction.result(2)["value"], "prediction")
+        info.assert_not_called()
+
     def test_other_page_edit_does_not_invalidate_prediction(self):
         prediction = self.start_prediction()
         identity = RequestIdentity("other", "other-page", "127.0.0.1")
@@ -207,6 +226,7 @@ class CallbackResponsivenessTest(TestCase):
 
     def test_registered_exports_previews_and_stitch_edits_keep_prediction(self):
         for name in (
+            "_set_active_pvs",
             "_export_pcs", "_export_pvs", "_export_template_match_selection",
             "_export_layout_regions", "_submit_feedback",
             "_preview_template_instance", "_preview_layout_region",
@@ -224,10 +244,32 @@ class CallbackResponsivenessTest(TestCase):
             "_workspace_gesture_input", "_clear_prompt_selection",
             "_clear_pcs_instances", "_delete_active_pvs",
             "_switch_mode_with_layout_editor", "_select_layout_prompt_mask",
+            "_load_layout_prompt_choices", "_update_layout_preview_with_groups",
             "_sync_layout_controls_from_editor_with_prompt_epoch",
         ):
             with self.subTest(callback=name):
                 self._registered_action_during_prediction(name, invalidates=True)
+
+    def test_selecting_existing_pvs_preserves_inflight_prediction_and_instances(self):
+        from sam3_demo import app
+
+        owned = {"session_id": self.state["session_id"],
+                 "owner_token": self.state["owner_token"]}
+        image, pcs = dict(owned), dict(owned)
+        instances = {1: {"id": 1}, 2: {"id": 2}}
+        pvs = {**owned, "instances": instances, "active_instance_id": 1}
+        prediction = self.start_prediction()
+        with (mock.patch.object(app, "_SESSION_REGISTRY", self.registry),
+              mock.patch.object(app, "_OBSERVABILITY", None),
+              mock.patch.object(app, "_view", return_value=(gr.skip(),) * 8)):
+            callback = app._session_callback_registry()["_set_active_pvs"]
+            self.pool.submit(callback, image, pcs, pvs, "PVS Manual", "2",
+                             self.request).result(2)
+        self.assertFalse(prediction.done())
+        self.assertEqual(pvs["active_instance_id"], 2)
+        self.assertIs(pvs["instances"], instances)
+        self.release.set()
+        self.assertEqual(prediction.result(2)["value"], "prediction")
 
     def test_handled_failure_is_not_logged_as_success(self):
         observability = mock.Mock()
