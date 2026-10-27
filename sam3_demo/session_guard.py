@@ -71,7 +71,9 @@ def inference_wait():
         if (record.operation_revision != revision
                 or record.close_requested or record.closed):
             # Skip stale writeback even when business callbacks catch Exception.
-            raise _SupersededCallback()
+            raise _SupersededCallback(
+                "推理结果已作废：图片、提示或工作区已变化，或操作已取消，请重新运行。"
+            )
 
 
 def record_handled_callback_failure(exc):
@@ -454,9 +456,10 @@ def guard_callback(
                                 raise SessionGuardError(f"recovery factory did not provide {name}")
                             component_args[index] = replacement
                 return invoke(component_args, identity)
-        except _SupersededCallback:
+        except _SupersededCallback as exc:
             # Gradio broadcasts a single skip to all outputs. Never replay an
             # expired delete/crop action against a newly recovered workspace.
+            gr.Info(str(exc) or "操作已作废：当前工作区已变化，请重新操作。")
             return gr.skip()
         except SessionGuardError:
             raise

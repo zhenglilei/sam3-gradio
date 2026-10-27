@@ -90,6 +90,25 @@ class CallbackResponsivenessTest(TestCase):
         self.assertEqual(prediction.result(2), gr.skip())
         self.assertNotIn("value", self.state)
 
+    def test_superseded_prediction_shows_one_actionable_notice(self):
+        with mock.patch("sam3_demo.session_guard.gr.Info") as info:
+            prediction = self.start_prediction()
+            self.guarded(lambda state: state, invalidates_inference=True)(
+                self.state, self.request)
+            self.release.set()
+            self.assertEqual(prediction.result(2), gr.skip())
+        info.assert_called_once_with(
+            "推理结果已作废：图片、提示或工作区已变化，或操作已取消，请重新运行。"
+        )
+
+    def test_unmodified_prediction_does_not_show_superseded_notice(self):
+        with mock.patch("sam3_demo.session_guard.gr.Info") as info:
+            prediction = self.start_prediction()
+            self.guarded(lambda state: state)(self.state, self.request)
+            self.release.set()
+            self.assertEqual(prediction.result(2)["value"], "prediction")
+        info.assert_not_called()
+
     def test_other_page_edit_does_not_invalidate_prediction(self):
         prediction = self.start_prediction()
         identity = RequestIdentity("other", "other-page", "127.0.0.1")
