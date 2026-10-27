@@ -398,7 +398,12 @@ def _run_pcs_impl(_deps, image_state, pcs_state, pvs_state, mode, text_prompt, t
         pcs_state["text_prompt"] = text_prompt or ""
         info = f"PCS found {len(instances)} instances"
     except Exception as exc:
+        from .session_guard import record_handled_callback_failure
+
+        error_id = record_handled_callback_failure(exc)
         info = f"PCS failed: {exc}"
+        if error_id:
+            info += f" (error_id: {error_id})"
     return pcs_state, *_view(image_state, pcs_state, pvs_state, mode, info)
 
 

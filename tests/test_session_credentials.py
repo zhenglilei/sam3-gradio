@@ -123,7 +123,7 @@ class CredentialHttpTests(unittest.TestCase):
         api = FastAPI()
 
         @api.get("/")
-        @api.get("/data")
+        @api.get("/gradio_api/data")
         async def owner(request: Request):
             return {"owner": request.scope["session"]["owner_id"]}
 
@@ -131,7 +131,7 @@ class CredentialHttpTests(unittest.TestCase):
         async def health():
             return {"ok": True}
 
-        @api.get("/failure")
+        @api.get("/gradio_api/failure")
         async def fail():
             raise RuntimeError("synthetic callback failure")
 
@@ -143,7 +143,7 @@ class CredentialHttpTests(unittest.TestCase):
     def test_only_homepage_creates_identity_and_full_capacity_is_503(self):
         app, registry, _ = self.build(capacity=1)
         with TestClient(app) as first, TestClient(app) as second:
-            self.assertEqual(first.get("/data").status_code, 401)
+            self.assertEqual(first.get("/gradio_api/data").status_code, 401)
             self.assertEqual(first.get("/healthz").status_code, 200)
             self.assertEqual(registry.snapshot()["count"], 0)
             home = first.get("/")
@@ -153,18 +153,18 @@ class CredentialHttpTests(unittest.TestCase):
             self.assertEqual(full.status_code, 503)
             self.assertEqual(full.json()["error"]["code"], "SESSION_CREDENTIAL_CAPACITY")
             self.assertEqual(full.headers["retry-after"], "5")
-            self.assertEqual(first.get("/data").status_code, 200)
+            self.assertEqual(first.get("/gradio_api/data").status_code, 200)
 
     def test_cookie_renewal_expiry_and_reopen(self):
         app, _, clock = self.build()
         with TestClient(app) as client:
             first = client.get("/").json()
             clock.now += 9
-            response = client.get("/data")
+            response = client.get("/gradio_api/data")
             self.assertEqual(response.json(), first)
             self.assertIn("Max-Age=86400", response.headers["set-cookie"])
             clock.now += 11
-            stale = client.get("/data")
+            stale = client.get("/gradio_api/data")
             self.assertEqual(stale.status_code, 401)
             self.assertIn("重新打开首页", stale.json()["error"]["message"])
             self.assertEqual(stale.json()["detail"], stale.json()["error"]["message"])
@@ -188,9 +188,9 @@ class CredentialHttpTests(unittest.TestCase):
             owner = first.get("/").json()
             stolen = first.cookies.get("browser_owner_7891")
             second.cookies.set("browser_owner_7891", stolen)
-            self.assertEqual(second.get("/data").status_code, 401)
+            self.assertEqual(second.get("/gradio_api/data").status_code, 401)
             second.cookies.set("browser_owner_7890", stolen)
-            self.assertEqual(second.get("/data").status_code, 401)
+            self.assertEqual(second.get("/gradio_api/data").status_code, 401)
             second.cookies.clear()
             self.assertNotEqual(second.get("/").json(), owner)
 
@@ -200,14 +200,14 @@ class CredentialHttpTests(unittest.TestCase):
         with TestClient(old) as before:
             old_owner = before.get("/").json()
             with TestClient(new, cookies=before.cookies) as after:
-                self.assertEqual(after.get("/data").status_code, 401)
+                self.assertEqual(after.get("/gradio_api/data").status_code, 401)
                 self.assertNotEqual(after.get("/").json(), old_owner)
 
     def test_server_error_releases_request_lease(self):
         app, registry, _ = self.build()
         with TestClient(app, raise_server_exceptions=False) as client:
             client.get("/")
-            self.assertEqual(client.get("/failure").status_code, 500)
+            self.assertEqual(client.get("/gradio_api/failure").status_code, 500)
             self.assertEqual(registry.snapshot()["inflight"], 0)
 
     def test_cancelled_stream_releases_credential_lease(self):
@@ -225,7 +225,7 @@ class CredentialHttpTests(unittest.TestCase):
                 await asyncio.Event().wait()
 
             app.app = stream
-            scope = {"type": "http", "method": "GET", "path": "/data", "query_string": b"",
+            scope = {"type": "http", "method": "GET", "path": "/gradio_api/data", "query_string": b"",
                      "headers": [(b"cookie", ("browser_owner_7891=" + token).encode())]}
 
             async def receive():
